@@ -21,6 +21,10 @@ static LOGGER: StderrLogger = StderrLogger;
 #[cfg(windows)]
 mod editor_owner;
 #[cfg(windows)]
+mod rich_owner;
+#[cfg(windows)]
+mod rich_projection;
+#[cfg(windows)]
 mod startup_fault;
 
 #[cfg(windows)]
@@ -31,13 +35,66 @@ mod app {
     #[component]
     pub fn Window() -> impl IntoElement {
         nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#000000","background":"#ffffff","muted":"#f5f5f5","muted-foreground":"#525252","border":"#d4d4d4","accent":"#e5e5e5","accent-foreground":"#000000","input":"#d4d4d4"},"dark":{"foreground":"#000000","background":"#ffffff","muted":"#f5f5f5","muted-foreground":"#525252","border":"#d4d4d4","accent":"#e5e5e5","accent-foreground":"#000000","input":"#d4d4d4"}}}"##)).expect("fixed content palette"));
-        provide_context(crate::editor_owner::NativeView::initial());
-        view().flex_1().bg(white()).child(
-            nsh_base::editor::editor()
-                .auto_focus(true)
-                .language("markdown")
-                .size_full(),
-        )
+        let source = crate::editor_owner::NativeView::new();
+        let rich = source.sibling().expect("independent rich view");
+        provide_context(source.buffer());
+        let rich_mode = signal(false);
+        let status = signal(String::new());
+        let active = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let source_owner = source.clone();
+        let source_active = active.clone();
+        view()
+            .flex_1()
+            .bg(white())
+            .text_color(black())
+            .child(
+                view()
+                    .flex_row()
+                    .gap(px(16.0))
+                    .p(px(8.0))
+                    .child(
+                        nsh_base::button()
+                            .child(text("源码"))
+                            .on_press(move |_: &()| {
+                                use nsh_base::editor::ExternalDocument;
+                                source_owner.fence();
+                                rich_mode.set(false);
+                            }),
+                    )
+                    .child(
+                        nsh_base::button()
+                            .child(text("富文本"))
+                            .on_press(move |_: &()| rich_mode.set(true)),
+                    ),
+            )
+            .child(text(move || status.get()).text_color(black()))
+            .child(
+                when(rich_mode, move || {
+                    match crate::rich_owner::RichOwner::new(rich.clone(), status) {
+                        Ok(owner) => {
+                            status.set(String::new());
+                            let session = owner.session();
+                            *active.borrow_mut() = Some(owner);
+                            nsh_base::rich_editor::view::rich_editor()
+                                .editor(session)
+                                .auto_focus(true)
+                                .size_full()
+                                .into_element()
+                        }
+                        Err(e) => {
+                            status.set(e);
+                            view().into_element()
+                        }
+                    }
+                })
+                .otherwise(move || {
+                    source_active.borrow_mut().take();
+                    nsh_base::editor::editor()
+                        .auto_focus(true)
+                        .language("markdown")
+                        .size_full()
+                }),
+            )
     }
 
     pub fn run() -> std::process::ExitCode {

@@ -58,6 +58,15 @@ try {
         Copy-Item $testExecutables[0] build-evidence/failed-document-contracts.exe
         throw
     }
+    Invoke-Checked cargo @('test', '-p', 'texzi-app', '--bin', 'texzi-app', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc', '--no-run', '--message-format=json') -StdoutFile 'build-evidence/rich-test-build.jsonl'
+    $richTests = @(Get-Content build-evidence/rich-test-build.jsonl | Where-Object { $_.StartsWith('{') } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'texzi-app' -and $_.executable } | Select-Object -ExpandProperty executable)
+    if ($richTests.Count -ne 1) { throw 'Expected exactly one app rich projection test executable' }
+    try {
+        Invoke-Checked $richTests[0] @('--nocapture', '--test-threads=1')
+    } catch {
+        Copy-Item $richTests[0] build-evidence/failed-rich-projection.exe
+        throw
+    }
     Invoke-Checked python @('--version')
     try {
         Invoke-Checked python @('scripts/test-document-probe.py', '--probe', 'target/x86_64-pc-windows-msvc/release/document-probe.exe', '--trace', 'build-evidence/probe-oracle.jsonl')
@@ -78,6 +87,7 @@ try {
     New-Item dist/package/licenses -ItemType Directory -Force | Out-Null
     New-Item dist/package/component-tests -ItemType Directory | Out-Null
     Copy-Item $testExecutables[0] dist/package/component-tests/document-contracts.exe
+    Copy-Item $richTests[0] dist/package/component-tests/rich-projection.exe
     Copy-Item target/x86_64-pc-windows-msvc/release/document-probe.exe dist/package/component-tests/
     Copy-Item scripts/test-document-probe.py,docs/tx03b/PROTOCOL.md dist/package/component-tests/
     Copy-Item scripts/test-observer-probe.py dist/package/component-tests/

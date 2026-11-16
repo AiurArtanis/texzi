@@ -14,7 +14,7 @@ pub struct NativeView {
     view: doc::ViewId,
 }
 impl NativeView {
-    pub fn initial() -> ExternalBuffer {
+    pub fn new() -> Rc<Self> {
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let s = store
             .open_utf8("", doc::Profile::default(), false)
@@ -29,12 +29,32 @@ impl NativeView {
                 0,
             )
             .expect("new logical view");
-        ExternalBuffer(Rc::new(Self {
+        Rc::new(Self {
             owner: Rc::new(Owner {
                 store: RefCell::new(store),
                 changed: signal(0),
                 clock: Instant::now(),
             }),
+            view: v.id,
+        })
+    }
+    pub fn buffer(self: &Rc<Self>) -> ExternalBuffer {
+        ExternalBuffer(self.clone())
+    }
+    pub fn sibling(&self) -> Result<Rc<Self>, String> {
+        let mut store = self.owner.store.borrow_mut();
+        let source = store.view(self.view).map_err(err)?;
+        let v = store
+            .open_view(
+                source.doc,
+                doc::ModeTag::Rich,
+                source.selection,
+                source.scroll,
+                source.pixel_bias,
+            )
+            .map_err(err)?;
+        Ok(Rc::new(Self {
+            owner: self.owner.clone(),
             view: v.id,
         }))
     }

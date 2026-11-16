@@ -18,3 +18,5 @@ no event replay or blindly advancing cursors is needed by this UI adapter.
 
 This fork requires actual Windows/IME/clipboard/selection testing. New code is
 not an assertion that all T04, rectangular/multi-caret, IME or rich text passed.
+
+T05/T06 candidate additionally enables rich-editor and changes rich_editor/view/render.rs native sink width from 1px to remaining viewport. Offscreen layout remains active. Rich IME and source/rich integration need their own evidence; the prior source-editor IME PASS is not inherited. Original upstream manifest/source files retained.

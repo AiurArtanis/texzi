@@ -2410,9 +2410,11 @@ name = "texzi-app"
 version = "0.0.1"
 dependencies = [
  "log",
+ "markdown",
  "nsh-base",
  "nsh-core",
  "nsh-platform-windows",
+ "serde_json",
  "texzi-document",
 ]
 

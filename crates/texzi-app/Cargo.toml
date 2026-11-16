@@ -9,8 +9,10 @@ publish = false
 [dependencies]
 log.workspace = true
 texzi-document = { path = "../texzi-document" }
+markdown = "=1.0.0"
+serde_json = "=1.0.154"
 
 [target.'cfg(windows)'.dependencies]
 nsh-core.workspace = true
 nsh-platform-windows.workspace = true
-nsh-base = { path = "../../vendor/nsh-base", default-features = false, features = ["editor"] }
+nsh-base = { path = "../../vendor/nsh-base", default-features = false, features = ["editor", "rich-editor"] }

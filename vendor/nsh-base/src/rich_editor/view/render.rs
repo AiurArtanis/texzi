@@ -1549,6 +1549,10 @@ fn sink(rv: Rv) -> impl IntoElement {
             )
         })
     };
+    let sink_width = {
+        let rv = rv.clone();
+        computed(move || (rv.viewport.get().width - at.get().x).max(px(1.0)))
+    };
     let props = rv.props;
     let (change, composition, key, paste, focus, blur) = (
         rv.clone(),
@@ -1565,7 +1569,7 @@ fn sink(rv: Rv) -> impl IntoElement {
         .absolute()
         .left(move || Length::from(at.get().x))
         .top(move || Length::from(at.get().y))
-        .w(px(1.0))
+        .w(move || sink_width.get())
         .h(px(SINK_HEIGHT))
         .pointer_events(PointerEvents::None)
         .p_0()
