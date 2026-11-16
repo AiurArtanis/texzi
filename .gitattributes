@@ -1,0 +1,2 @@
+# Preserve imported package bytes and its manifest on every platform.
+docs/design-v1/** -text

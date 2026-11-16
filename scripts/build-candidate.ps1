@@ -25,6 +25,16 @@ try {
     Invoke-Checked rustup @('show')
     Invoke-Checked rustc @('-Vv')
     Invoke-Checked cargo @('-V')
+    $manifest = Get-Content docs/design-v1/manifest-sha256.json -Raw | ConvertFrom-Json
+    foreach ($entry in $manifest.files) {
+        $file = Join-Path 'docs/design-v1' $entry.path
+        if (!(Test-Path -LiteralPath $file)) { throw "Missing design file: $file" }
+        if ((Get-Item -LiteralPath $file).Length -ne $entry.bytes -or
+            (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.sha256) {
+            throw "Design manifest mismatch: $file"
+        }
+    }
+    Write-Host "Design manifest: $($manifest.files.Count) entries verified"
     Invoke-Checked cargo @('fmt', '--all', '--', '--check')
     Invoke-Checked cargo @('tree', '--locked', '--target', 'x86_64-pc-windows-msvc', '-e', 'features')
     Write-Host 'Component tests: NOT_RUN (TX-00 adds no testable document logic; native smoke is separate).'
@@ -39,6 +49,9 @@ try {
         $folder = "dist/package/licenses/$($package.name)-$($package.version)"
         New-Item $folder -ItemType Directory -Force | Out-Null
         $root = Split-Path $package.manifest_path -Parent
+        if ($package.license_file) {
+            Copy-Item (Join-Path $root $package.license_file) -Destination $folder
+        }
         Get-ChildItem $root -File | Where-Object { $_.Name -match '^(LICENSE|LICENCE|COPYING|NOTICE|COPYRIGHT)' } | Copy-Item -Destination $folder
         # NSH inherits the repository's root license.
         if ($package.source -like 'git+https://github.com/longbridge/nsh*') {
