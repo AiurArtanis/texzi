@@ -28,7 +28,10 @@ mod app {
 
     #[component]
     pub fn Window() -> impl IntoElement {
-        view().flex_1().child(text("texzi — TX-00 native window"))
+        view()
+            .flex_1()
+            .bg(white())
+            .child(text("texzi — TX-00 native window").text_color(black()))
     }
 
     pub fn run() -> std::process::ExitCode {

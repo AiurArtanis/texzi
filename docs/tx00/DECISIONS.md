@@ -47,6 +47,16 @@ actual rustc-emitted final executable link invocation to contain these paths.
 This is final-link evidence, not tracing of every C compiler/header or loader.
 The latest scope is local development verification; Windows 10 is deferred
 delivery validation NOT_RUN, while historical BLOCKED evidence is preserved.
+
+R3 readability correction: the baseline main content uses an explicit opaque
+white background and black text via the pinned nsh-core prelude's white(),
+black(), bg() and text_color() APIs. This is a fixed content palette, not a
+theme-adaptive editor design. It avoids depending on an unpaired default text
+color against the current surface background, without claiming the upstream
+default-color origin is proven. Keep the existing placeholder text. System
+chrome remains managed by NSH/Windows. No system theme setting is changed;
+other themes/high-contrast modes and other OS versions are not automatically
+validated by this correction.
 Actions are pinned to full commit IDs; Rust is exact. No runtime DLLs are copied
 without a demonstrated need and license review. The MSVC CRT is statically
 linked through the shared .cargo/config.toml target setting; runtime import
