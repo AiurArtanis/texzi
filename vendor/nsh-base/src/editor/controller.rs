@@ -247,6 +247,7 @@ impl Ed {
                         st.buffer.external_epoch = snapshot.view_epoch;
                     }
                 }
+                ed.empty_sink();
                 if text_changed {
                     ed.bump_text();
                     ed.marks_rev.update(|r| *r += 1);
@@ -799,10 +800,11 @@ impl Ed {
             self.schedule_highlight();
             self.show_caret();
             self.restart_blink();
-            let ext = self.st.borrow().buffer.external.clone();
-            if let Some(ext) = ext {
-                ext.0.notify();
-            }
+        }
+        // Also refresh after a version/epoch rejection. Never retry an old plan.
+        let ext = self.st.borrow().buffer.external.clone();
+        if let Some(ext) = ext {
+            ext.0.notify();
         }
     }
 

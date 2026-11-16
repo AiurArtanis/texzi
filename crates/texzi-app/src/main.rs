@@ -30,7 +30,7 @@ mod app {
 
     #[component]
     pub fn Window() -> impl IntoElement {
-        nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#000000","background":"#ffffff"},"dark":{"foreground":"#000000","background":"#ffffff"}}}"##)).expect("fixed content palette"));
+        nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#000000","background":"#ffffff","muted":"#f5f5f5","muted-foreground":"#525252","border":"#d4d4d4","accent":"#e5e5e5","accent-foreground":"#000000","input":"#d4d4d4"},"dark":{"foreground":"#000000","background":"#ffffff","muted":"#f5f5f5","muted-foreground":"#525252","border":"#d4d4d4","accent":"#e5e5e5","accent-foreground":"#000000","input":"#d4d4d4"}}}"##)).expect("fixed content palette"));
         provide_context(crate::editor_owner::NativeView::initial());
         view().flex_1().bg(white()).child(
             nsh_base::editor::editor()
