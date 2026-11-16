@@ -42,7 +42,7 @@ pub fn arm() -> Result<()> {
             ..Default::default()
         };
         if RegisterClassExW(&class) == 0 {
-            return Err(nsh_platform_windows::windows::core::Error::from_win32());
+            return Err(nsh_platform_windows::windows::core::Error::from_thread());
         }
     }
     log::warn!("TX00 startup fixture armed; entering unchanged NSH run_app initialization");
