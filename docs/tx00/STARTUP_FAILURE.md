@@ -15,7 +15,9 @@ failure while arming is a setup error, not accepted as NSH failure evidence.
 
 NSH shows a modal MessageBox. It must be acknowledged before exit. The test
 script matches the exact test PID, class #32770 and title nsh, records the
-dialog, then sends WM_COMMAND/IDOK. It requires nonzero process exit within
+dialog, then clicks its sole enabled visible Button with BM_CLICK, records
+the actual control ID, and observes that the
+dialog closed. It requires nonzero process exit within
 15 seconds after acknowledgement, no residual PID, and both the callback
 marker and NSH diagnostic in stderr. It does not claim automatic unassisted
 exit or treat time waiting at the dialog as a hang.

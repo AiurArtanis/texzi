@@ -27,10 +27,25 @@ using System.Runtime.InteropServices;
 public static class Tx02Dialog {
  delegate bool Visitor(IntPtr hwnd, IntPtr data);
  [DllImport("user32.dll")] static extern bool EnumWindows(Visitor visitor, IntPtr data);
+ [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr hwnd,Visitor visitor,IntPtr data);
  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder text, int size);
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int size);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd,uint message,IntPtr wparam,IntPtr lparam);
+ [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr hwnd);
+ [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr hwnd);
+ [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+ [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+ [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hwnd);
+ public static IntPtr Confirmation(IntPtr dialog) {
+   IntPtr button=IntPtr.Zero; int count=0;
+   EnumChildWindows(dialog,(child,data)=>{
+     var cls=new StringBuilder(256);GetClassName(child,cls,256);
+     if(cls.ToString()=="Button" && IsWindowEnabled(child) && IsWindowVisible(child)) {button=child;count++;}
+     return true;
+   },IntPtr.Zero);
+   return count==1 ? button : IntPtr.Zero;
+ }
  public static IntPtr Find(int expectedPid) {
    IntPtr found=IntPtr.Zero;
    EnumWindows((hwnd, data) => {
@@ -47,7 +62,7 @@ public static class Tx02Dialog {
 '@
 $timer = [Diagnostics.Stopwatch]::StartNew()
 $process = Start-Process $exePath -ArgumentList '--tx00-fail-window-create' -WorkingDirectory $fixtures -PassThru -RedirectStandardOutput (Join-Path $outputRoot 'stdout.log') -RedirectStandardError (Join-Path $outputRoot 'stderr.log')
-$observation = [ordered]@{ pid=$process.Id; modal_seen=$false; modal_dismissal='NOT_DONE'; exit_code=$null; residual=$null; elapsed_ms=$null }
+$observation = [ordered]@{ pid=$process.Id; modal_seen=$false; modal_dismissal='NOT_DONE'; exit_code=$null; residual=$null; elapsed_ms=$null; forced_cleanup=$false }
 try {
     $dialog = [IntPtr]::Zero
     do {
@@ -61,10 +76,24 @@ try {
     $observation.modal_seen = $true
     $observation.modal_hwnd = $dialog.ToInt64()
     $observation.modal_seen_ms = $timer.ElapsedMilliseconds
-    # Explicitly acknowledge this test PID's own NSH MessageBox (IDOK).
+    # Click the sole enabled visible Button in this test PID's NSH MessageBox.
     # This is not a claim that the application exits without interaction.
-    if (![Tx02Dialog]::PostMessage($dialog, 0x0111, [IntPtr]1, [IntPtr]::Zero)) { throw 'Could not acknowledge NSH error dialog' }
-    $observation.modal_dismissal = 'WM_COMMAND IDOK sent to matched NSH dialog for test PID'
+    $button = [Tx02Dialog]::Confirmation($dialog)
+    $buttonDeadline = $timer.Elapsed.TotalSeconds + 5
+    while ($button -eq [IntPtr]::Zero -and $timer.Elapsed.TotalSeconds -lt $buttonDeadline) {
+        Start-Sleep -Milliseconds 100
+        $button = [Tx02Dialog]::Confirmation($dialog)
+    }
+    if ($button -eq [IntPtr]::Zero) { throw 'NSH error dialog has no unique enabled visible confirmation Button' }
+    $observation.dismissal_control_hwnd = $button.ToInt64()
+    $observation.dismissal_control_id = [Tx02Dialog]::GetDlgCtrlID($button)
+    $observation.foreground_request = [Tx02Dialog]::SetForegroundWindow($dialog)
+    if (![Tx02Dialog]::PostMessage($button, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Could not send BM_CLICK to NSH error dialog confirmation control' }
+    $observation.modal_dismissal = 'BM_CLICK sent to sole enabled visible confirmation Button of matched test PID dialog'
+    $dismissDeadline = $timer.Elapsed.TotalSeconds + 5
+    while ([Tx02Dialog]::IsWindow($dialog) -and $timer.Elapsed.TotalSeconds -lt $dismissDeadline) { Start-Sleep -Milliseconds 100 }
+    if ([Tx02Dialog]::IsWindow($dialog)) { throw 'Modal dismissal not observed; no application exit conclusion' }
+    $observation.modal_closed_ms = $timer.ElapsedMilliseconds
     if (!$process.WaitForExit(15000)) { throw 'No process exit within 15s after modal acknowledgement' }
     $observation.exit_code = $process.ExitCode
     $observation.elapsed_ms = $timer.ElapsedMilliseconds
