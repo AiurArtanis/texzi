@@ -44,6 +44,10 @@ try {
     New-Item dist/package/licenses -ItemType Directory -Force | Out-Null
     Copy-Item target/x86_64-pc-windows-msvc/release/texzi-app.exe dist/package/
     Copy-Item LICENSE,docs/tx00/RUN.md dist/package/
+    Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse
+    $sysroot = (& rustc --print sysroot).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot locate Rust runtime licenses' }
+    Copy-Item (Join-Path $sysroot 'share/doc/rust') dist/package/licenses/rust-runtime -Recurse
     $metadata = Get-Content build-evidence/metadata.json -Raw | ConvertFrom-Json
     $sbom = foreach ($package in $metadata.packages) {
         $folder = "dist/package/licenses/$($package.name)-$($package.version)"
@@ -53,6 +57,10 @@ try {
             Copy-Item (Join-Path $root $package.license_file) -Destination $folder
         }
         Get-ChildItem $root -File | Where-Object { $_.Name -match '^(LICENSE|LICENCE|COPYING|NOTICE|COPYRIGHT)' } | Copy-Item -Destination $folder
+        if ($package.name -eq 'mac') {
+            Copy-Item (Join-Path $root 'README.md') $folder
+            Copy-Item LICENSE (Join-Path $folder 'Apache-2.0.txt')
+        }
         # NSH inherits the repository's root license.
         if ($package.source -like 'git+https://github.com/longbridge/nsh*') {
             $repoRoot = Split-Path (Split-Path $root -Parent) -Parent
