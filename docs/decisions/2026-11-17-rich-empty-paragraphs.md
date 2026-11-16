@@ -8,6 +8,8 @@
 
 例如空正文 Enter 产生 `\n\n`（两个空段）；`abc` 段尾 Enter 产生 `abc\n\n`；连续 Enter 再产生 `abc\n\n\n\n`，继续输入甲成为 `abc\n\n\n\n甲`。`abc` 中间 Enter 成为 `a\n\nbc`。富段间 Backspace 使用同一 Owner/Store 事务删除对应分隔符，Undo/Redo 也只有 Store history。
 
+上述为逻辑 LF 坐标示例，不代表强制改为 LF 文件。实际新增换行继续使用 Store 的现有主导 EOL 策略；无现有换行时 Profile 默认 CRLF，所以空文档 Enter 的 `to_utf8()` 字节是 `\r\n\r\n`。原有换行仍保留原 EOL/provenance。测试必须分别断言逻辑正文与序列化字节，不把默认 CRLF 当产品错误。
+
 本次只允许明确的顶层单行块/块间分隔符操作。已有块内部多行与 opaque 多行的换行身份不明时仍拒绝，作为剩余功能缺口而非支持结论。嵌套列表/表格/代码块及 Shift+Enter、复杂多选、重复文本映射仍须逐项验证。普通 Markdown 阅读器可能合并多个空行，这是格式自身语义；本程序的空段投影规则明确记录，不靠隐藏 HTML 或私有控制字符写正文。
 
 受影响文件为 rich_projection/rich_owner；NSH、文档内核、依赖版本及文件 IO 不变。旧 18cc55e 已接受范围及历史失败保留，新的程序必须绑定新 commit/run/hash 和新实际证据。

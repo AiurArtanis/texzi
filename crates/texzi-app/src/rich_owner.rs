@@ -427,6 +427,13 @@ mod tests {
                 ("甲😀乙", 4, "甲😀\n\n乙"),
             ] {
                 let source = NativeView::fixture(raw);
+                // Newly inserted separators use Store's existing EOL policy;
+                // a document without any EOL defaults to Windows CRLF.
+                let expected = if raw.contains('\n') {
+                    expected.to_owned()
+                } else {
+                    expected.replace('\n', "\r\n")
+                };
                 let owner =
                     RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
                 select(&owner, pos);
@@ -455,12 +462,12 @@ mod tests {
             select(&owner, 4);
             split(&owner);
             split(&owner);
-            assert_eq!(bytes(&source), b"abc\n\n\n\n");
+            assert_eq!(bytes(&source), b"abc\r\n\r\n\r\n\r\n");
             let mut tr = owner.session.state().tr();
             tr.insert_text("甲", None, None);
             owner.session.dispatch(tr).unwrap();
             assert!(owner.status.get().is_empty(), "{}", owner.status.get());
-            assert_eq!(bytes(&source), "abc\n\n\n\n甲".as_bytes());
+            assert_eq!(bytes(&source), "abc\r\n\r\n\r\n\r\n甲".as_bytes());
             // Join the last paragraph into its empty predecessor, then abc.
             select(&owner, 8);
             let state = owner.session.state();
@@ -470,7 +477,7 @@ mod tests {
                 Some(&mut dispatch)
             ));
             assert!(owner.status.get().is_empty(), "{}", owner.status.get());
-            assert_eq!(bytes(&source), "abc\n\n甲".as_bytes());
+            assert_eq!(bytes(&source), "abc\r\n\r\n甲".as_bytes());
             select(&owner, 6);
             let state = owner.session.state();
             assert!(nsh_base::rich_editor::commands::join_backward(
