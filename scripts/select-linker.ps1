@@ -22,4 +22,6 @@ $linkerFile = Get-Item $effectiveLinker
     sdk=$sdkVersion; explicit_libpaths=$selectedLibs; lib_environment=$env:LIB; rustflags=$flags;
     boundary='Requested final-link selection; effective proof is final-app-link-command.txt plus successful cargo build. Does not trace every C compiler/header or OS loader.'
 } | ConvertTo-Json -Depth 5 | Set-Content build-evidence/effective-toolchain-config.json
-Invoke-Checked $effectiveLinker @('/?')
+# link.exe /? returns 1100 rather than success on this MSVC version.
+# Use the actual selected file's version resource/hash, then verify its
+# invocation in the successful build; do not weaken native exit handling.
