@@ -1,3 +1,5 @@
+<img src="assets/branding/satin-z/icon-512.png" alt="texzi Satin Z project logo" width="128" height="128">
+
 # texzi
 
 Windows native text and Markdown editor built with Rust and NSH.
@@ -46,3 +48,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the review, testing and merge policy.
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
 Third-party components retain their own licenses and attribution notices.
+For the Satin Z project logo's source and rights status, see
+[branding provenance](assets/branding/satin-z/README.md).
