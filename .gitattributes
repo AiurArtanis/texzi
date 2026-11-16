@@ -1,2 +1,4 @@
 # Preserve imported package bytes and its manifest on every platform.
 docs/design-v1/** -text
+# Frozen Unicode component corpus: do not change bytes on Windows checkout.
+crates/texzi-document/tests/fixtures/** -text

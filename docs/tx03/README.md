@@ -11,8 +11,9 @@
   surrogate 中间和旧 revision；不规范化 Unicode。
 - `unicode-segmentation =1.13.3`，UAX29 扩展 grapheme/Unicode 17.0.0。
   本地边界检查经 GraphemeCursor 处理 Rope chunk/pre-context。
-  全局 grapheme ordinal 使用显式 `GraphemeIndex`，每快照一次线性构建，可重复查表；
-  它不是逐键/UI hit-test 默认入口。跨编辑增量全局 ordinal 索引、超长行 UI 降级尚未实现。
+  全局 grapheme ordinal 使用显式 `GraphemeIndex`，逐完整逻辑行物化并分段，每快照一次线性构建，可重复查表；
+  LF的UAX29控制边界令各逻辑行上下文独立，长RI/ZWJ/InCB不会被Rope chunk切断。
+  它不是逐键/UI hit-test 默认入口。极长单行会分配该行临时字符串；跨编辑增量全局 ordinal 索引、超长行 UI 降级尚未实现。
 - 正文与 EOL 是持久化 Rope；来源是独立不可变 AVL span 索引，按逻辑 UTF-8 字节计长。
   原始跨度每叶约 1024 raw bytes（不切 scalar/CRLF）；拆分只扫本叶。
   编辑只复制受影响路径；未改原始跨度保留 Arc 源及 raw range，Undo 恢复旧树。

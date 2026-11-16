@@ -1,5 +1,5 @@
 use crate::{Body, DocId, Error, Revision, Snapshot};
-use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
+use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete, UnicodeSegmentation};
 
 macro_rules! coordinate {
     ($name:ident) => {
@@ -96,23 +96,18 @@ pub struct GraphemeIndex {
 impl GraphemeIndex {
     pub fn new(s: &Snapshot) -> Self {
         let r = s.body.source();
-        let mut cursor = GraphemeCursor::new(0, r.len_bytes(), true);
-        let mut bytes = vec![0];
-        let (mut chunk, mut start, _, _) = r.chunk_at_byte(0);
-        loop {
-            match cursor.next_boundary(chunk, start) {
-                Ok(Some(n)) => bytes.push(n),
-                Ok(None) => break,
-                Err(GraphemeIncomplete::NextChunk) => {
-                    (chunk, start, _, _) = r.chunk_at_byte(start + chunk.len());
-                }
-                Err(GraphemeIncomplete::PreContext(n)) => {
-                    let (c, b, _, _) = r.chunk_at_byte(n - 1);
-                    cursor.provide_context(&c[..n - b], b);
-                }
-                other => panic!("unexpected validated rope boundary: {other:?}"),
-            }
+        let mut bytes = Vec::new();
+        let mut base = 0;
+        // Canonical LF is a UAX29 control boundary on both sides. A complete
+        // logical line therefore has all required context, including arbitrary
+        // RI/ZWJ/InCB runs. This explicit batch operation materializes one line,
+        // not one complete document per edit. Local validation remains chunked.
+        for line in r.lines() {
+            let text = line.to_string();
+            bytes.extend(text.grapheme_indices(true).map(|(i, _)| base + i));
+            base += line.len_bytes();
         }
+        bytes.push(r.len_bytes());
         Self {
             doc: s.doc,
             revision: s.revision,

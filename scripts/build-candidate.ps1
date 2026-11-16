@@ -49,7 +49,13 @@ try {
     # Preserve the entire raw stream; parse only JSON records, retaining strict JSON errors.
     $testExecutables = @(Get-Content build-evidence/document-test-build.jsonl | Where-Object { $_.StartsWith('{') } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'contracts' -and $_.executable } | Select-Object -ExpandProperty executable)
     if ($testExecutables.Count -ne 1) { throw 'Expected exactly one document contracts test executable' }
-    Invoke-Checked $testExecutables[0] @('--include-ignored', '--nocapture', '--test-threads=1')
+    try {
+        Invoke-Checked $testExecutables[0] @('--include-ignored', '--nocapture', '--test-threads=1')
+    } catch {
+        # Keep a failed component executable only with failure evidence, never as a successful candidate.
+        Copy-Item $testExecutables[0] build-evidence/failed-document-contracts.exe
+        throw
+    }
     Invoke-Checked cargo @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc')
     $buildResult = Get-ChildItem build-evidence -Filter '*.result.json' | ForEach-Object { Get-Content $_ -Raw | ConvertFrom-Json } |
         Where-Object { $_.program -eq 'cargo' -and $_.arguments[0] -eq 'build' }
