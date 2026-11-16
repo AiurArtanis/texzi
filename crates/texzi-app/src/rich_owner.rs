@@ -614,6 +614,53 @@ mod tests {
             assert_eq!(bytes(&source), raw.replacen("[ ]", "[x]", 1).as_bytes());
         });
     }
+    #[test]
+    fn uncheck_task_prefix_does_not_match_lowercase_marker_in_body() {
+        run(|| {
+            for marker in ["X", "x"] {
+                let raw = format!("+ [{marker}] apple [x]\r\n");
+                let source = NativeView::fixture(&raw);
+                let owner =
+                    RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+                owner.activate().unwrap();
+                let state = owner.session.state();
+                let mut at = None;
+                state.doc().descendants(&mut |n, p, _, _| {
+                    if at.is_none() && n.ty().name() == "taskItem" {
+                        at = Some(p);
+                    }
+                    true
+                });
+                let mut tr = state.tr();
+                tr.set_node_attribute(at.unwrap(), "checked", serde_json::json!(false))
+                    .unwrap();
+                owner.session.dispatch(tr).unwrap();
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                let expected = "+ [ ] apple [x]\r\n";
+                assert_eq!(bytes(&source), expected.as_bytes());
+                owner.history(true);
+                assert_eq!(bytes(&source), raw.as_bytes());
+                owner.history(false);
+                assert_eq!(bytes(&source), expected.as_bytes());
+                let before = source.inspect(|s, id| {
+                    let p = s.snapshot(s.view(id).unwrap().doc).unwrap();
+                    (p.revision, p.token, s.history_depth(p.doc).unwrap())
+                });
+                let mut tr = owner.session.state().tr();
+                tr.set_node_attribute(at.unwrap(), "checked", serde_json::json!(false))
+                    .unwrap();
+                owner.session.dispatch(tr).unwrap();
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(
+                    before,
+                    source.inspect(|s, id| {
+                        let p = s.snapshot(s.view(id).unwrap().doc).unwrap();
+                        (p.revision, p.token, s.history_depth(p.doc).unwrap())
+                    })
+                );
+            }
+        });
+    }
     fn select(owner: &RichOwner, pos: usize) {
         let state = owner.session.state();
         let mut tr = state.tr();

@@ -718,12 +718,38 @@ fn task_toggle_patch(
         return Err("任务标记源状态不一致，原文未变".into());
     }
     let line = raw[start..].split('\n').next().unwrap_or("");
-    let marker = if old {
-        line.find("[x]").or_else(|| line.find("[X]"))
-    } else {
-        line.find("[ ]")
+    // Bind the marker to the actual list prefix; never search the item's text.
+    let bullet = line.trim_start_matches(|c| c == ' ' || c == '\t');
+    if !bullet
+        .as_bytes()
+        .first()
+        .is_some_and(|b| matches!(*b, b'-' | b'+' | b'*'))
+    {
+        return Err("任务列表前缀不可映射，原文未变".into());
     }
-    .ok_or("任务标记源语法不可映射，原文未变")?;
+    let spacing = &bullet[1..];
+    if !spacing
+        .as_bytes()
+        .first()
+        .is_some_and(|b| *b == b' ' || *b == b'\t')
+    {
+        return Err("任务列表间隔不可映射，原文未变".into());
+    }
+    let task = spacing.trim_start_matches(|c| c == ' ' || c == '\t');
+    let matches = if old {
+        task.starts_with("[x]") || task.starts_with("[X]")
+    } else {
+        task.starts_with("[ ]")
+    };
+    if !matches
+        || !task
+            .as_bytes()
+            .get(3)
+            .is_none_or(|b| *b == b' ' || *b == b'\t')
+    {
+        return Err("任务标记源语法不可映射，原文未变".into());
+    }
+    let marker = line.len() - task.len();
     let at = b.source.start + start + marker + 1;
     Ok(Some((at..at + 1, if new { "x" } else { " " }.into())))
 }
