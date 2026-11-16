@@ -482,6 +482,27 @@ mod tests {
         });
     }
     #[test]
+    fn leading_empty_join_and_middle_empty_insert_use_one_separator_pair() {
+        run(|| {
+            let source = NativeView::fixture("\n\nabc");
+            let owner = RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+            select(&owner, 3);
+            let state = owner.session.state();
+            let mut dispatch = |tr| owner.session.dispatch(tr).unwrap();
+            assert!(nsh_base::rich_editor::commands::join_backward(
+                &state,
+                Some(&mut dispatch)
+            ));
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            assert_eq!(bytes(&source), b"abc");
+            let source = NativeView::fixture("abc\n\ndef");
+            let owner = RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+            select(&owner, 4);
+            split(&owner);
+            assert_eq!(bytes(&source), b"abc\n\n\n\ndef");
+        });
+    }
+    #[test]
     fn owner_opaque_single_letter_preserves_mixed_eols_origins_and_undo() {
         run(|| {
             let raw = "<custom>\r\nalpha\nbeta\r\n</custom>\n";

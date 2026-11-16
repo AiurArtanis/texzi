@@ -304,7 +304,7 @@ impl Projection {
             .get(first)
             .map(|b| b.source.start)
             .unwrap_or(self.source.len());
-        let end = if old_end > first {
+        let mut end = if old_end > first {
             self.blocks[old_end - 1].source.end
         } else {
             start
@@ -314,6 +314,16 @@ impl Projection {
             let previous = self.blocks[first - 1].source.end;
             if start >= previous + 2 && &self.source[start - 2..start] == "\n\n" {
                 start -= 2;
+            }
+        }
+        if new_end == first && old_end > first && start == end && first == 0 {
+            let following = self
+                .blocks
+                .get(old_end)
+                .map(|b| b.source.start)
+                .unwrap_or(self.source.len());
+            if following >= end + 2 && &self.source[end..end + 2] == "\n\n" {
+                end += 2;
             }
         }
         if self.source[start..end]
@@ -337,7 +347,7 @@ impl Projection {
         if self.source[start..end].contains("\r\n") {
             text = text.replace('\n', "\r\n");
         }
-        if old_end == first && first > 0 {
+        if old_end == first && first > 0 && first == self.blocks.len() {
             text = format!("\n\n{text}");
         }
         if old_end == first && first < self.blocks.len() {
