@@ -21,7 +21,9 @@ impl Receipt {
             if p.offset < d.range.start {
                 break;
             }
-            if p.offset <= d.range.end {
+            // A deletion's right endpoint is outside its half-open interval.
+            // Continue so an adjacent insertion at that endpoint can honor affinity.
+            if p.offset < d.range.end {
                 let start = d
                     .range
                     .start
@@ -36,6 +38,9 @@ impl Receipt {
                             0
                         },
                 ));
+            }
+            if p.offset == d.range.start && affinity == Affinity::Before {
+                continue;
             }
             shift += d.text.len() as isize - (d.range.end - d.range.start) as isize;
         }

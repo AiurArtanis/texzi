@@ -262,6 +262,34 @@ fn multi_edit_forward_inverse_and_independent_anchors() {
 }
 
 #[test]
+fn adjacent_patch_endpoints_respect_half_open_ranges() {
+    let (mut st, s) = store("abcdef");
+    let r = st
+        .submit(Transaction {
+            doc: s.doc,
+            base: s.revision,
+            edits: vec![Edit::input(&s, 1..3, "X"), Edit::input(&s, 3..3, "YZ")],
+            boundary: BoundaryPolicy::Grapheme,
+            cancelled: false,
+        })
+        .unwrap();
+    assert_eq!(r.snapshot.body.source().to_string(), "aXYZdef");
+    let p = SourceByte::at(&s, 3);
+    assert_eq!(r.map_anchor(p, Affinity::Before).unwrap().offset, 2);
+    assert_eq!(r.map_anchor(p, Affinity::After).unwrap().offset, 4);
+    assert_eq!(
+        r.map_anchor(SourceByte::at(&s, 6), Affinity::Before)
+            .unwrap()
+            .offset,
+        7
+    );
+    assert_eq!(
+        st.undo(s.doc).unwrap().snapshot.body.to_utf8(),
+        s.body.to_utf8()
+    );
+}
+
+#[test]
 fn saved_token_during_edit_and_undo_aba() {
     let (mut st, s) = store("abc");
     assert!(!st.backed_by_disk(s.doc).unwrap());
