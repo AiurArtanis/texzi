@@ -423,6 +423,28 @@ fn resume_overflow_marks_cache_stale_without_advancing_watermark() {
     assert!(!fresh.is_stale());
 }
 #[test]
+fn expired_resume_cursor_requires_new_observe_and_keeps_complete_state() {
+    let (mut s, d, a, _) = setup(ObserverLimits {
+        journal_batches: 0,
+        max_queue_batches: 4,
+        max_subscriptions: 4,
+    });
+    let (snapshot, h) = observe(&mut s, d.doc, vec![a.id], 4);
+    let mut c = installed(snapshot.clone());
+    let before = c.state().unwrap().clone();
+    s.unsubscribe(&h).unwrap();
+    edit(&mut s, d.doc, "x");
+    let rejection = s
+        .resume(d.doc, snapshot.cursor.scope.clone(), &snapshot.cursor, 4)
+        .unwrap_err();
+    assert!(matches!(rejection, ObserverError::CursorTooOld { .. }));
+    c.resume_rejected(&rejection).unwrap();
+    assert!(c.is_stale());
+    assert_eq!(c.cursor(), &snapshot.cursor);
+    assert_eq!(c.state().unwrap(), &before);
+    assert_eq!(c.cursor_for_resume(), Err(ObserverError::NeedsObserve));
+}
+#[test]
 fn closed_view_tombstone_document_gone_and_new_store_epoch() {
     let (mut s, d, a, _) = setup(ObserverLimits::default());
     let (snapshot, h) = observe(&mut s, d.doc, vec![a.id], 8);

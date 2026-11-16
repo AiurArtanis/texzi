@@ -259,6 +259,10 @@ def zero_log_and_close(w):
     w.edit("Y")
     w.ok("obs_unsubscribe", handle="r")
     w.fail("obs_resume_raw", "CursorTooOld", doc="d", views=["a"], cursor=c["cursor"], handle="old", capacity=8)
+    w.fail("obs_resume", "CursorTooOld", doc="d", views=["a"], cache="c", handle="expired-cache", capacity=8)
+    expired = w.cs("c")
+    assert expired["stale"] and expired["cursor"] == c["cursor"] and expired["state"] == c["state"]
+    w.fail("obs_cache_resume_cursor", "NeedsObserve", cache="c")
     w.observe("s2")
     w.cache("c2", "s2")
     current = w.ok("state", doc="d")

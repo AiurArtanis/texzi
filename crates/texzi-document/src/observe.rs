@@ -812,7 +812,11 @@ impl ObserverCache {
         }
         if matches!(
             error,
-            ObserverError::Lagged(_) | ObserverError::WrongStore | ObserverError::DocGone
+            ObserverError::Lagged(_)
+                | ObserverError::CursorTooOld { .. }
+                | ObserverError::CursorAhead
+                | ObserverError::WrongStore
+                | ObserverError::DocGone
         ) {
             self.stale = true;
             self.pending = None;
