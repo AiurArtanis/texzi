@@ -183,6 +183,85 @@ R1/S1、dirty=true，即使屏幕文字相同。Undo 为R2/S0、dirty=false，EO
 取消目标选择不创建SaveOp、不写盘。独立删除再输入同字节不自动变成saved token，
 但Undo回保存节点必须clean；若要改变此token语义，必须先审改契约与预期。
 
+## EX-13：初次观察与内容提交交错（C02/C07/C08）
+
+下文observe均指原子的 `observe_and_subscribe`，last_complete均指
+`last_complete_cursor`；W/C为完整批次水位，g为SubscriptionId。所有未列出的域也必须包含在
+ObserverSnapshot中；不能用简写表格省掉实际接口应返回的baseline/save/history/View状态。
+
+服务器D13在W20：R10/S10=`abc`，baseline=S9，dirty=true，H1/redo0，
+save=Idle、attention无冲突/不确定、needs_target=false，scope View V1 caret3。
+
+| 顺序 | 一致观察返回 / 流 | 消费后的确定结果 |
+|---|---|---|
+| observe先于输入提交线性化 | snapshot水位20，完整状态如上；g1已原子注册从21开始 | 一次安装全部域，last_complete=20 |
+| 随后V1插入`!`，发布完整B21，发生在observe返回值传输期间也同样 | g1必须交付B21，含R11/S11=`abc!`、H2、caret4等变化 | 安装snapshot20后整批应用21，last_complete=21，不漏插入 |
+| 反过来，输入先发布B21再observe | snapshot水位21已含`abc!`、H2、caret4；g2从22开始 | 不再把21的delta应用一遍，不能得到`abc!!` |
+
+不允许取得snapshot20之后另取最新游标21，再注册22；这种组合正是会漏B21的非法接口。
+若B21早于snapshot安装到达，先暂存；若期间队列溢出则按EX-16重同步，不在旧缓存上套它。
+
+## EX-14：同revision保存变化与重连/实时衔接（C08/C10/C12）
+
+D14客户端已有完整缓存C30：R10/S10=`abc`、baseline=S9、dirty=true，
+active O1捕获S10且正在Verifying，H1/can_undo=true、redo0，V1 caret1。
+订阅连接中断，但发布端继续发布以下批次；保存结果不修改正文revision。
+
+| 批次/步骤 | 服务器变化 | 恢复要求 |
+|---|---|---|
+| B31 | O1成功：baseline=S10、dirty=false、active=None/终态Succeeded、指纹更新；R10/S10不变 | baseline/dirty/save等作为一个完整批次，不能只看到成功而仍留旧baseline |
+| B32 | 历史预算裁剪后H0、can_undo=false；R10/S10不变 | history可用性也是被恢复域，不从正文revision猜它没变 |
+| resume(C30)在head32线性化，日志31/32完整 | 新g3原子接好重放31/32与实时33起 | 从完整缓存30开始，按31→32应用，last_complete=32；不是从32直接开始 |
+| resume返回途中发布B33 | V1 caret变2/ViewEpoch前进；R10/S10仍不变 | g3排在重放后交付33，最终caret2、last_complete=33，无交接空隙 |
+
+最终缓存R10/S10、baseline=S10、dirty=false、H0、save成功终态、V1 caret2，
+各字段对应同一完整前缀。不能以“revision没变”跳过31/32/33。
+
+Rusty反例的初订阅变体：observe若在状态30、B31之前线性化，返回包含旧baseline的snapshot30
+和已注册g4，B31必进入g4；若在B31之后、B32之前线性化，返回的ObserverSnapshot31本身就含
+新baseline/Succeeded/dirty=false，g5从32起。两种顺序均不需要、也不允许另取最新游标。
+
+## EX-15：半批次、重复投递与旧句柄（C08）
+
+客户端g6已完整安装C40：R4/S4正文`a`、baseline=S4/dirty=false、H0/redo0、
+can_undo=false、save=Idle/attention无异常，scope只消费V1，caret1。
+B41含内容追加`x`及相关View/history/dirty子事件：目标为R5/S5=`ax`、baseline仍S4、
+dirty=true、H1/can_undo=true、V1 caret2，其余域不变；后有完整批次结束标志。
+这些不是可独立提交的观察状态。
+
+| 输入 | 预期缓存 / 游标 |
+|---|---|
+| 只收到41的内容部分，没有BatchEnd | 暂存，不公开`ax`，仍完整C40状态；last_complete仍40 |
+| 收齐41各部分及结束，验证成功 | 一次换为上述完整R5/S5、`ax`、H1、dirty=true、caret2状态，last_complete=41 |
+| 同g再次投递完整41 | 整批忽略，不重复append，正文仍`ax`，不是`axx` |
+| 同一待完成批次的同身份分片重传 | 去重；发现同序号内容/边界冲突则协议错误并重同步，不挑一个继续 |
+| B42仅修改未被scope消费的V2选区 | scope仍接收42的空投影完整批次标记；数据不变、last_complete=42，不误报缺号 |
+
+若随后observe得到新g7/snapshot45，旧g6即使晚到seq46（大于45）也不能应用。
+必须按SubscriptionId拒绝g6，不能仅用“seq大于当前”判断可接受。
+新scope若增加V2，旧scope的cursor42不能resume；必须重新observe补齐V2状态及新身份。
+
+## EX-16：旧游标与恢复后再次Lagged（C08）
+
+客户端断线缓存C50：R10/S10=`abc`，baseline=S9、dirty=true，O1捕获S10且Verifying，
+H3、V1 caret0。服务器51–54只改变视图等状态；至head54时V1 caret2，正文revision仍10。
+有界重放日志最早保留L52；本例订阅待消费队列容量为1个完整批次，仅用于推演溢出，
+不是冻结产品预算或声称已实现队列。
+
+| 步骤 | 必须发生的动作及确定结果 |
+|---|---|
+| resume(cursor50)，head54/L52 | 所需51已丢，返回CursorTooOld；不把cursor改为51/54继续，不因R10相同跳过View状态 |
+| 重新observe，g8/snapshot54 | 一次装入完整R10/S10、baselineS9/dirtytrue、O1 Verifying、H3、caret2；last_complete=54，g8从55起 |
+| 先B55保存成功，再B56 caret3；消费者尚未读55 | 容量1不足，g8报告Lagged；不能只接56或先半改baseline；本地完整游标仍54，缓存标stale |
+| 丢弃g8未完成/暂存批次，再observe | g9/snapshot56一次包含baselineS10/dirtyfalse、O1完成、H3、caret3，R10仍不变；装完后last_complete=56 |
+| 旧g8迟到55/56 | 按旧SubscriptionId全部忽略，不能覆盖g9状态 |
+| g9收到下一完整B57：追加`!` | 一次成为R11/S11=`abc!`、baselineS10/dirtytrue、H4、caret4，last_complete=57 |
+
+第二次Lagged不能答“已经取过快照，直接到最新”。若g8在snapshot54安装前已明确Lagged，
+不将该快照装成当前同步状态，直接重新observe；若已安装则如表保留stale显示后整体替换。
+再发生溢出就再次完整恢复；无法赶上时保持明确stale，不承诺必然在有限轮数追上，
+也不丢已接受的正文事务来制造追上。
+
 ## 要求到示例的映射
 
 | 固定要求 | 契约 | 示例 / 既有设计验收关联 |
@@ -195,6 +274,8 @@ R1/S1、dirty=true，即使屏幕文字相同。Undo 为R2/S0、dirty=false，EO
 | saved token/异步保存 | C10/C11/C12 | EX-04/10/11/12；AC-036/078/082 |
 | 模式0事务/0undo/dirty不变 | C06 | EX-03/09；AC-049/065 |
 | 旧任务/ABA拒绝 | C13 | EX-05/09/11；T01/T16 |
+| 一致观察/订阅/恢复与同revision状态 | C02/C07/C08 | EX-13/14；R4初订阅/重连竞态 |
+| 完整批次、去重、旧游标/再次溢出 | C08 | EX-15/16；R4恢复安全性 |
 
 仅Unicode长度和混合EOL示例的算术可以用静态脚本核对；
 其余行为留待契约审查、后续实现和独立测试，不用文档表格的“预期”填产品PASS。

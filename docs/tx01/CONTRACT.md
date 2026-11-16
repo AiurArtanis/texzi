@@ -19,6 +19,8 @@ Win32/TSF、源码编辑器、富编辑器、IO 工作线程都只投递意图�
 | TxnId / HistoryGroupId | 内容提交身份 / 可撤销组身份；一次 Undo 可以包含多次已合并输入事务 |
 | SaveOpId / TargetKey / BindingEpoch | 保存操作、目的文件协调键、文档磁盘绑定代次；与内容 revision 分离 |
 | ViewEpoch / JobId | 视图请求代次 / 异步工作身份；取消或新请求可递增代次，不产生正文事务 |
+| StoreEpoch / EventSeq | 本次Store生命周期身份 / 每DocId完整发布批次的序号（水位），不是内容revision |
+| ObserverScope / SubscriptionId | 被消费状态域及schema身份 / 一次订阅身份；重订阅换新身份，不能只比较整数序号 |
 
 DocId/ViewId 的位宽和生成器不在此冻结，但禁止将这些类型互换或跨 DocId 比较 revision。
 计数器溢出必须返回明确错误/停止接受相应提交，不允许绕回导致旧任务重新有效。
@@ -30,6 +32,9 @@ UTF-8 逻辑原文、EOL 表、编码/BOM/profile 版本、不可变 provenance 
 逻辑文本中的换行为 LF，Markdown 标记、空白、未知语法均是原文的一部分。
 快照持有不可变持久化数据；后台任务不能写回它，前台不要求每键复制全篇字符串。
 输出策略须解析进捕获快照；后来的全局设置变化不能改变已经接受的保存操作。
+DocumentSnapshot 是后台内容任务的输入，不是事件恢复凭据：它不携带可独立拼接的
+“最新游标”。UI/状态观察者必须使用 C08 的 ObserverSnapshot 与订阅协议，
+不能从正文 snapshot 的 revision 推算 EventSeq 或补读最新游标来跳过中间事件。
 
 StateToken 的序列化语义覆盖逻辑原文、逐换行类型、编码/BOM 和明确的输出策略。
 纯来源索引重排、缓存更新、文件指纹刷新不创建 token；若来源差异会改变输出字节，
@@ -127,7 +132,8 @@ submit(EditTxn{doc, base_revision, origin, boundary_policy,
                selection_before/after, kind, history_group})
     -> CommitReceipt | TxnError
 undo(doc, invoking_view) / redo(doc, invoking_view) -> CommitReceipt | Error
-subscribe(doc, after_event_seq) -> ordered DocEvents | Lagged
+observe_and_subscribe(doc, scope) -> {ObserverSnapshot, SubscriptionHandle}
+resume(doc, scope, cached_complete_cursor) -> SubscriptionHandle | CursorError
 ```
 
 **C07 全部验证、一次发布。** 编辑范围均以同一 base_revision 为坐标基准。
@@ -139,9 +145,10 @@ subscribe(doc, after_event_seq) -> ordered DocEvents | Lagged
 
 1. 校验存活 DocId、origin 的 View/服务身份、当前 base_revision、取消状态与能力。
 2. 校验全部坐标、边界策略、文本/EOL/provenance 一致性和完整 selection 计划。
-3. 在未发布候选上准备正/逆 delta、history、全部视图锚点映射、事件批次和资源。
+3. 在未发布候选上准备正/逆 delta、history、全部视图锚点映射、完整事件批次和资源。
 4. 发布前再次确认取消/代次；原子交换完整 DocumentState、history 与关联映射，
-   revision 前进一次、生成/恢复正确 token。内存分配/验证失败不发布。
+   revision 前进一次、生成/恢复正确 token，并一并发布 C08 的完整批次及结束水位。
+   不允许观察到新状态却拿到旧水位，或批次可取但对应状态尚未发布。内存分配/验证失败不发布。
 5. 发布 CommitReceipt 和有序事件，然后调度派生任务。不能在订阅回调中重入写者；
    新意图重新排队，不依赖多个 mutex 的偶然获取顺序。
 
@@ -154,12 +161,100 @@ token/history/已发布选区，不发送成功 ContentCommitted。只记录拒�
 重新检索/确认对应结果，不重复提交旧 patch。全状态无变化的 NoOp 不加 revision、
 token 或 undo；此规则不把不同序列化元数据变化误判为空操作。
 
-**C08 事件可区分。** 每 DocId 的 EventSeq 单调有序。ContentCommitted 包含
-prev/new revision、TxnId、token、增量、history/dirty 变化和对应视图映射。
-SavedBaselineChanged/SaveStatusChanged 不自带文本 delta，不增加内容 revision；
-ViewChanged/ModeChanged 使用视图事件，不制造内容事务。
-订阅方检测重复序号并忽略；发现缺口/Lagged 必须拉取新快照，不能在漏 delta 后继续套用。
-提交点是内存权威状态的一次发布，不保证多个 HWND 同一物理时刻绘制，也不等于磁盘持久化。
+**C08 一致观察、完整批次和恢复。** 同一写者协调正文、history、baseline/save attention
+和逻辑 ViewState 的发布。EventSeq 是每 `(StoreEpoch,DocId)` 的**完整发布批次**序号，
+初始水位0；一次发布可含多个有序子事件，只分配一个新的 EventSeq。
+子事件序号/传输分片序号不是可恢复游标，不能在批次中间暴露半个新状态。
+
+ContentCommitted 包含 prev/new revision、TxnId、token、增量、history/dirty 变化及视图映射。
+SavedBaselineChanged/SaveStatusChanged、attention/history可用性变化同样形成批次，
+即使内容revision不变也推进EventSeq。ViewChanged/ModeChanged是非内容子事件，
+在同一DocId发布序列中出现，但不制造文本事务、内容revision或Undo增量。
+例如保存成功同次更新baseline、dirty、save状态、指纹/绑定，必须在一个完整批次可见。
+
+### C08.1 观察状态与水位
+
+ObserverScope固定为 `DocGlobal + 显式ViewId集合 + observer_schema_version`。
+以下发布端/服务器与客户端均是本机DocumentStore及观察者的逻辑角色，不新增网络或远程能力。
+同一订阅消费的所有域使用**一个**水位，不另建相互无一致性关系的内容/保存/视图游标。
+若只投递scope内字段，仍须对其它View的发布投递同序号的空投影批次，避免把过滤误判为缺口。
+增减View集合或schema改变必须重新observe；不能用旧scope游标恢复新scope。
+
+ObserverSnapshot是一个不可变一致观察对象：
+
+| 必含状态域 | 返回值与恢复含义 |
+|---|---|
+| 正文 | 同一发布点的DocumentSnapshot引用：DocId、Revision、StateToken、source/EOL/编码/来源等 |
+| 保存基线 | 完整clean_baseline token/种类、backed_by_disk、dirty，不能只返回正文token再猜dirty |
+| 文件与attention | needs_target、磁盘绑定/BindingEpoch、已知指纹、冲突状态、save_outcome_unknown及可显示错误状态 |
+| 保存操作 | active SaveOpId或None、捕获revision/token/target、阶段、取消是否仍可接受、终态/错误；未完成不能恢复成成功 |
+| history可用性 | can_undo/can_redo、undo/redo组数、合并边界的可观察状态；不是把整条历史或正文日志复制到UI |
+| scope中的View | mode、selection/主选区、scroll锚点+bias、fold、逻辑focus/活动标记、composition/preedit、ViewEpoch、pending mode请求/错误或Closed墓碑；平台HWND/TSF指针不在此恢复 |
+| 一致性身份 | Cursor=`(StoreEpoch,DocId,scope/schema身份,EventSeq=W)`，以及本次SubscriptionId |
+
+快照水位W表示**该scope的观察状态已包含至W的所有完整批次效果**，不代表
+“客户端已经收到第W条传输消息”。状态可以R10不变而W增长，不能以revision代替W。
+快照中的baseline可对应旧内容token，这是同一观察点的合法dirty状态，不要求baseline=current。
+
+### C08.2 初订阅、重连与原子注册
+
+`observe_and_subscribe`在同一个写者线性化点完成：
+
+1. 确定最后完成批次W，取得该点所有上述状态域的不可变一致快照。
+2. **在允许下一个发布前**注册同scope、全新SubscriptionId的后续流，从W+1开始。
+3. 将快照和句柄作为一对返回；不允许在两个独立调用中先读内容、后取“当前最新游标”。
+
+观察/注册自身不改正文/dirty/history，也不推进文档EventSeq。这里冻结的是接口
+线性化语义，不指定mutex/队列的具体实现，不要求复制整篇source。
+若内容或保存发布先于该点，它已包含在快照中；若晚于该点，它必须进后续流。
+即使发布发生在返回值传输/客户端安装快照期间，也不能漏在两者之间。
+
+客户端先将快照的全部被消费域一次替换其观察缓存、记录本地last_complete_cursor=W，
+再处理该句柄后续批次。安装前到达的批次只暂存，不在旧缓存上提前套delta。
+不得只替换正文而保留旧baseline/save/history/View状态。只读后台DocumentSnapshot
+不满足此恢复操作，不能拿它加一个另取的游标冒充ObserverSnapshot。
+
+有完整本地缓存且与某cursor严格相符时，可调用 `resume`；没有该缓存就必须observe。
+若缓存曾持久化，状态与cursor必须同次成功持久化；只有cursor或半批次缓存不具备resume资格。
+resume在同一写者点验证Store/Doc/scope/schema、游标处于完整批次边界，令当前水位为H：
+若所需C+1..H全部在有界重放日志内，原子注册全新SubscriptionId，先按序交付这些
+完整批次，再无缝交付H+1起的实时批次。重放与实时交接不得再留注册空隙。
+若C=H则重放区间为空，直接原子注册H+1；日志为空时将L视为H+1，不能因此跳过C<H的缺口。
+
+若最早保留批次为L，只有 `L-1 <= C <= H` 才有资格重放；仍须检查完整连续区间，
+不是只比较两个端点。C过旧返回CursorTooOld；C>H、域/schema不匹配分别明确拒绝。
+Store重启换StoreEpoch；已销毁Doc返回DocGone，不能自动对同路径的新Doc接续。
+错误中的L/H仅供诊断，**不授权**客户端把cursor直接设到L/H或最新水位。
+重放体积/注册期间的有界队列无法保留连续批次时也必须返回/进入Lagged，不静默截断。
+
+### C08.3 批次应用、去重与再次溢出
+
+每个批次带完整游标身份、SubscriptionId、EventSeq和完整批次边界；传输分片需有
+一致的批次/分片身份和结束标志。它必须包含足够delta或状态值来重建所有被消费的变化域。
+客户端将一个批次暂存并验证完整性及前置revision等条件后，才一次更新观察缓存和
+last_complete_cursor。不能先apply ContentCommitted，再等待可能丢失的dirty/View子事件。
+不能理解的schema或缺字段是协议错误，不能跳过未知状态变化继续声称已同步。
+必须先校验Store/Doc/scope/schema及SubscriptionId完整身份，再应用下列序号规则。
+
+- 当前句柄下 `seq == last_complete+1` 才能新应用；同一完整批次只生效一次。
+- `seq <= last_complete` 是已覆盖/重放重复，整批忽略，不再次应用文本delta。
+- 当前批次的相同分片可按身份去重；同序号不同内容或不一致边界属于协议错误，重新同步。
+- `seq > last_complete+1`、缺批次/分片、Lagged或协议错误：停止当前流的应用，
+  丢弃未完成批次及其暂存效果，观察缓存标为stale；不能盲跳游标继续套delta。
+- Lagged携带SubscriptionId、注册基线、可用范围/当前头部等诊断，不替代客户端
+  自己的last_complete_cursor。服务器不靠未经定义的客户端ack猜它已安装哪些状态。
+
+Lagged后的该句柄终止；必须重新observe取得新快照和新句柄。
+新快照若尚未安装就遇该句柄Lagged，不把它装成“当前已同步”状态；
+若已经安装则保留为标明stale的旧显示，重新观察前不能据其继续规划旧revision patch。
+不因重同步产生内容事务、Undo或保存成功。旧SubscriptionId晚到数据无论seq大小都忽略。
+“同步至水位C”只表示缓存完整包含至C，不宣称等于尚未知的服务器当前头部；
+传输/队列延迟及尚未收到的Lagged仍可能存在，不承诺零延迟实时一致。
+
+恢复的新句柄也可能再次溢出；重复以上完整恢复过程，不假设“拉过一次快照以后安全”，
+不以第二次溢出为理由跳至最新。日志/队列上限、背压及进度策略留后续实现，但必须
+保证安全性：无法赶上时明确stale/Lagged，不能声称连续一致。物理绘制、磁盘持久化
+仍不是这个内存观察发布点的保证。
 
 ## 6. 唯一 history、状态 token 和 dirty
 
@@ -251,10 +346,11 @@ composition/preedit 不写权威正文；确认经一个内容事务，取消无
 
 ## 9. 审核闸口
 
-Rusty 审查上述约束和 EXAMPLES 预期后，才可推进实现。需特别审定的本候选选择：
-InitialEmpty 的内存 clean baseline、token 身份而非任意字节相等判 dirty、Busy 的
-调用方责任、保存取消不可撤回边界及最终链接以外未实现内容的边界。
-这些选择已明确写出行为，不以含糊 TBD 隐藏竞态。
+Rusty 审查上述约束和 EXAMPLES 预期后，才可推进实现。81cab0b规范审查已接受
+InitialEmpty内存clean baseline、token身份dirty、Busy调用方责任和CommitPermit
+不可撤回四项选择，本修订不重新提问或改变它们。此次接受前缺口仅R4一致观察/订阅恢复，
+由C08及EX-13–16明确；T07 Save As跨DocId冲突、T04位置代次提醒留既定后续实现核对，
+不借本轮扩成新的产品开发任务。
 
 T03 才固定缓冲/坐标库/历史预算；T04 证明 NSH 外部正文和历史适配；T05 验证局部
 patch/SourceMap；T07 实现编码/路径身份/实际写盘；本文件不替代这些实现与实测。
