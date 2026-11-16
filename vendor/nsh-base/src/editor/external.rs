@@ -24,6 +24,7 @@ pub struct ExternalUpdate {
 pub enum ExternalEditKind {
     Typing,
     Deleting,
+    ImeCommit,
     Other,
 }
 /// Implemented by the application. All writes validate the supplied version/epoch.

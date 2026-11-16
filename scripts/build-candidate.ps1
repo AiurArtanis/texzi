@@ -83,7 +83,9 @@ try {
     Copy-Item scripts/test-observer-probe.py dist/package/component-tests/
     Copy-Item docs/tx03c/PROTOCOL.md dist/package/component-tests/OBSERVER-PROTOCOL.md
     Copy-Item target/x86_64-pc-windows-msvc/release/texzi-app.exe dist/package/
-    Copy-Item LICENSE,docs/tx00/RUN.md,docs/tx00/STARTUP_FAILURE.md dist/package/
+    Copy-Item LICENSE,docs/t04/RUN.md,docs/tx00/STARTUP_FAILURE.md dist/package/
+    Copy-Item vendor/nsh-base/TEXZI-PATCH.md dist/package/component-tests/NSH-FORK.md
+    Copy-Item vendor/nsh-base/UPSTREAM-MANIFEST.json dist/package/component-tests/NSH-UPSTREAM-MANIFEST.json
     Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse
     Invoke-Checked rustc @('--print', 'sysroot') -StdoutFile 'build-evidence/rust-sysroot.txt'
     $sysroot = (Get-Content build-evidence/rust-sysroot.txt -Raw).Trim()

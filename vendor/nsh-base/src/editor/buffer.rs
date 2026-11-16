@@ -93,6 +93,7 @@ struct Step {
 pub(crate) struct Buffer {
     pub(crate) external: Option<super::ExternalBuffer>,
     pub(crate) external_epoch: u64,
+    pub(crate) external_ime: bool,
     external_selection: Option<Selections>,
     rope: Rope,
     version: u64,
@@ -136,6 +137,7 @@ impl Buffer {
         Buffer {
             external: None,
             external_epoch: 0,
+            external_ime: false,
             external_selection: None,
             rope: self.rope.clone(),
             version: self.version,
@@ -153,6 +155,7 @@ impl Buffer {
         let mut buffer = Buffer {
             external: None,
             external_epoch: 0,
+            external_ime: false,
             external_selection: None,
             rope: Rope::new(),
             version: 0,
@@ -340,10 +343,14 @@ impl Buffer {
         kind: EditKind,
     ) -> Vec<Change> {
         if let Some(ext) = self.external.clone() {
-            let kind = match kind {
-                EditKind::Typing => super::ExternalEditKind::Typing,
-                EditKind::Deleting => super::ExternalEditKind::Deleting,
-                EditKind::Other => super::ExternalEditKind::Other,
+            let kind = if self.external_ime {
+                super::ExternalEditKind::ImeCommit
+            } else {
+                match kind {
+                    EditKind::Typing => super::ExternalEditKind::Typing,
+                    EditKind::Deleting => super::ExternalEditKind::Deleting,
+                    EditKind::Other => super::ExternalEditKind::Other,
+                }
             };
             return match ext.0.edit(
                 self.version,

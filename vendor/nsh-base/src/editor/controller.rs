@@ -799,6 +799,10 @@ impl Ed {
             self.schedule_highlight();
             self.show_caret();
             self.restart_blink();
+            let ext = self.st.borrow().buffer.external.clone();
+            if let Some(ext) = ext {
+                ext.0.notify();
+            }
         }
     }
 
@@ -886,7 +890,9 @@ impl Ed {
             self.hide_inline_completion();
         }
         if let Some(held) = held {
+            self.st.borrow_mut().buffer.external_ime = true;
             self.without_completions(|| self.sink_edited(&held));
+            self.st.borrow_mut().buffer.external_ime = false;
         }
         {
             let mut st = self.st.borrow_mut();
@@ -1379,7 +1385,11 @@ impl Ed {
                 ) {
                     Ok(snapshot) => {
                         st.buffer.external_epoch = snapshot.view_epoch;
-                        st.selections = snapshot.selections.internal();
+                        if super::ExternalSelections::from_internal(&st.selections)
+                            != snapshot.selections
+                        {
+                            st.selections = snapshot.selections.internal();
+                        }
                     }
                     Err(error) => {
                         log::error!("texzi selection rejected: {error}");

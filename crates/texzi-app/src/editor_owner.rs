@@ -88,6 +88,7 @@ impl ExternalDocument for NativeView {
         let mut store = self.owner.store.borrow_mut();
         let kind = match kind {
             ExternalEditKind::Typing => doc::InputKind::Typing,
+            ExternalEditKind::ImeCommit => doc::InputKind::ImeCommit,
             _ => doc::InputKind::Structural,
         };
         let tick = self.owner.clock.elapsed().as_millis().min(u64::MAX as u128) as u64;
