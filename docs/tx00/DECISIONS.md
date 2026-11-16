@@ -37,6 +37,10 @@ future checks, not a claim of shipped fonts. PCRE2/binding, parser, document
 kernel and future UI dependencies remain TBD and are not added speculatively.
 MSVC/SDK follow the windows-2022 image, with exact installed versions recorded
 per run. Runner image is mutable; recorded image identity is required evidence.
+SDK directory listings and the MSVC default-version file are explicitly recorded
+as installed/default inventory, not the actual linker/SDK chosen by rustc.
+tool-inventory.json carries this boundary into every candidate package. Effective
+tool selection remains an independent clean Win10 build evidence requirement.
 Actions are pinned to full commit IDs; Rust is exact. No runtime DLLs are copied
 without a demonstrated need and license review. The MSVC CRT is statically
 linked through the shared .cargo/config.toml target setting; runtime import

@@ -29,6 +29,15 @@ uploaded separately and is not a successful candidate. No component tests are
 present yet. See [runtime checks](docs/tx00/RUN.md) and
 [dependency decisions and design errata](docs/tx00/DECISIONS.md).
 
+The logging helper captures native stdout/stderr directly into separate files,
+records Process.ExitCode before throwing on failure, and includes these files
+and combined build.log in the candidate. transcript.log is supplementary.
+`./scripts/test-native-logging.ps1` tests success, nonzero native exit, both
+streams, large output and a failing build entry point without producing a
+candidate. CI preserves injected-failure evidence separately from the candidate.
+SDK/MSVC inventory is marked installed/default; it does not prove actual linker
+or SDK selection.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the review, testing and merge policy.

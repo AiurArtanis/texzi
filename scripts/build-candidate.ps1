@@ -1,16 +1,16 @@
+param([switch]$FailureProbe)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location (Split-Path $PSScriptRoot -Parent)
 if (Test-Path dist) { throw 'dist already exists; use a clean checkout to avoid stale candidates.' }
 New-Item build-evidence -ItemType Directory -Force | Out-Null
-Start-Transcript -Path build-evidence/build.log
+if (Test-Path build-evidence/build.log) { throw 'build-evidence/build.log already exists; preserve it and use a clean checkout.' }
+. "$PSScriptRoot/native-command.ps1"
+Start-Transcript -Path build-evidence/transcript.log
 try {
-    function Invoke-Checked([string]$Program, [string[]]$Arguments) {
-        Write-Host ('COMMAND: ' + $Program + ' ' + ($Arguments -join ' '))
-        & $Program @Arguments
-        $code = $LASTEXITCODE
-        Write-Host "EXIT: $code"
-        if ($code -ne 0) { throw "$Program failed: $code" }
+    if ($FailureProbe) {
+        Invoke-Checked (Join-Path $PSHOME 'pwsh.exe') @('-NoProfile', '-Command', '[Console]::Out.WriteLine("TX00_FAILURE_STDOUT"); [Console]::Error.WriteLine("TX00_FAILURE_STDERR"); exit 23')
+        throw 'Failure probe unexpectedly continued'
     }
     $commit = (git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot identify commit' }
@@ -19,9 +19,14 @@ try {
     Write-Host "commit=$commit run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT image=$env:ImageOS/$env:ImageVersion"
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     Invoke-Checked $vswhere @('-latest', '-products', '*', '-format', 'json')
-    Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" | Select-Object Name
+    $inventory = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" | Select-Object -ExpandProperty Name
+    $inventory | Set-Content build-evidence/installed-sdk-directories.txt
     $vs = & $vswhere -latest -products '*' -property installationPath
-    Get-Content (Join-Path $vs 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt')
+    $defaultMsvc = Get-Content (Join-Path $vs 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt')
+    @{
+        installed_sdk_directories=$inventory; default_msvc_file_version=$defaultMsvc;
+        selection_boundary='Inventory/default only. Actual linker and SDK selection is not traced; independent Win10 build must record the effective tools. No selected-version claim.'
+    } | ConvertTo-Json -Depth 4 | Set-Content build-evidence/tool-inventory.json
     Invoke-Checked rustup @('show')
     Invoke-Checked rustc @('-Vv')
     Invoke-Checked cargo @('-V')
@@ -39,8 +44,7 @@ try {
     Invoke-Checked cargo @('tree', '--locked', '--target', 'x86_64-pc-windows-msvc', '-e', 'features')
     Write-Host 'Component tests: NOT_RUN (TX-00 adds no testable document logic; native smoke is separate).'
     Invoke-Checked cargo @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc')
-    & cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc > build-evidence/metadata.json
-    if ($LASTEXITCODE -ne 0) { throw 'metadata failed' }
+    Invoke-Checked cargo @('metadata', '--locked', '--format-version', '1', '--filter-platform', 'x86_64-pc-windows-msvc') -StdoutFile 'build-evidence/metadata.json'
     New-Item dist/package/licenses -ItemType Directory -Force | Out-Null
     Copy-Item target/x86_64-pc-windows-msvc/release/texzi-app.exe dist/package/
     Copy-Item LICENSE,docs/tx00/RUN.md dist/package/
@@ -72,10 +76,14 @@ try {
     Copy-Item build-evidence/metadata.json dist/package/
     "commit=$commit`nrun=$env:GITHUB_RUN_ID`nattempt=$env:GITHUB_RUN_ATTEMPT`nimage=$env:ImageOS/$env:ImageVersion`n" | Set-Content dist/package/build-identity.txt
     Get-FileHash dist/package/texzi-app.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  texzi-app.exe" } | Set-Content dist/package/SHA256SUMS.txt
+} catch {
+    $_ | Out-String | Add-Content build-evidence/build.log
+    throw
 } finally {
     Stop-Transcript
 }
 Copy-Item build-evidence/build.log dist/package/
+Copy-Item build-evidence dist/package/build-evidence -Recurse
 Compress-Archive dist/package/* dist/texzi-tx00-win-x64.zip
 Get-FileHash dist/texzi-tx00-win-x64.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  texzi-tx00-win-x64.zip" } | Set-Content dist/SHA256SUMS.txt
 Copy-Item build-evidence/build.log dist/build.log
