@@ -9,6 +9,12 @@
 本修订分别使组合期间每个process turn重新读取并去重预编辑，及给予sink当前行剩余视口宽度。
 这是依据症状和源码制定的修复；最终根因/效果须由新候选真实分段输入和事件诊断核实。
 
+首个修订c3f57bb实测仍失败：N的native/editor/render长度1均到达，但I后没有新process日志，
+因此只拓宽process内条件不足。失败候选和原始日志保留，不以CI成功称修复成功。
+后续修订让RichEdit的EN_UPDATE及组合期间的invalidate/view-change/caret回调标记预编辑更新，
+通过既有去重timer排队到process；回调内不重入查询TextServices，绘制中/销毁后/非组合期不排队。
+EN_UPDATE不作为正文已提交信号；真实分段与取消/提交顺序仍须新包验证。
+
 TEXZI_TRACE_IME=1为显式测试诊断，默认不启用。只记录native标志/预编辑UTF16长度、render坐标、
 owner revision/字节数/操作类别；不记录正文或预编辑内容。验证可读取该轮生成的stderr，完全不用剪贴板。
 记录N→NI→NIHAO、Backspace、Escape取消、Space提交、Undo/Redo；组合中不能增加正文事务/history。

@@ -105,7 +105,7 @@ use windows::{
                 CFM_WEIGHT, EM_CANREDO, EM_EXSETSEL, EM_GETLANGOPTIONS, EM_GETSCROLLPOS, EM_REDO,
                 EM_SETEDITSTYLE, EM_SETEVENTMASK, EM_SETLANGOPTIONS, EM_SETSCROLLPOS,
                 EM_SETTEXTMODE, EM_SETTYPOGRAPHYOPTIONS, ENM_CHANGE, ENM_ENDCOMPOSITION,
-                ENM_SELCHANGE, ENM_STARTCOMPOSITION, IMF_SPELLCHECKING, IMF_TKBPREDICTION,
+                ENM_SELCHANGE, ENM_STARTCOMPOSITION, ENM_UPDATE, IMF_SPELLCHECKING, IMF_TKBPREDICTION,
                 PFA_CENTER, PFA_JUSTIFY, PFA_LEFT, PFA_RIGHT, PFM_ALIGNMENT, PFM_LINESPACING,
                 PFM_RTLPARA, SES_USECTF, TM_MULTICODEPAGE, TM_MULTILEVELUNDO, TM_PLAINTEXT,
                 TO_ADVANCEDTYPOGRAPHY, TXTBIT_AUTOWORDSEL, TXTBIT_CHARFORMATCHANGE,
@@ -271,7 +271,7 @@ impl InputState {
                 // notifications the field follows, DirectWrite's shaping.
                 let mode = TM_PLAINTEXT.0 | TM_MULTILEVELUNDO.0 | TM_MULTICODEPAGE.0;
                 e.send(EM_SETTEXTMODE, mode as usize, 0);
-                let mask = ENM_CHANGE | ENM_SELCHANGE | ENM_STARTCOMPOSITION | ENM_ENDCOMPOSITION;
+                let mask = ENM_CHANGE | ENM_SELCHANGE | ENM_UPDATE | ENM_STARTCOMPOSITION | ENM_ENDCOMPOSITION;
                 e.send(EM_SETEVENTMASK, 0, mask as isize);
                 // Text Services Framework input: dictation, the emoji
                 // panel, the touch keyboard, reconversion, spelling.
@@ -1271,7 +1271,7 @@ fn process(surface: &Surface, view: &NshView, input: &InputState) -> bool {
             // turn; report_composition deduplicates unchanged values. It still
             // emits no committed-text event until composition ends.
             if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
-                log::info!("TX04_IME_NATIVE_NOTES changed={} selection={} ending={} preedit_utf16={}", notes.changed, notes.selection, notes.composition_end, input.composed_text().as_ref().map_or(0, |text| text.encode_utf16().count()));
+                log::info!("TX04_IME_NATIVE_NOTES changed={} selection={} preedit_note={} ending={} preedit_utf16={}", notes.changed, notes.selection, notes.preedit, notes.composition_end, input.composed_text().as_ref().map_or(0, |text| text.encode_utf16().count()));
             }
             report_composition(surface, view, input);
         } else if notes.changed {

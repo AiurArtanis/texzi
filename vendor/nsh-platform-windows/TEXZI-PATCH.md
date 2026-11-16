@@ -6,8 +6,15 @@ SHA256; Cargo.upstream.toml and LICENSE-APACHE preserve the original bytes.
 Cargo.toml expands workspace inheritance; README.md is the fixed upstream
 repository readme. No NSH version upgrade or new platform is introduced.
 
-Only src/text_input.rs changes behavior: while composing, every native process
-turn re-reads the composed range, including selection-only RichEdit notes.
+Only src/text_input.rs and src/richedit.rs change behavior. The c3f57bb first
+attempt still froze at N: no new process turn occurred after I. Preserve that
+failed candidate and its native/editor/render length logs.
+
+While composing, display-update notifications and ITextHost invalidation,
+view-change or caret callbacks now mark a preedit note and use the existing
+deduplicated notes timer. No services are queried inside the host callbacks;
+drawing, teardown and non-composition callbacks do not queue these updates.
+Each resulting native process turn re-reads the composed range.
 The existing report_composition deduplication remains. No committed ChangeText
 is emitted merely because preedit changed; final commit/cancel ordering stays.
 This addresses the white-box notification gap consistent with the observed
