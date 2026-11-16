@@ -38,7 +38,9 @@ kernel and future UI dependencies remain TBD and are not added speculatively.
 MSVC/SDK follow the windows-2022 image, with exact installed versions recorded
 per run. Runner image is mutable; recorded image identity is required evidence.
 Actions are pinned to full commit IDs; Rust is exact. No runtime DLLs are copied
-without a demonstrated need and license review.
+without a demonstrated need and license review. The MSVC CRT is statically
+linked through the shared .cargo/config.toml target setting; runtime import
+inspection of the final executable remains part of candidate verification.
 
 Packaging includes each dependency's root LICENSE/NOTICE/COPYING materials
 where present, NSH repository license, metadata and a license inventory. This

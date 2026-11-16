@@ -18,9 +18,9 @@ dismiss any NSH error dialog; record exit code and remaining processes.
 Do not infer a runtime result from the build log.
 
 Windows x64 only. The test ZIP does not bundle fonts or redistributable runtime
-DLLs; Windows Direct2D/DirectWrite and system fonts are used. MSVC runtime
-availability must be checked on the target machine; if a runtime is missing,
-record the loader error rather than silently installing anything. This is an
+DLLs; Windows Direct2D/DirectWrite and system fonts are used. The checked-in
+Cargo target configuration statically links the MSVC CRT. If any other runtime
+is reported missing, record the loader error rather than silently installing anything. This is an
 unsigned private test package. Windows 10 22H2 x64 clean build and runtime
 remain required for G0; 1809 is a separate unverified target.
 

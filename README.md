@@ -18,6 +18,8 @@ cargo build --release --locked --target x86_64-pc-windows-msvc
 ./scripts/build-candidate.ps1
 ```
 
+Both commands use .cargo/config.toml to statically link the MSVC CRT
+(`-C target-feature=+crt-static`); no additional command-line flags are used.
 The script repeats the same checks/build, records toolchain, MSVC/SDK, runner
 image, commit and resolved features, then creates dist/texzi-tx00-win-x64.zip
 and SHA256SUMS.txt. Run it once in a clean checkout (dist must not exist).
