@@ -98,7 +98,13 @@ impl Projection {
         for h in diff.hunks() {
             let old = a[h.before.start as usize]..a[h.before.end as usize];
             let new = b[h.after.start as usize]..b[h.after.end as usize];
-            if before.contains('\n')
+            let simple_blocks = self
+                .blocks
+                .iter()
+                .filter(|block| block.source.start < range.end && block.source.end > range.start)
+                .all(|block| !block.opaque && !self.source[block.source.clone()].contains('\n'));
+            if !simple_blocks
+                && before.contains('\n')
                 && (before[old.clone()].contains('\n') || text[new.clone()].contains('\n'))
             {
                 return Err("该多行块的换行暂不能保真修改，请切到源码编辑；原文未变".into());
@@ -152,6 +158,36 @@ impl Projection {
                 opaque,
             });
         }
+        // Markdown discards blank paragraphs. Project pairs of otherwise unused
+        // LF separators as empty top-level paragraphs without changing source.
+        // A normal single terminal LF remains trivia, not an extra paragraph.
+        let mut spaced = Vec::new();
+        let mut previous_end = 0;
+        for block in blocks {
+            let gap = &source[previous_end..block.source.start];
+            let has_previous = !spaced.is_empty();
+            let count = if gap.bytes().all(|b| b == b'\n') {
+                gap.len() / 2 - usize::from(has_previous).min(gap.len() / 2)
+            } else {
+                0
+            };
+            for i in 0..count {
+                let at = previous_end + 2 * (i + usize::from(has_previous));
+                spaced.push(empty_block(schema, at)?);
+            }
+            previous_end = block.source.end;
+            spaced.push(block);
+        }
+        let tail = &source[previous_end..];
+        if spaced.is_empty() {
+            spaced.push(empty_block(schema, 0)?);
+        }
+        if tail.bytes().all(|b| b == b'\n') {
+            for i in 0..tail.len() / 2 {
+                spaced.push(empty_block(schema, previous_end + 2 * (i + 1))?);
+            }
+        }
+        let mut blocks = spaced;
         if blocks.is_empty() {
             let empty = schema
                 .node("paragraph", None, Fragment::empty(), vec![])
@@ -263,7 +299,7 @@ impl Projection {
                 return Ok(Some((range, text)));
             }
         }
-        let start = self
+        let mut start = self
             .blocks
             .get(first)
             .map(|b| b.source.start)
@@ -273,27 +309,52 @@ impl Projection {
         } else {
             start
         };
-        let nodes = (first..new_end).map(|i| next.child(i).clone()).collect();
+        // Removing a trailing empty paragraph also removes its separator pair.
+        if new_end == first && old_end > first && start == end && first > 0 {
+            let previous = self.blocks[first - 1].source.end;
+            if start >= previous + 2 && &self.source[start - 2..start] == "\n\n" {
+                start -= 2;
+            }
+        }
         if self.source[start..end]
             .chars()
             .any(|c| c == '\\' || c == '&')
         {
             return Err("此块的转义或实体暂不能保真改写，请切到源码编辑；原文未变".into());
         }
-        let doc = root(&self.doc.ty().schema(), nodes)?;
-        let mut text = MarkdownFormat::default().serialize(&doc).map_err(message)?;
-        if text.ends_with('\n') {
-            text.pop();
+        let mut pieces = Vec::new();
+        for i in first..new_end {
+            let node = next.child(i);
+            let doc = root(&self.doc.ty().schema(), vec![node.clone()])?;
+            let mut piece = MarkdownFormat::default().serialize(&doc).map_err(message)?;
+            if piece.ends_with('\n') {
+                piece.pop();
+            }
+            pieces.push(piece);
         }
+        let mut text = pieces.join("\n\n");
         // Match the modified block's EOL convention. Unchanged source stays raw.
         if self.source[start..end].contains("\r\n") {
             text = text.replace('\n', "\r\n");
         }
-        if start == end && first > 0 {
+        if old_end == first && first > 0 {
             text = format!("\n\n{text}");
+        }
+        if old_end == first && first < self.blocks.len() {
+            text.push_str("\n\n");
         }
         Ok(Some((start..end, text)))
     }
+}
+
+fn empty_block(schema: &Schema, at: usize) -> Result<Block, String> {
+    Ok(Block {
+        source: at..at,
+        node: schema
+            .node("paragraph", None, Fragment::empty(), vec![])
+            .map_err(message)?,
+        opaque: false,
+    })
 }
 
 #[cfg(test)]

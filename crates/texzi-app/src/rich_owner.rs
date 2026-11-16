@@ -400,6 +400,87 @@ mod tests {
     fn bytes(n: &NativeView) -> Vec<u8> {
         n.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().body.to_utf8())
     }
+    fn select(owner: &RichOwner, pos: usize) {
+        let state = owner.session.state();
+        let mut tr = state.tr();
+        tr.set_selection(TextSelection::create(state.doc(), pos, None));
+        owner.session.dispatch(tr).unwrap();
+        assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+    }
+    fn split(owner: &RichOwner) {
+        let state = owner.session.state();
+        let mut dispatch = |tr| owner.session.dispatch(tr).unwrap();
+        assert!(nsh_base::rich_editor::commands::split_block(
+            &state,
+            Some(&mut dispatch)
+        ));
+        assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+    }
+    #[test]
+    fn paragraph_enter_start_middle_end_and_empty_roundtrip_through_owner() {
+        run(|| {
+            for (raw, pos, expected) in [
+                ("abc", 1, "\n\nabc"),
+                ("abc", 2, "a\n\nbc"),
+                ("abc", 4, "abc\n\n"),
+                ("", 1, "\n\n"),
+                ("甲😀乙", 4, "甲😀\n\n乙"),
+            ] {
+                let source = NativeView::fixture(raw);
+                let owner =
+                    RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+                select(&owner, pos);
+                split(&owner);
+                assert_eq!(bytes(&source), expected.as_bytes());
+                let rebuilt = Projection::parse(
+                    owner.session.state().schema(),
+                    source.snapshot().unwrap().rope.to_string(),
+                )
+                .unwrap();
+                assert_eq!(&rebuilt.doc, owner.session.state().doc());
+                owner.history(true);
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), raw.as_bytes());
+                owner.history(false);
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), expected.as_bytes());
+            }
+        });
+    }
+    #[test]
+    fn consecutive_empty_paragraphs_accept_text_and_backspace_join() {
+        run(|| {
+            let source = NativeView::fixture("abc");
+            let owner = RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+            select(&owner, 4);
+            split(&owner);
+            split(&owner);
+            assert_eq!(bytes(&source), b"abc\n\n\n\n");
+            let mut tr = owner.session.state().tr();
+            tr.insert_text("甲", None, None);
+            owner.session.dispatch(tr).unwrap();
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            assert_eq!(bytes(&source), "abc\n\n\n\n甲".as_bytes());
+            // Join the last paragraph into its empty predecessor, then abc.
+            select(&owner, 8);
+            let state = owner.session.state();
+            let mut dispatch = |tr| owner.session.dispatch(tr).unwrap();
+            assert!(nsh_base::rich_editor::commands::join_backward(
+                &state,
+                Some(&mut dispatch)
+            ));
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            assert_eq!(bytes(&source), "abc\n\n甲".as_bytes());
+            select(&owner, 6);
+            let state = owner.session.state();
+            assert!(nsh_base::rich_editor::commands::join_backward(
+                &state,
+                Some(&mut dispatch)
+            ));
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            assert_eq!(bytes(&source), "abc甲".as_bytes());
+        });
+    }
     #[test]
     fn owner_opaque_single_letter_preserves_mixed_eols_origins_and_undo() {
         run(|| {

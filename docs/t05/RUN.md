@@ -35,6 +35,8 @@
 
 ## 构建和产物
 
+后续段落候选：顶层空段落映射与具体 Enter/合并规则见 `../decisions/2026-11-17-rich-empty-paragraphs.md`。新增真实 Owner 测试覆盖段首/中/尾、空正文、Unicode 标量边界、连续空段继续输入及 Backspace 合并。提交前仅 fmt/diff 静态核对，组件及 GUI 结果须绑定新的 CI 身份，不能继承 18cc55e 的运行结论。
+
 README现有cargo build --release --locked --target x86_64-pc-windows-msvc命令不变。CI额外编译执行app单元测试，将真实rich-projection.exe与原双流/exit随包交独测；失败不打成功候选。原文档组件/窗口失败路径证据保留。
 
 补充：固定12语料每例100次无修改投影、跨逻辑View撤销/重做与原混合EOL字节恢复均为组件检查；真实GUI次数另计。显式长度诊断下的TX05_VIEW记录revision/token/history/dirty供核模式切换0文本事务，默认关闭，不输出正文。MIT移植许可补齐与blob来源见LICENSE-SOURCES.json；原NSH未注明移植所用PM/Tiptap revision，不自行编造。
