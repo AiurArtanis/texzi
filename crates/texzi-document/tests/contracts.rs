@@ -1,4 +1,5 @@
 use texzi_document::*;
+mod observers;
 mod views;
 
 fn store(raw: &str) -> (Store, Snapshot) {

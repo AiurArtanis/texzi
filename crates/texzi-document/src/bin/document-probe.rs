@@ -5,6 +5,8 @@ use std::{
     io::{self, BufRead, Write},
 };
 use texzi_document::*;
+#[path = "document_probe/observe.rs"]
+mod observe_probe;
 type Result<T> = std::result::Result<T, String>;
 fn text<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
     v.get(k)
@@ -100,6 +102,7 @@ struct Probe {
     docs: HashMap<String, DocId>,
     views: HashMap<String, ViewId>,
     saves: HashMap<String, SaveCapture>,
+    observer_wire: observe_probe::Wire,
 }
 impl Probe {
     fn new() -> Self {
@@ -108,6 +111,7 @@ impl Probe {
             docs: HashMap::new(),
             views: HashMap::new(),
             saves: HashMap::new(),
+            observer_wire: observe_probe::Wire::default(),
         }
     }
     fn doc(&self, v: &Value) -> Result<DocId> {
@@ -134,6 +138,11 @@ impl Probe {
     }
     fn request(&mut self, v: &Value) -> Result<Value> {
         let op = text(v, "op")?;
+        if op.starts_with("obs_") {
+            return self
+                .observer_wire
+                .request(&mut self.store, &self.docs, &self.views, v);
+        }
         if op == "hello" {
             return Ok(
                 json!({"protocol":1,"scope":"in-memory component; no GUI or disk IO","unicode":"17.0.0","merge_window_ms":INPUT_MERGE_WINDOW_MS,"merge_max_bytes":INPUT_MERGE_MAX_BYTES}),

@@ -34,7 +34,8 @@ local verification. This is component evidence; the crate is not integrated into
 the native window. A JSON-lines `document-probe.exe` permits separately written
 component oracles; CI runs scripts/test-document-probe.py before the application
 build and packages the executable/protocol. See [T03b logical views and history](docs/tx03b/README.md),
-[probe protocol](docs/tx03b/PROTOCOL.md), [T03a scope](docs/tx03/README.md),
+[probe protocol](docs/tx03b/PROTOCOL.md), [C08 memory observer and recovery](docs/tx03c/README.md),
+[observer probe extension](docs/tx03c/PROTOCOL.md), [T03a scope](docs/tx03/README.md),
 [runtime checks](docs/tx00/RUN.md) and
 [dependency decisions and design errata](docs/tx00/DECISIONS.md).
 

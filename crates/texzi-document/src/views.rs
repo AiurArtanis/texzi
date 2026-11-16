@@ -1,6 +1,6 @@
 use crate::{Affinity, Error, Snapshot, SourceByte, Transaction, coordinates::boundary};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ViewId(pub(crate) u64);
 /// Logical labels only. No renderer, projection, system IME or HWND capability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

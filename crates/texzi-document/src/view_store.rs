@@ -23,7 +23,7 @@ impl Store {
             views,
         })
     }
-    pub fn open_view(
+    pub(crate) fn open_view_unpublished(
         &mut self,
         doc: DocId,
         mode: ModeTag,
@@ -72,13 +72,25 @@ impl Store {
         }
         Ok(v)
     }
-    pub fn close_view(&mut self, id: ViewId, epoch: u64) -> Result<(), Error> {
+    pub(crate) fn close_view_unpublished(&mut self, id: ViewId, epoch: u64) -> Result<(), Error> {
         let v = self.checked_view(id, epoch)?;
-        self.docs.get_mut(&v.doc).unwrap().views.remove(&id);
+        let closed = ClosedView {
+            id,
+            doc: v.doc,
+            epoch: v.epoch.checked_add(1).ok_or(Error::CounterExhausted)?,
+            at_revision: self.snapshot(v.doc)?.revision,
+        };
+        let d = self.docs.get_mut(&v.doc).unwrap();
+        d.closed_views.insert(id, closed);
+        d.views.remove(&id);
         self.view_docs.remove(&id);
         self.fence(v.doc, FenceReason::CrossView)
     }
-    pub fn fence(&mut self, doc: DocId, reason: FenceReason) -> Result<(), Error> {
+    pub(crate) fn fence_unpublished(
+        &mut self,
+        doc: DocId,
+        reason: FenceReason,
+    ) -> Result<(), Error> {
         let d = self.docs.get_mut(&doc).ok_or(Error::InvalidDoc)?;
         d.merge = None;
         d.last_fence = reason;
@@ -87,7 +99,7 @@ impl Store {
     pub fn last_fence(&self, doc: DocId) -> Result<FenceReason, Error> {
         Ok(self.docs.get(&doc).ok_or(Error::InvalidDoc)?.last_fence)
     }
-    pub fn set_selection(
+    pub(crate) fn set_selection_unpublished(
         &mut self,
         id: ViewId,
         epoch: u64,
@@ -107,7 +119,7 @@ impl Store {
         self.fence(v.doc, FenceReason::Navigation)?;
         Ok(v)
     }
-    pub fn set_scroll(
+    pub(crate) fn set_scroll_unpublished(
         &mut self,
         id: ViewId,
         epoch: u64,
@@ -129,7 +141,7 @@ impl Store {
         Ok(v)
     }
     /// Changes only a logical test/component label, not an NSH mode/projection.
-    pub fn set_mode_tag(
+    pub(crate) fn set_mode_tag_unpublished(
         &mut self,
         id: ViewId,
         epoch: u64,
@@ -146,7 +158,10 @@ impl Store {
         self.fence(v.doc, FenceReason::Mode)?;
         Ok(v)
     }
-    pub fn submit_view(&mut self, intent: ViewTransaction) -> Result<Receipt, Error> {
+    pub(crate) fn submit_view_unpublished(
+        &mut self,
+        intent: ViewTransaction,
+    ) -> Result<Receipt, Error> {
         let v = self.checked_view(intent.view, intent.expected_epoch)?;
         if v.doc != intent.transaction.doc {
             return Err(Error::InvalidView);
@@ -224,11 +239,19 @@ impl Store {
             tick_ms,
         })
     }
-    pub fn undo_view(&mut self, id: ViewId, epoch: u64) -> Result<Receipt, Error> {
+    pub(crate) fn undo_view_unpublished(
+        &mut self,
+        id: ViewId,
+        epoch: u64,
+    ) -> Result<Receipt, Error> {
         let v = self.checked_view(id, epoch)?;
         self.travel(v.doc, false, Some(id))
     }
-    pub fn redo_view(&mut self, id: ViewId, epoch: u64) -> Result<Receipt, Error> {
+    pub(crate) fn redo_view_unpublished(
+        &mut self,
+        id: ViewId,
+        epoch: u64,
+    ) -> Result<Receipt, Error> {
         let v = self.checked_view(id, epoch)?;
         self.travel(v.doc, true, Some(id))
     }

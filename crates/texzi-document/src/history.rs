@@ -1,4 +1,8 @@
 use crate::{
+    ActiveSaveState, BaselineKind, BaselineState, FileAttention, GlobalMetadata, HistoryGroupId,
+    HistoryObservation, MergeObservation, SaveObservation, SaveResult, SaveTerminal, Unimplemented,
+};
+use crate::{
     Body, DocId, Eol, Error, Profile, Revision, SourceByte, StateToken, coordinates::boundary,
 };
 use crate::{FenceReason, InputKind, SelectionSet, ViewId, ViewState, ViewTransaction};
@@ -51,7 +55,7 @@ pub struct Transaction {
     pub boundary: BoundaryPolicy,
     pub cancelled: bool,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delta {
     pub range: Range<usize>,
     pub text: String,
@@ -59,6 +63,7 @@ pub struct Delta {
 }
 #[derive(Clone, Debug)]
 pub struct Receipt {
+    pub history_group: Option<HistoryGroupId>,
     pub snapshot: Snapshot,
     pub previous: Revision,
     pub previous_body: Arc<Body>,
@@ -68,6 +73,7 @@ pub struct Receipt {
 }
 #[derive(Clone)]
 struct Entry {
+    group: HistoryGroupId,
     selection_before: Option<SelectionSet>,
     selection_after: Option<SelectionSet>,
     before: Arc<Body>,
@@ -79,6 +85,10 @@ struct Entry {
     charge: usize,
 }
 pub(crate) struct Document {
+    pub(crate) closed_views: std::collections::BTreeMap<ViewId, crate::ClosedView>,
+    baseline_kind: BaselineKind,
+    bound_target: Option<TargetKey>,
+    save_terminal: Option<SaveTerminal>,
     pub(crate) views: HashMap<ViewId, ViewState>,
     pub(crate) merge: Option<MergeState>,
     pub(crate) last_fence: FenceReason,
@@ -107,6 +117,7 @@ impl Default for HistoryBudget {
 
 /// All mutating APIs require &mut Store: one serial owner, no callback reentrancy.
 pub struct Store {
+    pub(crate) observer: crate::observe::ObserverHub,
     pub(crate) docs: HashMap<DocId, Document>,
     pub(crate) view_docs: HashMap<ViewId, DocId>,
     next_token: u64,
@@ -144,7 +155,7 @@ struct ActiveSave {
 
 impl Store {
     /// Memory-only save coordination. This method does not write or verify a file.
-    pub fn begin_save(
+    pub(crate) fn begin_save_unpublished(
         &mut self,
         doc: DocId,
         target: TargetKey,
@@ -188,7 +199,11 @@ impl Store {
         }
         Ok(a)
     }
-    pub fn advance_save(&mut self, c: &SaveCapture, next: SaveStage) -> Result<(), Error> {
+    pub(crate) fn advance_save_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        next: SaveStage,
+    ) -> Result<(), Error> {
         let stage = self.active_save(c)?.stage;
         if !matches!(
             (stage, next),
@@ -202,20 +217,25 @@ impl Store {
         Ok(())
     }
     /// The one-shot permit is represented by the transition; it cannot be reissued.
-    pub fn commit_permit(&mut self, c: &SaveCapture) -> Result<(), Error> {
+    pub(crate) fn commit_permit_unpublished(&mut self, c: &SaveCapture) -> Result<(), Error> {
         if self.active_save(c)?.stage != SaveStage::ReadyToReplace {
             return Err(Error::InvalidSave);
         }
         self.saves.get_mut(&c.snapshot.doc).unwrap().stage = SaveStage::Replacing;
         Ok(())
     }
-    pub fn cancel_save(&mut self, c: &SaveCapture) -> Result<(), Error> {
+    pub(crate) fn cancel_save_unpublished(&mut self, c: &SaveCapture) -> Result<(), Error> {
         if matches!(
             self.active_save(c)?.stage,
             SaveStage::Replacing | SaveStage::Verifying
         ) {
             return Err(Error::TooLate);
         }
+        self.docs.get_mut(&c.snapshot.doc).unwrap().save_terminal = Some(SaveTerminal {
+            operation: c.operation,
+            result: SaveResult::Cancelled,
+            error: None,
+        });
         self.release_save(c);
         Ok(())
     }
@@ -225,7 +245,10 @@ impl Store {
     }
     /// TRUST BOUNDARY: T07 IO owner must supply a truly verified durable result.
     /// Component tests simulate that result; they provide no disk-save evidence.
-    pub fn accept_verified_save(&mut self, c: &SaveCapture) -> Result<(), Error> {
+    pub(crate) fn accept_verified_save_unpublished(
+        &mut self,
+        c: &SaveCapture,
+    ) -> Result<(), Error> {
         if self.active_save(c)?.stage != SaveStage::Verifying {
             return Err(Error::InvalidSave);
         }
@@ -235,11 +258,19 @@ impl Store {
             .ok_or(Error::InvalidDoc)?;
         d.baseline = c.snapshot.token;
         d.backed = true;
+        d.baseline_kind = BaselineKind::SavedByCaller;
+        d.bound_target = Some(c.target.clone());
+        d.save_terminal = Some(SaveTerminal {
+            operation: c.operation,
+            result: SaveResult::SucceededByCaller,
+            error: None,
+        });
         self.release_save(c);
         Ok(())
     }
     pub fn new(budget: HistoryBudget) -> Self {
         Self {
+            observer: crate::observe::ObserverHub::new(),
             docs: HashMap::new(),
             view_docs: HashMap::new(),
             next_token: 1,
@@ -272,6 +303,16 @@ impl Store {
         self.docs.insert(
             current.doc,
             Document {
+                closed_views: std::collections::BTreeMap::new(),
+                baseline_kind: if backed_by_disk {
+                    BaselineKind::ExternalLoadClaim
+                } else if raw.is_empty() {
+                    BaselineKind::InitialEmpty
+                } else {
+                    BaselineKind::MemoryImport
+                },
+                bound_target: None,
+                save_terminal: None,
                 current: current.clone(),
                 views: HashMap::new(),
                 merge: None,
@@ -283,6 +324,7 @@ impl Store {
                 charge: 0,
             },
         );
+        self.register_observer_document(current.doc);
         Ok(current)
     }
     fn allocate_token(&mut self) -> Result<StateToken, Error> {
@@ -313,7 +355,7 @@ impl Store {
         self.charge
     }
     /// Trusted document-service entry; view adapters must use submit_view.
-    pub fn submit(&mut self, txn: Transaction) -> Result<Receipt, Error> {
+    pub(crate) fn submit_unpublished(&mut self, txn: Transaction) -> Result<Receipt, Error> {
         self.submit_inner(txn, None)
     }
     pub(crate) fn submit_inner(
@@ -386,6 +428,7 @@ impl Store {
         }
         if forward.is_empty() {
             let receipt = Receipt {
+                history_group: None,
                 snapshot: s.clone(),
                 previous: s.revision,
                 previous_body: s.body.clone(),
@@ -421,7 +464,7 @@ impl Store {
         self.commit(s, Arc::new(body), forward, inverse, charge, context)
     }
     /// Metadata-only transaction; UTF-8/BOM and EOL policy changes are undoable.
-    pub fn set_serialization(
+    pub(crate) fn set_serialization_unpublished(
         &mut self,
         doc: DocId,
         base: Revision,
@@ -438,6 +481,7 @@ impl Store {
         let eol_change = eol.is_some_and(|e| s.body.eols().iter().any(|old| *old != e));
         if profile == s.body.profile && !eol_change {
             return Ok(Receipt {
+                history_group: None,
                 snapshot: s.clone(),
                 previous: base,
                 previous_body: s.body.clone(),
@@ -474,6 +518,7 @@ impl Store {
         }
         let revision = Revision(s.revision.0.checked_add(1).ok_or(Error::CounterExhausted)?);
         let preview = Receipt {
+            history_group: None,
             snapshot: Snapshot {
                 doc: s.doc,
                 revision,
@@ -497,6 +542,7 @@ impl Store {
             body: body.clone(),
         };
         let mut entry = Entry {
+            group: HistoryGroupId(token.0),
             before: s.body.clone(),
             after: body,
             old: s.token,
@@ -510,6 +556,7 @@ impl Store {
         let d = self.docs.get_mut(&s.doc).unwrap();
         if merge {
             let old = d.undo.back().unwrap();
+            entry.group = old.group;
             entry.before = old.before.clone();
             entry.old = old.old;
             entry.selection_before = old.selection_before.clone();
@@ -523,6 +570,7 @@ impl Store {
         if merge {
             d.undo.pop_back();
         }
+        let group = entry.group;
         d.undo.push_back(entry);
         d.merge = typing_cursor(&s, &forward, context, token);
         if d.merge.is_none() {
@@ -532,19 +580,22 @@ impl Store {
         self.charge = process_charge + charge;
         d.current = next.clone();
         d.views = views;
-        Ok(Receipt {
+        let receipt = Receipt {
+            history_group: Some(group),
             snapshot: next,
             previous: s.revision,
             previous_body: s.body.clone(),
             forward,
             inverse,
             changed: true,
-        })
+        };
+        self.observer.pending_content = Some(receipt.clone());
+        Ok(receipt)
     }
-    pub fn undo(&mut self, doc: DocId) -> Result<Receipt, Error> {
+    pub(crate) fn undo_unpublished(&mut self, doc: DocId) -> Result<Receipt, Error> {
         self.travel(doc, false, None)
     }
-    pub fn redo(&mut self, doc: DocId) -> Result<Receipt, Error> {
+    pub(crate) fn redo_unpublished(&mut self, doc: DocId) -> Result<Receipt, Error> {
         self.travel(doc, true, None)
     }
     pub(crate) fn travel(
@@ -588,6 +639,7 @@ impl Store {
             body,
         };
         let receipt = Receipt {
+            history_group: Some(entry.group),
             snapshot: next.clone(),
             previous,
             previous_body,
@@ -635,6 +687,7 @@ impl Store {
             d.undo.pop_back();
             d.redo.push(entry);
         }
+        self.observer.pending_content = Some(receipt.clone());
         Ok(receipt)
     }
 }
@@ -705,4 +758,67 @@ fn merge_candidate(
         && before.selections.len() == 1
         && before.selections[0].range() == (previous.end..previous.end)
         && last.forward[0].text.len() + forward[0].text.len() <= INPUT_MERGE_MAX_BYTES
+}
+
+impl Store {
+    pub(crate) fn observer_metadata(&self, doc: DocId) -> GlobalMetadata {
+        let d = &self.docs[&doc];
+        let active = self.saves.get(&doc).map(|a| ActiveSaveState {
+            operation: a.capture.operation,
+            revision: a.capture.snapshot.revision,
+            token: a.capture.snapshot.token,
+            target: a.capture.target.clone(),
+            guard: a.capture.guard.clone(),
+            binding_epoch: a.capture.binding_epoch,
+            stage: a.stage,
+            cancellable: !matches!(a.stage, SaveStage::Replacing | SaveStage::Verifying),
+        });
+        GlobalMetadata {
+            baseline: BaselineState {
+                token: d.baseline,
+                kind: d.baseline_kind.clone(),
+                backed_by_disk: d.backed,
+            },
+            dirty: d.current.token != d.baseline,
+            attention: FileAttention {
+                needs_target: d.bound_target.is_none(),
+                binding_epoch: 0,
+                target: d.bound_target.clone(),
+                known_fingerprint: None,
+                conflict: Unimplemented::NotImplemented,
+                save_outcome_unknown: Unimplemented::NotImplemented,
+                display_error: None,
+            },
+            save: SaveObservation {
+                active,
+                last_terminal: d.save_terminal.clone(),
+            },
+            history: HistoryObservation {
+                can_undo: !d.undo.is_empty(),
+                can_redo: !d.redo.is_empty(),
+                undo_groups: d.undo.len(),
+                redo_groups: d.redo.len(),
+                last_undo_group: d.undo.back().map(|e| e.group),
+                last_redo_group: d.redo.last().map(|e| e.group),
+                merge: d.merge.as_ref().map(|m| MergeObservation {
+                    view: m.view,
+                    tick_ms: m.tick_ms,
+                    end: m.end,
+                    token: m.token,
+                }),
+                last_fence: d.last_fence,
+            },
+        }
+    }
+    pub(crate) fn has_active_save(&self, doc: DocId) -> bool {
+        self.saves.contains_key(&doc)
+    }
+    pub(crate) fn remove_memory_document(&mut self, doc: DocId) -> Result<(), Error> {
+        let d = self.docs.remove(&doc).ok_or(Error::InvalidDoc)?;
+        for id in d.views.keys() {
+            self.view_docs.remove(id);
+        }
+        self.charge -= d.charge;
+        Ok(())
+    }
 }

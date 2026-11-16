@@ -61,6 +61,7 @@ try {
     Invoke-Checked python @('--version')
     try {
         Invoke-Checked python @('scripts/test-document-probe.py', '--probe', 'target/x86_64-pc-windows-msvc/release/document-probe.exe', '--trace', 'build-evidence/probe-oracle.jsonl')
+        Invoke-Checked python @('scripts/test-observer-probe.py', '--probe', 'target/x86_64-pc-windows-msvc/release/document-probe.exe', '--trace-dir', 'build-evidence/observer-rounds')
     } catch {
         Copy-Item target/x86_64-pc-windows-msvc/release/document-probe.exe build-evidence/failed-document-probe.exe
         throw
@@ -79,6 +80,8 @@ try {
     Copy-Item $testExecutables[0] dist/package/component-tests/document-contracts.exe
     Copy-Item target/x86_64-pc-windows-msvc/release/document-probe.exe dist/package/component-tests/
     Copy-Item scripts/test-document-probe.py,docs/tx03b/PROTOCOL.md dist/package/component-tests/
+    Copy-Item scripts/test-observer-probe.py dist/package/component-tests/
+    Copy-Item docs/tx03c/PROTOCOL.md dist/package/component-tests/OBSERVER-PROTOCOL.md
     Copy-Item target/x86_64-pc-windows-msvc/release/texzi-app.exe dist/package/
     Copy-Item LICENSE,docs/tx00/RUN.md,docs/tx00/STARTUP_FAILURE.md dist/package/
     Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse

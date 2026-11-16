@@ -5,6 +5,8 @@ mod anchors;
 mod body;
 mod coordinates;
 mod history;
+mod observe;
+mod observed_writes;
 mod provenance;
 mod view_store;
 mod views;
@@ -13,11 +15,12 @@ pub use anchors::Affinity;
 pub use body::{Body, Eol, Profile};
 pub use coordinates::{Coordinate, GraphemeIndex, GraphemeOffset, SourceByte, Utf16Offset};
 pub use history::*;
+pub use observe::*;
 pub use provenance::OriginSpan;
 pub use view_store::DocumentViewSnapshot;
 pub use views::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DocId(pub(crate) u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Revision(pub u64);
