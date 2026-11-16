@@ -2,3 +2,5 @@
 docs/design-v1/** -text
 # Frozen Unicode component corpus: do not change bytes on Windows checkout.
 crates/texzi-document/tests/fixtures/** -text
+# Reviewed independent oracle is an exact-byte verification input, not a fmt target.
+tests/oracles/** -text
