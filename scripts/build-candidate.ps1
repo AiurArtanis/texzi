@@ -58,7 +58,7 @@ try {
     Invoke-Checked cargo @('metadata', '--locked', '--format-version', '1', '--filter-platform', 'x86_64-pc-windows-msvc') -StdoutFile 'build-evidence/metadata.json'
     New-Item dist/package/licenses -ItemType Directory -Force | Out-Null
     Copy-Item target/x86_64-pc-windows-msvc/release/texzi-app.exe dist/package/
-    Copy-Item LICENSE,docs/tx00/RUN.md dist/package/
+    Copy-Item LICENSE,docs/tx00/RUN.md,docs/tx00/STARTUP_FAILURE.md dist/package/
     Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse
     Invoke-Checked rustc @('--print', 'sysroot') -StdoutFile 'build-evidence/rust-sysroot.txt'
     $sysroot = (Get-Content build-evidence/rust-sysroot.txt -Raw).Trim()
