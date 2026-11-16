@@ -105,6 +105,15 @@ impl ExternalDocument for NativeView {
             )
             .map_err(err)?;
         let r = store.submit_view(plan).map_err(err)?;
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!(
+                "TX04_IME_OWNER action=submit kind={:?} previous={} revision={} bytes={}",
+                kind,
+                r.previous.0,
+                r.snapshot.revision.0,
+                r.snapshot.body.len_bytes()
+            );
+        }
         self.update(&store, r)
     }
     fn history(&self, revision: u64, epoch: u64, undo: bool) -> Result<ExternalUpdate, String> {
@@ -119,6 +128,15 @@ impl ExternalDocument for NativeView {
             store.redo_view(self.view, epoch)
         }
         .map_err(err)?;
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!(
+                "TX04_IME_OWNER action={} previous={} revision={} bytes={}",
+                if undo { "undo" } else { "redo" },
+                r.previous.0,
+                r.snapshot.revision.0,
+                r.snapshot.body.len_bytes()
+            );
+        }
         self.update(&store, r)
     }
     fn select(

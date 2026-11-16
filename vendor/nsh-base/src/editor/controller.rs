@@ -881,6 +881,14 @@ impl Ed {
     /// shows at the caret and the text waits for the commit, which asks for
     /// no completions (the input method offers its own candidates).
     pub(crate) fn composition(&self, composing: bool, text: &str) {
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!(
+                "TX04_IME_EDITOR_EVENT composing={} preedit_utf16={} cached_revision={}",
+                composing,
+                text.encode_utf16().count(),
+                self.st.borrow().buffer.version()
+            );
+        }
         let (started, held) = {
             let mut sink = self.sink.borrow_mut();
             let started = composing && !sink.composing;

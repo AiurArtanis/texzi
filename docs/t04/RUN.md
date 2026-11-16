@@ -29,4 +29,7 @@ $LASTEXITCODE
 仅Windows x64，Rust1.97.0/MSVC，静态CRT；系统Direct2D/DirectWrite及系统字体，不捆字体或未经核验DLL。
 新增启用nsh-base/editor；确切直接/传递依赖及许可见metadata.json、sbom.json、licenses/、feature图。
 fork来源manifest和补丁边界见component-tests/NSH-FORK.md、NSH-UPSTREAM-MANIFEST.json。
+IME-01修复另含固定Windows adapter fork，见NSH-WINDOWS-FORK.md及对应原始manifest。
+仅在显式TEXZI_TRACE_IME=1时输出长度/版本/标志诊断；默认关闭，不输出正文/预编辑字符串。
+测试可读取生成stderr核版本和组合阶段，无需访问剪贴板；详IME-01.md。
 Win10/1809交付后验证，本机未测环境不外推。无安装器/发布/签名；框架可能写缓存，不宣称全局无写入。

@@ -86,6 +86,9 @@ try {
     Copy-Item LICENSE,docs/t04/RUN.md,docs/tx00/STARTUP_FAILURE.md dist/package/
     Copy-Item vendor/nsh-base/TEXZI-PATCH.md dist/package/component-tests/NSH-FORK.md
     Copy-Item vendor/nsh-base/UPSTREAM-MANIFEST.json dist/package/component-tests/NSH-UPSTREAM-MANIFEST.json
+    Copy-Item vendor/nsh-platform-windows/TEXZI-PATCH.md dist/package/component-tests/NSH-WINDOWS-FORK.md
+    Copy-Item vendor/nsh-platform-windows/UPSTREAM-MANIFEST.json dist/package/component-tests/NSH-WINDOWS-UPSTREAM-MANIFEST.json
+    Copy-Item docs/t04/IME-01.md dist/package/component-tests/IME-01.md
     Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse
     Invoke-Checked rustc @('--print', 'sysroot') -StdoutFile 'build-evidence/rust-sysroot.txt'
     $sysroot = (Get-Content build-evidence/rust-sysroot.txt -Raw).Trim()

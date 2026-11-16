@@ -1461,6 +1461,14 @@ fn composition(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoEl
             let head = st.primary_head();
             (text_, st.row_after(head), st.caret_point(head))
         };
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!(
+                "TX04_IME_RENDER preedit_utf16={} x={} y={}",
+                text_.encode_utf16().count(),
+                at.x.0,
+                at.y.0
+            );
+        }
         // The row it covers is the active line's.
         let active = props.active_line.get();
         Some(
@@ -1524,12 +1532,15 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         ed.clone(),
     );
     let value = ed.sink_value;
+    let width_ed = ed.clone();
     input()
         .element_ref(&ed.input)
         .absolute()
         .left(move || Length::from(at.get().x))
         .top(move || Length::from(at.get().y))
-        .w(px(1.0))
+        // A one-pixel multiline RichEdit wraps each preedit character and moves
+        // its native candidate caret down. Keep the hidden sink on this row.
+        .w(move || Length::from((width_ed.viewport.get().width - at.get().x).max(px(1.0))))
         .h(move || Length::from(lh()))
         // Presses at the caret are the rows' (a click there places it).
         .pointer_events(PointerEvents::None)

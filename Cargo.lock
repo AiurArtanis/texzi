@@ -1416,7 +1416,6 @@ dependencies = [
 [[package]]
 name = "nsh-platform-windows"
 version = "0.5.1"
-source = "git+https://github.com/longbridge/nsh?rev=224d9a795c7ac9d10d75750de9351adac5549675#224d9a795c7ac9d10d75750de9351adac5549675"
 dependencies = [
  "crossbeam-channel",
  "image",

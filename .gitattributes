@@ -6,3 +6,4 @@ crates/texzi-document/tests/fixtures/** -text
 tests/oracles/** -text
 # Traceable upstream fork: retain original source bytes across checkout.
 vendor/nsh-base/** -text
+vendor/nsh-platform-windows/** -text
