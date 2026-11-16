@@ -510,6 +510,59 @@ mod tests {
         });
     }
     #[test]
+    fn leading_split_join_has_its_own_undo_redo_and_preserves_terminal_eol() {
+        run(|| {
+            for (raw, split_first, before_join, after_join) in [
+                ("abc", true, "\r\n\r\nabc", "abc"),
+                ("\n\nabc\n", false, "\n\nabc\n", "abc\n"),
+                ("\r\n\nabc\r\n", false, "\r\n\nabc\r\n", "abc\r\n"),
+            ] {
+                let source = NativeView::fixture(raw);
+                let owner =
+                    RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+                if split_first {
+                    select(&owner, 1);
+                    split(&owner);
+                }
+                select(&owner, 3);
+                assert_eq!(bytes(&source), before_join.as_bytes());
+                let before =
+                    source.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().token);
+                let state = owner.session.state();
+                let mut dispatch = |tr| owner.session.dispatch(tr).unwrap();
+                assert!(nsh_base::rich_editor::commands::join_backward(
+                    &state,
+                    Some(&mut dispatch)
+                ));
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), after_join.as_bytes());
+                let after =
+                    source.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().token);
+                assert_ne!(before, after);
+                owner.history(true);
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), before_join.as_bytes());
+                assert_eq!(
+                    source.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().token),
+                    before
+                );
+                owner.history(false);
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), after_join.as_bytes());
+                assert_eq!(
+                    source.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().token),
+                    after
+                );
+                source.inspect(|s, id| {
+                    assert_eq!(
+                        s.history_depth(s.view(id).unwrap().doc).unwrap(),
+                        (if split_first { 2 } else { 1 }, 0)
+                    )
+                });
+            }
+        });
+    }
+    #[test]
     fn owner_opaque_single_letter_preserves_mixed_eols_origins_and_undo() {
         run(|| {
             let raw = "<custom>\r\nalpha\nbeta\r\n</custom>\n";
