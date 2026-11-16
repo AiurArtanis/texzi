@@ -40,7 +40,13 @@ per run. Runner image is mutable; recorded image identity is required evidence.
 SDK directory listings and the MSVC default-version file are explicitly recorded
 as installed/default inventory, not the actual linker/SDK chosen by rustc.
 tool-inventory.json carries this boundary into every candidate package. Effective
-tool selection remains an independent clean Win10 build evidence requirement.
+tool selection is documented separately when effective evidence exists.
+TX-02 now selects the final linker by absolute path and MSVC/SDK library search
+paths explicitly, records the linker file version/hash, and requires the
+actual rustc-emitted final executable link invocation to contain these paths.
+This is final-link evidence, not tracing of every C compiler/header or loader.
+The latest scope is local development verification; Windows 10 is deferred
+delivery validation NOT_RUN, while historical BLOCKED evidence is preserved.
 Actions are pinned to full commit IDs; Rust is exact. No runtime DLLs are copied
 without a demonstrated need and license review. The MSVC CRT is statically
 linked through the shared .cargo/config.toml target setting; runtime import

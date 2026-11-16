@@ -26,8 +26,9 @@ try {
     $defaultMsvc = Get-Content (Join-Path $vs 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt')
     @{
         installed_sdk_directories=$inventory; default_msvc_file_version=$defaultMsvc;
-        selection_boundary='Inventory/default only. Actual linker and SDK selection is not traced; independent Win10 build must record the effective tools. No selected-version claim.'
+        selection_boundary='Inventory/default only. This file does not prove selection. See effective-toolchain-config.json and final-app-link-command.txt for this build final-link evidence; C compiler/header and OS loader selection are not traced.'
     } | ConvertTo-Json -Depth 4 | Set-Content build-evidence/tool-inventory.json
+    . "$PSScriptRoot/select-linker.ps1"
     Invoke-Checked rustup @('show')
     Invoke-Checked rustc @('-Vv')
     Invoke-Checked cargo @('-V')
@@ -45,6 +46,15 @@ try {
     Invoke-Checked cargo @('tree', '--locked', '--target', 'x86_64-pc-windows-msvc', '-e', 'features')
     Write-Host 'Component tests: NOT_RUN (TX-00 adds no testable document logic; native smoke is separate).'
     Invoke-Checked cargo @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc')
+    $buildResult = Get-ChildItem build-evidence -Filter '*.result.json' | ForEach-Object { Get-Content $_ -Raw | ConvertFrom-Json } |
+        Where-Object { $_.program -eq 'cargo' -and $_.arguments[0] -eq 'build' }
+    $linkCommands = Get-Content (Join-Path build-evidence $buildResult.stdout_file)
+    $finalLink = @($linkCommands | Where-Object { $_ -match '/OUT:.*texzi[-_]app.*\.exe' })
+    if ($finalLink.Count -ne 1) { throw 'Cannot identify the actual final application linker invocation' }
+    foreach ($selectedPath in @($effectiveLinker) + $selectedLibs) {
+        if (!$finalLink[0].Contains($selectedPath.Replace('\', '\\'))) { throw "Actual link invocation missing selected path: $selectedPath" }
+    }
+    $finalLink | Set-Content build-evidence/final-app-link-command.txt
     Invoke-Checked cargo @('metadata', '--locked', '--format-version', '1', '--filter-platform', 'x86_64-pc-windows-msvc') -StdoutFile 'build-evidence/metadata.json'
     New-Item dist/package/licenses -ItemType Directory -Force | Out-Null
     Copy-Item target/x86_64-pc-windows-msvc/release/texzi-app.exe dist/package/

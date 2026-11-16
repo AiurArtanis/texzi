@@ -19,6 +19,9 @@ impl log::Log for StderrLogger {
 static LOGGER: StderrLogger = StderrLogger;
 
 #[cfg(windows)]
+mod startup_fault;
+
+#[cfg(windows)]
 mod app {
     use nsh_core::prelude::*;
     use nsh_platform_windows as platform;
@@ -49,6 +52,12 @@ fn main() -> std::process::ExitCode {
     log::set_max_level(log::LevelFilter::Info);
     #[cfg(windows)]
     {
+        if std::env::args_os().any(|arg| arg == "--tx00-fail-window-create") {
+            if let Err(error) = startup_fault::arm() {
+                log::error!("Cannot arm TX00 startup fixture (not an NSH failure result): {error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
         app::run()
     }
     #[cfg(not(windows))]

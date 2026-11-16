@@ -38,6 +38,16 @@ candidate. CI preserves injected-failure evidence separately from the candidate.
 SDK/MSVC inventory is marked installed/default; it does not prove actual linker
 or SDK selection.
 
+The candidate script now selects an absolute x64 MSVC linker and explicit
+MSVC/SDK library paths, sets the build-process-only target linker/LIB/encoded
+Rust flags (static CRT, `--print=link-args`, explicit `/LIBPATH:` arguments),
+and requires the successful final application link command to contain those
+paths. `effective-toolchain-config.json` records version/hash and configuration;
+`final-app-link-command.txt` is the actual rustc-emitted invocation. These flags
+are extra evidence settings of the script/CI; the plain cargo command above
+does not claim equivalent tool-selection tracing. See
+[controlled real startup failure](docs/tx00/STARTUP_FAILURE.md).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the review, testing and merge policy.
