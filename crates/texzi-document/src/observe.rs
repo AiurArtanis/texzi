@@ -798,6 +798,28 @@ pub struct ObserverCache {
     last_batch: Option<EventBatch>,
 }
 impl ObserverCache {
+    /// A resume rejection is a control result, not a new stream or a new cursor.
+    /// Clients must call this for the response to their own complete cursor.
+    pub fn resume_rejected(&mut self, error: &ObserverError) -> Result<(), ObserverError> {
+        if let ObserverError::Lagged(info) = error {
+            if info.cursor.store != self.cursor.store
+                || info.cursor.doc != self.cursor.doc
+                || info.cursor.scope != self.cursor.scope
+                || info.registered_at != self.cursor.seq
+            {
+                return self.invalidate(ObserverError::Protocol).map(|_| ());
+            }
+        }
+        if matches!(
+            error,
+            ObserverError::Lagged(_) | ObserverError::WrongStore | ObserverError::DocGone
+        ) {
+            self.stale = true;
+            self.pending = None;
+            self.buffer.clear();
+        }
+        Ok(())
+    }
     pub fn receive_doc_gone(
         &mut self,
         cursor: &Cursor,

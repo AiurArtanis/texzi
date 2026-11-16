@@ -386,6 +386,43 @@ fn empty_log_current_cursor_and_replay_capacity_are_explicit() {
     let _ = observe(&mut s, d.doc, vec![a.id], 4); // failed resume did not consume a subscription
 }
 #[test]
+fn resume_overflow_marks_cache_stale_without_advancing_watermark() {
+    let (mut s, d, a, _) = setup(ObserverLimits {
+        journal_batches: 4,
+        max_queue_batches: 4,
+        max_subscriptions: 4,
+    });
+    let (snapshot, h) = observe(&mut s, d.doc, vec![a.id], 4);
+    let mut c = installed(snapshot.clone());
+    let before = c.state().unwrap().clone();
+    s.unsubscribe(&h).unwrap();
+    edit(&mut s, d.doc, "x");
+    edit(&mut s, d.doc, "y");
+    let rejection = s
+        .resume(d.doc, snapshot.cursor.scope.clone(), &snapshot.cursor, 1)
+        .unwrap_err();
+    assert!(matches!(rejection, ObserverError::Lagged(_)));
+    c.resume_rejected(&rejection).unwrap();
+    assert!(c.is_stale());
+    assert_eq!(c.cursor(), &snapshot.cursor);
+    assert_eq!(c.state().unwrap(), &before);
+    assert_eq!(c.cursor_for_resume(), Err(ObserverError::NeedsObserve));
+    let (fresh, _) = observe(&mut s, d.doc, vec![a.id], 4);
+    let fresh = installed(fresh);
+    assert_eq!(
+        fresh
+            .state()
+            .unwrap()
+            .global
+            .document
+            .body
+            .source()
+            .to_string(),
+        "abcxy"
+    );
+    assert!(!fresh.is_stale());
+}
+#[test]
 fn closed_view_tombstone_document_gone_and_new_store_epoch() {
     let (mut s, d, a, _) = setup(ObserverLimits::default());
     let (snapshot, h) = observe(&mut s, d.doc, vec![a.id], 8);

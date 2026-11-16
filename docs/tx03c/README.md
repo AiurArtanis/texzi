@@ -65,6 +65,9 @@ poll/pop只是交付，不当作客户端已安装的ack；诊断L/H不替代客
 L-1<=C<=H只是必要条件，还验证完整连续区间。C>H为CursorAhead；C<L-1为CursorTooOld。
 日志为空取L=H+1：C=H允许空重放，C<H不允许。重放批次数大于新队列容量直接返回Lagged，
 不截断、不分配成功句柄。失败不改正文或缓存；scope/schema改变须observe而非跳最新。
+这里“失败不改缓存”指不改最后完整状态/水位；replay容量返回Lagged时，客户端必须将其标stale，
+不能只显示错误后继续允许resume。`ObserverCache::resume_rejected`处理当前请求的Lagged/WrongStore/DocGone，
+probe的obs_resume已接入；之后只能重新observe并安装全部状态。原531f84f漏接此控制结果的反例已保留。
 
 调用方必须已有与C匹配的**完整状态**，不是只拿cursor。若外部持久化，状态和cursor须同次落盘；
 本步未实现真实持久化。内置cache只有installed/非stale/无半批次时能取resume cursor。

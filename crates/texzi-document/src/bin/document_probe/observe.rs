@@ -268,9 +268,24 @@ impl Wire {
                         views,
                     )?
                 };
-                let h = store
-                    .resume(doc, scope(v, views)?, &cursor, offset(num(v, "capacity")?)?)
-                    .map_err(err)?;
+                let h = match store.resume(
+                    doc,
+                    scope(v, views)?,
+                    &cursor,
+                    offset(num(v, "capacity")?)?,
+                ) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        if op == "obs_resume" {
+                            self.caches
+                                .get_mut(text(v, "cache")?)
+                                .unwrap()
+                                .resume_rejected(&e)
+                                .map_err(err)?;
+                        }
+                        return Err(err(e));
+                    }
+                };
                 if op == "obs_resume" {
                     self.caches
                         .get_mut(text(v, "cache")?)

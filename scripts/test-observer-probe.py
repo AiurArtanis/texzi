@@ -276,6 +276,23 @@ def zero_log_and_close(w):
     return first["cursor"]
 
 
+def replay_overflow_requires_observe(w):
+    w.setup(journal=4, queue_max=4)
+    w.observe("s", capacity=4)
+    before = w.cache("c", "s")
+    w.ok("obs_unsubscribe", handle="s")
+    w.edit("X")
+    w.edit("Y")
+    w.fail("obs_resume", "Lagged", doc="d", views=["a"], cache="c", handle="too-small", capacity=1)
+    after = w.cs("c")
+    assert after["stale"] and after["state"] == before["state"] and after["cursor"] == before["cursor"]
+    w.fail("obs_cache_resume_cursor", "NeedsObserve", cache="c")
+    w.fail("obs_resume", "NeedsObserve", doc="d", views=["a"], cache="c", handle="must-observe", capacity=4)
+    w.observe("fresh", capacity=4)
+    current = w.cache("new-cache", "fresh")
+    assert current["state"]["global"]["document"]["source"] == "abcXY" and not current["stale"]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe", required=True)
@@ -285,7 +302,7 @@ def main():
     root.mkdir(parents=True, exist_ok=False)
     summaries = []
     saved_cursor = None
-    for index, case in enumerate([initial_buffer, save_resume, duplicates_gap_partial, projection_and_identity, twice_lagged, zero_log_and_close]):
+    for index, case in enumerate([initial_buffer, save_resume, duplicates_gap_partial, projection_and_identity, twice_lagged, replay_overflow_requires_observe, zero_log_and_close]):
         w = Worker(args.probe, root / f"round-{index + 1:02}-{case.__name__}")
         try:
             result = case(w)
@@ -293,7 +310,7 @@ def main():
                 saved_cursor = result
         finally:
             summaries.append(dict(case=case.__name__, **w.close()))
-    w = Worker(args.probe, root / "round-07-restart-epoch")
+    w = Worker(args.probe, root / "round-08-restart-epoch")
     try:
         w.setup()
         fresh = w.observe("s")

@@ -24,6 +24,9 @@ JSON整数要求无损u64处理（Python/Rust可用），不能用浮点近似�
 schema可显式传入制造UnsupportedSchema/ScopeMismatch。所有历史别名保留，复用别名拒绝，避免覆盖证据。
 错误延续`ok:false,error:Debug字符串`，测试可核错误变体前缀；公共Rust API提供结构化ObserverError。
 尤其CursorTooOld/Lagged错误诊断范围不授权改cache cursor；必须重新observe并安装所有状态。
+obs_resume遇到重放容量Lagged会把该cache标stale、保留最后完整状态和水位，禁止再次resume；
+公共Rust客户端应调用ObserverCache::resume_rejected处理自己的resume终止响应。
+obs_resume_raw没有关联内置cache，外部自管客户端必须自行处理同样的stale/重新observe转移。
 
 Batch含cursor、subscription、events和frames。events为Content/Global/View，空投影时[]。
 Content含PublicationId、group、previous/revision/token、forward/inverse；所有delta以对应完整版本为基准。
