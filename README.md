@@ -4,7 +4,9 @@ Windows native text and Markdown editor built with Rust and NSH.
 
 ## Status
 
-TX-00 native window baseline; an editor has not yet been delivered or validated.
+Limited native input/IME checks are accepted at their fixed checkpoint.
+Source-backed native rich editing is in development; the complete editor,
+rich-text gate and safe file IO remain PARTIAL.
 
 ## Build a private Windows x64 candidate
 
@@ -16,6 +18,7 @@ and rustfmt are selected by rust-toolchain.toml.
 cargo fmt --all -- --check
 cargo build -p texzi-document --features probe --bin document-probe --release --locked --target x86_64-pc-windows-msvc
 cargo test -p texzi-document --release --locked --target x86_64-pc-windows-msvc --test contracts -- --include-ignored --nocapture --test-threads=1
+cargo test -p texzi-app --bin texzi-app --release --locked --target x86_64-pc-windows-msvc -- --nocapture --test-threads=1
 cargo build --release --locked --target x86_64-pc-windows-msvc
 ./scripts/build-candidate.ps1
 ```
@@ -30,8 +33,12 @@ It uploads a private Actions artifact, never a Release. Failure evidence is
 uploaded separately and is not a successful candidate. The script compiles and
 executes the document contracts suite (including the million-edit property case)
 before building the app, and packages the exact component test executable for
-local verification. This is component evidence; the crate is not integrated into
-the native window. A JSON-lines `document-probe.exe` permits separately written
+local verification. The app unit suite is likewise built with --no-run and its
+exact executable is run and packaged as rich-projection.exe. These are component
+checks and do not prove GUI behavior. T04 now connects the
+native source editor to its unique Store/history. T05/T06 additionally integrates
+a source-backed native rich view, still PARTIAL: see [portable run notes](docs/PORTABLE_RUN.md)
+and [rich editing boundaries](docs/t05/RUN.md). A JSON-lines `document-probe.exe` permits separately written
 component oracles; CI runs scripts/test-document-probe.py before the application
 build and packages the executable/protocol. See [T03b logical views and history](docs/tx03b/README.md),
 [probe protocol](docs/tx03b/PROTOCOL.md), [C08 memory observer and recovery](docs/tx03c/README.md),

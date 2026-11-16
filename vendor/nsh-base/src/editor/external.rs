@@ -30,6 +30,8 @@ pub enum ExternalEditKind {
 /// Implemented by the application. All writes validate the supplied version/epoch.
 /// `track` reads an engine reactive notification, `notify` runs outside editor borrows.
 pub trait ExternalDocument {
+    /// Composition is transient view state, never a document transaction.
+    fn composition_changed(&self, _active: bool) {}
     fn snapshot(&self) -> Result<ExternalSnapshot, String>;
     fn edit(
         &self,

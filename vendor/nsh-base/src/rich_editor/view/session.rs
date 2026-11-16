@@ -277,6 +277,7 @@ struct Inner {
     state: EditorState,
     node_views: NodeViews,
     dispatch: Option<DispatchTransaction>,
+    composition_listener: Option<Arc<dyn Fn(bool) + Send + Sync>>,
     subscribers: Vec<(SubscriptionId, Subscriber)>,
     views: Vec<(SubscriptionId, ViewHook)>,
     listeners: Vec<(SubscriptionId, SessionEventKind, EventListener)>,
@@ -320,6 +321,7 @@ impl EditorSession {
                 state,
                 node_views,
                 dispatch: None,
+                composition_listener: None,
                 subscribers: Vec::new(),
                 views: Vec::new(),
                 listeners: Vec::new(),
@@ -636,7 +638,18 @@ impl EditorSession {
     }
 
     pub(crate) fn set_composing(&self, composing: bool) {
-        self.0.composing.store(composing, Ordering::Relaxed);
+        let old = self.0.composing.swap(composing, Ordering::Relaxed);
+        if old != composing {
+            let listener = self.lock().composition_listener.clone();
+            if let Some(listener) = listener {
+                listener(composing);
+            }
+        }
+    }
+
+    /// Transient composition state for an external owner/mode guard. No text.
+    pub fn set_composition_listener(&self, listener: Option<Arc<dyn Fn(bool) + Send + Sync>>) {
+        self.lock().composition_listener = listener;
     }
 
     /// Registers a view's handler of requests.

@@ -22,3 +22,8 @@ not an assertion that all T04, rectangular/multi-caret, IME or rich text passed.
 T05/T06 candidate additionally enables rich-editor and changes rich_editor/view/render.rs native sink width from 1px to remaining viewport. Offscreen layout remains active. Rich IME and source/rich integration need their own evidence; the prior source-editor IME PASS is not inherited. Original upstream manifest/source files retained.
 
 Rich-editor credits in fixed upstream name MIT ProseMirror/Tiptap ported code. Derived package license metadata is Apache-2.0 AND MIT; original Cargo.upstream.toml remains unchanged. Official license texts and source blob identities are included in docs/tx00/licenses and docs/t05/LICENSE-SOURCES.json, not invented port revision claims.
+
+T05 source review corrections additionally report transient source composition
+through the external owner, and provide an opt-in Rust session composition
+listener for the rich mode guard. These metadata hooks do not edit text or
+create history. Target projection preparation precedes visible mode publication.

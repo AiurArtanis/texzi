@@ -2409,6 +2409,7 @@ dependencies = [
 name = "texzi-app"
 version = "0.0.1"
 dependencies = [
+ "imara-diff",
  "log",
  "markdown",
  "nsh-base",
@@ -2416,6 +2417,7 @@ dependencies = [
  "nsh-platform-windows",
  "serde_json",
  "texzi-document",
+ "unicode-segmentation",
 ]
 
 [[package]]

@@ -38,15 +38,15 @@ mod app {
         let source = crate::editor_owner::NativeView::new();
         let rich = source.sibling().expect("independent rich view");
         provide_context(source.buffer());
-        let rich_mode = signal(false);
-        let status = signal(String::new());
-        let active: std::rc::Rc<
-            std::cell::RefCell<Option<std::rc::Rc<crate::rich_owner::RichOwner>>>,
-        > = std::rc::Rc::new(std::cell::RefCell::new(None));
-        let source_owner = source.clone();
-        let rich_source_owner = source.clone();
-        let source_mode_active = active.clone();
-        let source_active = active.clone();
+        let gate = crate::rich_owner::ModeGate::new(source, rich);
+        let rich_mode = gate.rich_mode;
+        let status = gate.status;
+        let source_request = gate.clone();
+        let rich_request = gate.clone();
+        let source_busy = gate.clone();
+        let rich_busy = gate.clone();
+        let render_rich = gate.clone();
+        let render_source = gate.clone();
         view()
             .flex_1()
             .bg(white())
@@ -59,54 +59,26 @@ mod app {
                     .child(
                         nsh_base::button()
                             .child(text("源码"))
-                            .on_press(move |_: &()| {
-                                use nsh_base::editor::ExternalDocument;
-                                if source_mode_active
-                                    .borrow()
-                                    .as_ref()
-                                    .is_some_and(|o| o.session().composing())
-                                {
-                                    status.set("请先完成或取消中文组合，再切换模式".into());
-                                    return;
-                                }
-                                source_owner.fence();
-                                source_owner.trace_state("mode_source");
-                                rich_mode.set(false);
-                            }),
+                            .disabled(move || source_busy.busy())
+                            .on_press(move |_: &()| source_request.to_source()),
                     )
                     .child(
                         nsh_base::button()
                             .child(text("富文本"))
-                            .on_press(move |_: &()| {
-                                use nsh_base::editor::ExternalDocument;
-                                rich_source_owner.fence();
-                                rich_source_owner.trace_state("mode_rich");
-                                rich_mode.set(true)
-                            }),
+                            .disabled(move || rich_busy.busy())
+                            .on_press(move |_: &()| rich_request.to_rich()),
                     ),
             )
             .child(text(move || status.get()).text_color(black()))
             .child(
                 when(rich_mode, move || {
-                    match crate::rich_owner::RichOwner::new(rich.clone(), status) {
-                        Ok(owner) => {
-                            status.set(String::new());
-                            let session = owner.session();
-                            *active.borrow_mut() = Some(owner);
-                            nsh_base::rich_editor::view::rich_editor()
-                                .editor(session)
-                                .auto_focus(true)
-                                .size_full()
-                                .into_element()
-                        }
-                        Err(e) => {
-                            status.set(e);
-                            view().into_element()
-                        }
-                    }
+                    nsh_base::rich_editor::view::rich_editor()
+                        .editor(render_rich.session())
+                        .auto_focus(true)
+                        .size_full()
                 })
                 .otherwise(move || {
-                    source_active.borrow_mut().take();
+                    render_source.source_mounted();
                     nsh_base::editor::editor()
                         .auto_focus(true)
                         .language("markdown")

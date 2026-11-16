@@ -7,6 +7,7 @@ use nsh_base::rich_editor::{
 };
 use serde_json::json;
 use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub fn manager() -> ExtensionManager {
     ExtensionManager::with_core(vec![
@@ -37,6 +38,78 @@ fn root(schema: &Schema, nodes: Vec<Node>) -> Result<Node, String> {
         .map_err(message)
 }
 impl Projection {
+    pub fn rich_position(&self, byte: usize) -> Option<usize> {
+        let mut base = 0;
+        for block in &self.blocks {
+            let raw = &self.source[block.source.clone()];
+            let mut found = None;
+            block.node.descendants(&mut |n, p, _, _| {
+                if let Some(t) = n.text() {
+                    let mut matches = raw.match_indices(t);
+                    if let Some((at, _)) = matches.next().filter(|_| matches.next().is_none()) {
+                        let start = block.source.start + at;
+                        if let Some(delta) = byte
+                            .checked_sub(start)
+                            .filter(|d| *d <= t.len() && t.is_char_boundary(*d))
+                        {
+                            found = Some(base + 1 + p + t[..delta].encode_utf16().count());
+                        }
+                    }
+                }
+                true
+            });
+            if found.is_some() {
+                return found;
+            }
+            if block.node.content().size() == 0 && byte == block.source.start {
+                return Some(base + 1);
+            }
+            base += block.node.node_size();
+        }
+        None
+    }
+    /// Split a semantic block replacement into grapheme edits. Matched source
+    /// spans (including every existing EOL) stay in Store's provenance tree.
+    /// This first bridge rejects changes to line breaks inside multiline blocks
+    /// rather than guessing which original newline an ambiguous diff denotes.
+    pub fn source_edits(&self, next: &Node) -> Result<Vec<(Range<usize>, String)>, String> {
+        let Some((range, text)) = self.patch(next)? else {
+            return Ok(vec![]);
+        };
+        let before = &self.source[range.clone()];
+        if before.len() > i32::MAX as usize || text.len() > i32::MAX as usize {
+            return Err("源片段超过当前映射索引范围，原文未变".into());
+        }
+        let mut input = imara_diff::InternedInput::<&str>::default();
+        input.update_before(before.graphemes(true));
+        input.update_after(text.graphemes(true));
+        let a: Vec<_> = before
+            .grapheme_indices(true)
+            .map(|(i, _)| i)
+            .chain(std::iter::once(before.len()))
+            .collect();
+        let b: Vec<_> = text
+            .grapheme_indices(true)
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        let diff = imara_diff::Diff::compute(imara_diff::Algorithm::Histogram, &input);
+        let mut edits = Vec::new();
+        for h in diff.hunks() {
+            let old = a[h.before.start as usize]..a[h.before.end as usize];
+            let new = b[h.after.start as usize]..b[h.after.end as usize];
+            if before.contains('\n')
+                && (before[old.clone()].contains('\n') || text[new.clone()].contains('\n'))
+            {
+                return Err("该多行块的换行暂不能保真修改，请切到源码编辑；原文未变".into());
+            }
+            edits.push((
+                range.start + old.start..range.start + old.end,
+                text[new].to_owned(),
+            ));
+        }
+        Ok(edits)
+    }
     pub fn parse(schema: &Schema, source: String) -> Result<Self, String> {
         let tree = markdown::to_mdast(&source, &ParseOptions::gfm()).map_err(message)?;
         let mut blocks = Vec::new();
@@ -201,6 +274,12 @@ impl Projection {
             start
         };
         let nodes = (first..new_end).map(|i| next.child(i).clone()).collect();
+        if self.source[start..end]
+            .chars()
+            .any(|c| c == '\\' || c == '&')
+        {
+            return Err("此块的转义或实体暂不能保真改写，请切到源码编辑；原文未变".into());
+        }
         let doc = root(&self.doc.ty().schema(), nodes)?;
         let mut text = MarkdownFormat::default().serialize(&doc).map_err(message)?;
         if text.ends_with('\n') {
@@ -231,9 +310,10 @@ mod tests {
         state.apply(tr).unwrap().doc().clone()
     }
     fn apply(p: &Projection, n: &Node) -> String {
-        let (r, t) = p.patch(n).unwrap().unwrap();
         let mut raw = p.source.clone();
-        raw.replace_range(r, &t);
+        for (r, t) in p.source_edits(n).unwrap().iter().rev() {
+            raw.replace_range(r.clone(), t);
+        }
         raw
     }
     #[test]
@@ -307,14 +387,14 @@ mod tests {
             .unwrap();
         let p = Projection::parse(m.schema(), s.body.source().to_string()).unwrap();
         let n = edited(&p, 2, 4, "乙");
-        let (range, text) = p.patch(&n).unwrap().unwrap();
-        let caret = range.start + text.len();
+        let edits = p.source_edits(&n).unwrap();
+        let caret = edits[0].0.start + edits[0].1.len();
         let plan = store
             .plan_view_edits(
                 rich.id,
                 s.revision,
                 rich.epoch,
-                vec![(range, text)],
+                edits,
                 vec![(caret, caret)],
                 0,
                 InputKind::Structural,
@@ -405,22 +485,8 @@ fn single_text_patch(b: &Block, next: &Node, source: &str) -> Option<(Range<usiz
     if matches.next().is_some() {
         return None;
     }
-    let mut prefix = 0;
-    for (x, y) in old.chars().zip(new.chars()) {
-        if x != y {
-            break;
-        }
-        prefix += x.len_utf8();
-    }
-    let mut suffix = 0;
-    for (x, y) in old[prefix..].chars().rev().zip(new[prefix..].chars().rev()) {
-        if x != y {
-            break;
-        }
-        suffix += x.len_utf8();
-    }
     Some((
-        b.source.start + at + prefix..b.source.start + at + old.len() - suffix,
-        new[prefix..new.len() - suffix].into(),
+        b.source.start + at..b.source.start + at + old.len(),
+        new.into(),
     ))
 }

@@ -12,12 +12,16 @@ pub struct Owner {
 pub struct NativeView {
     owner: Rc<Owner>,
     view: doc::ViewId,
+    composing: Signal<bool>,
 }
 impl NativeView {
     pub fn new() -> Rc<Self> {
+        Self::from_text("")
+    }
+    fn from_text(raw: &str) -> Rc<Self> {
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let s = store
-            .open_utf8("", doc::Profile::default(), false)
+            .open_utf8(raw, doc::Profile::default(), false)
             .expect("new document");
         let set = doc::SelectionSet::caret(&s, 0);
         let v = store
@@ -36,10 +40,28 @@ impl NativeView {
                 clock: Instant::now(),
             }),
             view: v.id,
+            composing: signal(false),
         })
     }
     pub fn buffer(self: &Rc<Self>) -> ExternalBuffer {
         ExternalBuffer(self.clone())
+    }
+    pub fn is_composing(&self) -> bool {
+        self.composing.get()
+    }
+    pub fn set_composing(&self, active: bool) {
+        self.composing.set(active);
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!("TX05_COMPOSITION view={:?} active={}", self.view, active);
+        }
+    }
+    #[cfg(test)]
+    pub fn fixture(raw: &str) -> Rc<Self> {
+        Self::from_text(raw)
+    }
+    #[cfg(test)]
+    pub fn inspect<R>(&self, f: impl FnOnce(&doc::Store, doc::ViewId) -> R) -> R {
+        f(&self.owner.store.borrow(), self.view)
     }
     pub fn trace_state(&self, action: &str) {
         if std::env::var_os("TEXZI_TRACE_IME").as_deref() != Some(std::ffi::OsStr::new("1")) {
@@ -80,6 +102,7 @@ impl NativeView {
         Ok(Rc::new(Self {
             owner: self.owner.clone(),
             view: v.id,
+            composing: signal(false),
         }))
     }
     fn read(&self, store: &doc::Store) -> Result<ExternalSnapshot, String> {
@@ -118,6 +141,9 @@ fn err(e: doc::Error) -> String {
     format!("{e:?}")
 }
 impl ExternalDocument for NativeView {
+    fn composition_changed(&self, active: bool) {
+        self.set_composing(active)
+    }
     fn snapshot(&self) -> Result<ExternalSnapshot, String> {
         self.read(&self.owner.store.borrow())
     }
