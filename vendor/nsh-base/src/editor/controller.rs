@@ -419,7 +419,10 @@ impl Ed {
         let ed = self.clone();
         effect(move || {
             if ed.props.auto_focus.get() {
-                ed.focus();
+                // The native input is mounted by the current commit. Match
+                // RichEditor's deferred focus instead of targeting no host yet.
+                let ed = ed.clone();
+                spawn(async move { ed.focus() });
             }
         });
     }

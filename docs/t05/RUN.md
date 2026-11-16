@@ -31,6 +31,8 @@
 
 简单可逆的源位置在重建时恢复；无法映射的初始位置会在发布模式前拒绝，保留源码区。输入/history还核对富选择与权威View是否一致。复杂位置/滚动和Markdown无法表达的空段落仍未完成，相关结构/换行操作可能明确拒绝；不能称完整Enter/结构编辑或G2已通过。
 
+3a0bcc9作者实际下载运行13/13组件通过；首GUI轮实际富输入和加粗可回写，手动聚焦源码后跨模式Undo/Redo正确，但切源码后自动焦点未恢复，直接快捷键无响应。原图/元数据/owned app0/无强清记录保留，不作整体PASS。后续将source auto_focus与原RichEditor一致延至挂载提交后，并提供必要标题/marks/代码/表格语义类；不是完整视觉或结构矩阵通过。新exe须重新验证键盘焦点、样式、组合和失败边界。
+
 ## 构建和产物
 
 README现有cargo build --release --locked --target x86_64-pc-windows-msvc命令不变。CI额外编译执行app单元测试，将真实rich-projection.exe与原双流/exit随包交独测；失败不打成功候选。原文档组件/窗口失败路径证据保留。

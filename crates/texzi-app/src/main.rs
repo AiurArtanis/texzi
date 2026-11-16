@@ -32,6 +32,42 @@ mod app {
     use nsh_core::prelude::*;
     use nsh_platform_windows as platform;
 
+    fn rich_classes() -> nsh_base::rich_editor::view::RichEditorClasses {
+        use std::collections::BTreeMap;
+        let mut classes = nsh_base::rich_editor::view::RichEditorClasses::default();
+        classes.content = Some("p-4 text-base".into());
+        classes.nodes = Some(BTreeMap::from([
+            ("paragraph".into(), "mb-3".into()),
+            ("heading".into(), "font-bold mt-4 mb-3".into()),
+            ("heading[level=1]".into(), "text-3xl".into()),
+            ("heading[level=2]".into(), "text-2xl".into()),
+            ("heading[level=3]".into(), "text-xl".into()),
+            ("heading[level=4]".into(), "text-lg".into()),
+            ("codeBlock".into(), "font-mono bg-muted p-3 mb-3".into()),
+            (
+                "blockquote".into(),
+                "border-l-2 border-border pl-4 my-3".into(),
+            ),
+            ("bulletList".into(), "pl-6 my-2".into()),
+            ("orderedList".into(), "pl-6 my-2".into()),
+            ("tableCell".into(), "border border-border px-3 py-2".into()),
+            (
+                "tableHeader".into(),
+                "font-bold bg-muted border border-border px-3 py-2".into(),
+            ),
+        ]));
+        classes.marks = Some(BTreeMap::from([
+            ("bold".into(), "font-bold".into()),
+            ("italic".into(), "italic".into()),
+            ("strike".into(), "line-through".into()),
+            ("link".into(), "underline".into()),
+            ("code".into(), "font-mono bg-muted".into()),
+        ]));
+        classes.task_checkbox =
+            Some("w-4 h-4 border border-foreground checked:bg-foreground".into());
+        classes
+    }
+
     #[component]
     pub fn Window() -> impl IntoElement {
         nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#000000","background":"#ffffff","muted":"#f5f5f5","muted-foreground":"#525252","border":"#d4d4d4","accent":"#e5e5e5","accent-foreground":"#000000","input":"#d4d4d4"},"dark":{"foreground":"#000000","background":"#ffffff","muted":"#f5f5f5","muted-foreground":"#525252","border":"#d4d4d4","accent":"#e5e5e5","accent-foreground":"#000000","input":"#d4d4d4"}}}"##)).expect("fixed content palette"));
@@ -74,6 +110,7 @@ mod app {
                 when(rich_mode, move || {
                     nsh_base::rich_editor::view::rich_editor()
                         .editor(render_rich.session())
+                        .classes(rich_classes())
                         .auto_focus(true)
                         .size_full()
                 })
