@@ -15,6 +15,10 @@
 通过既有去重timer排队到process；回调内不重入查询TextServices，绘制中/销毁后/非组合期不排队。
 EN_UPDATE不作为正文已提交信号；真实分段与取消/提交顺序仍须新包验证。
 
+7eccb24分段更新/取消/提交/UndoRedo已作者实测，但逐张原图发现宽sink的2% native绘制残留淡字：
+Undo后owner为bytes0，仍可见承载层旧字。后续对“透明文字+隐藏native caret”仅跳过native command-list
+向窗口合成，保留其离屏绘制、布局及输入焦点；正文和组合overlay照常绘制。不能将字节数正确替代无残影图证。
+
 TEXZI_TRACE_IME=1为显式测试诊断，默认不启用。只记录native标志/预编辑UTF16长度、render坐标、
 owner revision/字节数/操作类别；不记录正文或预编辑内容。验证可读取该轮生成的stderr，完全不用剪贴板。
 记录N→NI→NIHAO、Backspace、Escape取消、Space提交、Undo/Redo；组合中不能增加正文事务/history。

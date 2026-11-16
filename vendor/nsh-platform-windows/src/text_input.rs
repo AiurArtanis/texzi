@@ -782,7 +782,12 @@ impl Hosted for InputState {
         // shows, the background is transparent), or its first caret keeps
         // the height of the default font. The recording is in the content
         // box's points, as this item draws.
-        if let Some(drawn) = &*self.drawn.borrow() {
+        // Editor sinks deliberately request transparent text and no native
+        // caret. Keep the offscreen RichEdit recording above (its layout and
+        // candidate geometry need it), but do not composite its old transient
+        // text/IME decoration into the document view as a faint second copy.
+        let hidden_sink = color.is_transparent() && config.caret_hidden;
+        if !hidden_sink && let Some(drawn) = &*self.drawn.borrow() {
             // SAFETY: a COM call between BeginDraw and EndDraw.
             unsafe {
                 cx.dc.DrawImage(

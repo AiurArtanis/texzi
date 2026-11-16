@@ -25,6 +25,10 @@ no text contents are logged. The same opt-in marker traces editor/render/owner
 revision flow in the base/app adapter. It does not replace real screenshots.
 The editor sink width is separately corrected in nsh-base/src/editor/view.rs
 to avoid the one-pixel multiline input wrapping its native candidate caret.
+The sink's transparent text plus hidden native caret also suppresses compositing
+its native command-list image; offscreen recording/layout and focus stay active.
+This prevents the wider low-opacity carrier leaking stale transient glyphs after
+an authoritative document Undo, without removing any document/overlay text.
 
 Backend crate-wide tests are not claimed: the original internal tests refer
 to upstream gallery resources outside this vendored source subset. Existing
