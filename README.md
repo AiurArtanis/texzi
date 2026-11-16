@@ -14,6 +14,7 @@ and rustfmt are selected by rust-toolchain.toml.
 
 ```powershell
 cargo fmt --all -- --check
+cargo test -p texzi-document --release --locked --target x86_64-pc-windows-msvc --test contracts -- --include-ignored --nocapture --test-threads=1
 cargo build --release --locked --target x86_64-pc-windows-msvc
 ./scripts/build-candidate.ps1
 ```
@@ -25,8 +26,12 @@ image, commit and resolved features, then creates dist/texzi-tx00-win-x64.zip
 and SHA256SUMS.txt. Run it once in a clean checkout (dist must not exist).
 CI uses the identical script on candidate branch push or workflow_dispatch.
 It uploads a private Actions artifact, never a Release. Failure evidence is
-uploaded separately and is not a successful candidate. No component tests are
-present yet. See [runtime checks](docs/tx00/RUN.md) and
+uploaded separately and is not a successful candidate. The script compiles and
+executes the document contracts suite (including the million-edit property case)
+before building the app, and packages the exact component test executable for
+local verification. This is component evidence; the crate is not integrated into
+the native window. See [T03a scope and remaining work](docs/tx03/README.md),
+[runtime checks](docs/tx00/RUN.md) and
 [dependency decisions and design errata](docs/tx00/DECISIONS.md).
 
 The logging helper captures native stdout/stderr directly into separate files,

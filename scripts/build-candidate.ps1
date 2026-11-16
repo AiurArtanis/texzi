@@ -44,7 +44,10 @@ try {
     Write-Host "Design manifest: $($manifest.files.Count) entries verified"
     Invoke-Checked cargo @('fmt', '--all', '--', '--check')
     Invoke-Checked cargo @('tree', '--locked', '--target', 'x86_64-pc-windows-msvc', '-e', 'features')
-    Write-Host 'Component tests: NOT_RUN (TX-00 adds no testable document logic; native smoke is separate).'
+    Invoke-Checked cargo @('test', '-p', 'texzi-document', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc', '--test', 'contracts', '--no-run', '--message-format=json') -StdoutFile 'build-evidence/document-test-build.jsonl'
+    $testExecutables = @(Get-Content build-evidence/document-test-build.jsonl | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'contracts' -and $_.executable } | Select-Object -ExpandProperty executable)
+    if ($testExecutables.Count -ne 1) { throw 'Expected exactly one document contracts test executable' }
+    Invoke-Checked $testExecutables[0] @('--include-ignored', '--nocapture', '--test-threads=1')
     Invoke-Checked cargo @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc')
     $buildResult = Get-ChildItem build-evidence -Filter '*.result.json' | ForEach-Object { Get-Content $_ -Raw | ConvertFrom-Json } |
         Where-Object { $_.program -eq 'cargo' -and $_.arguments[0] -eq 'build' }
@@ -57,6 +60,8 @@ try {
     $finalLink | Set-Content build-evidence/final-app-link-command.txt
     Invoke-Checked cargo @('metadata', '--locked', '--format-version', '1', '--filter-platform', 'x86_64-pc-windows-msvc') -StdoutFile 'build-evidence/metadata.json'
     New-Item dist/package/licenses -ItemType Directory -Force | Out-Null
+    New-Item dist/package/component-tests -ItemType Directory | Out-Null
+    Copy-Item $testExecutables[0] dist/package/component-tests/document-contracts.exe
     Copy-Item target/x86_64-pc-windows-msvc/release/texzi-app.exe dist/package/
     Copy-Item LICENSE,docs/tx00/RUN.md,docs/tx00/STARTUP_FAILURE.md dist/package/
     Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse
