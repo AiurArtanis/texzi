@@ -155,7 +155,7 @@ impl RichOwner {
         if old.doc() != &p.doc {
             return Err("富文本视图已过期，请切回源码后重新打开富文本".into());
         }
-        let edits = p.source_edits(next.doc())?;
+        let edits = p.transaction_edits(next.doc(), &applied)?;
         if edits.is_empty() && old.doc() != next.doc() {
             return Err("该结构变更不能映射到原文，已保留原状态".into());
         }
@@ -399,6 +399,220 @@ mod tests {
     }
     fn bytes(n: &NativeView) -> Vec<u8> {
         n.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().body.to_utf8())
+    }
+    #[test]
+    fn known_structure_text_edits_preserve_original_syntax_eols_and_neighbor() {
+        run(|| {
+            for raw in [
+                "+ apple\r\n+ pear\n\n<custom>keep</custom>\r\n",
+                "7) apple\r\n8) pear\n\n<custom>keep</custom>\r\n",
+                "- [ ] apple\r\n- [x] pear\n\n<custom>keep</custom>\r\n",
+                "| headA | headB |\r\n| :--- | ---: |\n| apple | pear |\r\n\r\n<custom>keep</custom>\n",
+                "~~~ rust\r\napple\npear\r\n~~~\n\n<custom>keep</custom>\r\n",
+                "[apple](<https://example.invalid/path> \"keep title\")\r\n\r\n<custom>keep</custom>\n",
+                "apple\r\n=====\n\n<custom>keep</custom>\r\n",
+            ] {
+                let source = NativeView::fixture(raw);
+                let owner =
+                    RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+                owner.activate().unwrap();
+                let pos = owner
+                    .projection
+                    .borrow()
+                    .rich_position(
+                        source
+                            .snapshot()
+                            .unwrap()
+                            .rope
+                            .to_string()
+                            .find("apple")
+                            .unwrap(),
+                    )
+                    .unwrap();
+                select(&owner, pos);
+                let mut tr = owner.session.state().tr();
+                tr.insert_text("A", Some(pos), Some(pos + 1));
+                owner.session.dispatch(tr).unwrap();
+                assert!(
+                    owner.status.get().is_empty(),
+                    "fixture {raw:?}: {}",
+                    owner.status.get()
+                );
+                assert_eq!(bytes(&source), raw.replacen("apple", "Apple", 1).as_bytes());
+                owner.history(true);
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), raw.as_bytes());
+                owner.history(false);
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), raw.replacen("apple", "Apple", 1).as_bytes());
+            }
+        });
+    }
+    #[test]
+    fn code_newline_uses_step_range_preserving_existing_mixed_eol_identity() {
+        run(|| {
+            let raw = "~~~ rust\r\nalpha\nbeta\r\n~~~\r\n\r\n<custom>keep</custom>\r\n";
+            let source = NativeView::fixture(raw);
+            let owner = RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+            owner.activate().unwrap();
+            let at = source
+                .snapshot()
+                .unwrap()
+                .rope
+                .to_string()
+                .find("alpha")
+                .unwrap()
+                + 5;
+            let pos = owner.projection.borrow().rich_position(at).unwrap();
+            select(&owner, pos);
+            let mut tr = owner.session.state().tr();
+            tr.insert_text("\n", Some(pos), Some(pos));
+            owner.session.dispatch(tr).unwrap();
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            let expected = raw.replacen("alpha", "alpha\r\n", 1);
+            assert_eq!(bytes(&source), expected.as_bytes());
+            source.inspect(|s, id| {
+                let p = s.snapshot(s.view(id).unwrap().doc).unwrap();
+                let kept: usize = p
+                    .body
+                    .origins()
+                    .into_iter()
+                    .filter_map(|(_, o)| {
+                        o.map(|o| {
+                            assert_eq!(o.source.as_ref(), raw);
+                            o.raw.len()
+                        })
+                    })
+                    .sum();
+                assert_eq!(kept, raw.len());
+            });
+            owner.history(true);
+            assert_eq!(bytes(&source), raw.as_bytes());
+            owner.history(false);
+            assert_eq!(bytes(&source), expected.as_bytes());
+        });
+    }
+    #[test]
+    fn two_step_table_leaf_edit_keeps_alignment_padding_and_original_origins() {
+        run(|| {
+            let raw = "| H1  | H2 |\r\n| :------ | ---: |\n| apple   | pear |\r\n\r\n<custom>keep</custom>\n";
+            let source = NativeView::fixture(raw);
+            let owner = RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+            owner.activate().unwrap();
+            let at = source
+                .snapshot()
+                .unwrap()
+                .rope
+                .to_string()
+                .find("apple")
+                .unwrap();
+            let pos = owner.projection.borrow().rich_position(at).unwrap();
+            select(&owner, pos);
+            let mut tr = owner.session.state().tr();
+            tr.delete(pos, pos + 1).unwrap();
+            tr.insert_text("A", Some(pos), Some(pos));
+            assert_eq!(tr.steps.len(), 2);
+            owner.session.dispatch(tr).unwrap();
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            assert_eq!(bytes(&source), raw.replacen("apple", "Apple", 1).as_bytes());
+            source.inspect(|s, id| {
+                let p = s.snapshot(s.view(id).unwrap().doc).unwrap();
+                let kept: usize = p
+                    .body
+                    .origins()
+                    .into_iter()
+                    .filter_map(|(_, o)| o.map(|o| o.raw.len()))
+                    .sum();
+                assert_eq!(kept, raw.len() - 1);
+            });
+            owner.history(true);
+            assert_eq!(bytes(&source), raw.as_bytes());
+            owner.history(false);
+            assert_eq!(bytes(&source), raw.replacen("apple", "Apple", 1).as_bytes());
+        });
+    }
+    #[test]
+    fn empty_fenced_code_and_language_duplicate_map_to_body_not_fence() {
+        run(|| {
+            for raw in ["```\r\n\r\n```\r\n", "~~~ rust\r\nrust\r\n~~~\r\n"] {
+                let source = NativeView::fixture(raw);
+                let owner =
+                    RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+                owner.activate().unwrap();
+                select(&owner, 1);
+                let mut tr = owner.session.state().tr();
+                tr.insert_text("甲", None, None);
+                owner.session.dispatch(tr).unwrap();
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                let at = raw.find('\n').unwrap() + 1;
+                let mut expected = raw.to_owned();
+                expected.insert_str(at, "甲");
+                assert_eq!(bytes(&source), expected.as_bytes());
+                owner.history(true);
+                assert_eq!(bytes(&source), raw.as_bytes());
+                owner.history(false);
+                assert_eq!(bytes(&source), expected.as_bytes());
+            }
+        });
+    }
+    #[test]
+    fn identical_text_replacement_is_zero_body_transaction() {
+        run(|| {
+            let source = NativeView::fixture("abc");
+            let owner = RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+            let before = source.inspect(|s, id| {
+                let p = s.snapshot(s.view(id).unwrap().doc).unwrap();
+                (
+                    p.revision,
+                    p.token,
+                    s.history_depth(p.doc).unwrap(),
+                    s.dirty(p.doc).unwrap(),
+                )
+            });
+            let mut tr = owner.session.state().tr();
+            tr.insert_text("a", Some(1), Some(2));
+            owner.session.dispatch(tr).unwrap();
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            assert_eq!(
+                before,
+                source.inspect(|s, id| {
+                    let p = s.snapshot(s.view(id).unwrap().doc).unwrap();
+                    (
+                        p.revision,
+                        p.token,
+                        s.history_depth(p.doc).unwrap(),
+                        s.dirty(p.doc).unwrap(),
+                    )
+                })
+            );
+        });
+    }
+    #[test]
+    fn task_checkbox_changes_only_marker_and_undo_preserves_other_task_style() {
+        run(|| {
+            let raw = "+ [ ] apple\r\n+ [X] pear\n\n<custom>keep</custom>\r\n";
+            let source = NativeView::fixture(raw);
+            let owner = RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+            owner.activate().unwrap();
+            let state = owner.session.state();
+            let mut at = None;
+            state.doc().descendants(&mut |n, p, _, _| {
+                if at.is_none() && n.ty().name() == "taskItem" {
+                    at = Some(p);
+                }
+                true
+            });
+            let mut tr = state.tr();
+            tr.set_node_attribute(at.unwrap(), "checked", serde_json::json!(true))
+                .unwrap();
+            owner.session.dispatch(tr).unwrap();
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            assert_eq!(bytes(&source), raw.replacen("[ ]", "[x]", 1).as_bytes());
+            owner.history(true);
+            assert_eq!(bytes(&source), raw.as_bytes());
+            owner.history(false);
+            assert_eq!(bytes(&source), raw.replacen("[ ]", "[x]", 1).as_bytes());
+        });
     }
     fn select(owner: &RichOwner, pos: usize) {
         let state = owner.session.state();

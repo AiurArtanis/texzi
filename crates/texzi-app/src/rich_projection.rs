@@ -4,6 +4,8 @@ use nsh_base::rich_editor::{
     extensions::{ExtensionManager, kit},
     formats::{DocFormat, MarkdownFormat},
     model::{Fragment, Node, Schema},
+    state::Transaction,
+    transform::ReplaceStep,
 };
 use serde_json::json;
 use std::ops::Range;
@@ -41,12 +43,10 @@ impl Projection {
     pub fn rich_position(&self, byte: usize) -> Option<usize> {
         let mut base = 0;
         for block in &self.blocks {
-            let raw = &self.source[block.source.clone()];
             let mut found = None;
             block.node.descendants(&mut |n, p, _, _| {
                 if let Some(t) = n.text() {
-                    let mut matches = raw.match_indices(t);
-                    if let Some((at, _)) = matches.next().filter(|_| matches.next().is_none()) {
+                    if let Some(at) = raw_text_start(block, t, &self.source) {
                         let start = block.source.start + at;
                         if let Some(delta) = byte
                             .checked_sub(start)
@@ -61,12 +61,56 @@ impl Projection {
             if found.is_some() {
                 return found;
             }
-            if block.node.content().size() == 0 && byte == block.source.start {
+            if block.node.content().size() == 0 && Some(byte) == empty_position(block, &self.source)
+            {
                 return Some(base + 1);
             }
             base += block.node.node_size();
         }
         None
+    }
+    /// A single plain-text ReplaceStep supplies the identity of the edited
+    /// source range. Validate the complete projection before preferring it to
+    /// a structural serializer/diff; never infer newline identity from a diff.
+    pub fn transaction_edits(
+        &self,
+        next: &Node,
+        applied: &[Transaction],
+    ) -> Result<Vec<(Range<usize>, String)>, String> {
+        if &self.doc == next {
+            return Ok(vec![]);
+        }
+        let steps: Vec<_> = applied.iter().flat_map(|t| t.steps.iter()).collect();
+        if steps.len() == 1 {
+            if let Some(step) = steps[0].as_any().downcast_ref::<ReplaceStep>() {
+                if !step.structure
+                    && step.slice.open_start == 0
+                    && step.slice.open_end == 0
+                    && (0..step.slice.content.child_count())
+                        .all(|i| step.slice.content.child(i).is_text())
+                {
+                    if let (Some(a), Some(h)) = (
+                        self.source_position(step.from),
+                        self.source_position(step.to),
+                    ) {
+                        if a <= h {
+                            let text: String = (0..step.slice.content.child_count())
+                                .filter_map(|i| step.slice.content.child(i).text())
+                                .collect();
+                            let mut raw = self.source.clone();
+                            raw.replace_range(a..h, &text);
+                            if (a != h || !text.is_empty())
+                                && Self::parse(next.ty().schema(), raw)
+                                    .is_ok_and(|p| &p.doc == next)
+                            {
+                                return Ok(vec![(a..h, text)]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.source_edits(next)
     }
     /// Split a semantic block replacement into grapheme edits. Matched source
     /// spans (including every existing EOL) stay in Store's provenance tree.
@@ -219,15 +263,11 @@ impl Projection {
             }
             if pos > base && pos < base + size {
                 let mut found = None;
-                let raw = &self.source[b.source.clone()];
                 b.node.descendants(&mut |n, p, _, _| {
                     if let Some(t) = n.text() {
                         let local = pos.checked_sub(base + 1 + p);
                         if let Some(units) = local.filter(|u| *u <= t.encode_utf16().count()) {
-                            let mut matches = raw.match_indices(t);
-                            if let Some((at, _)) =
-                                matches.next().filter(|_| matches.next().is_none())
-                            {
+                            if let Some(at) = raw_text_start(b, t, &self.source) {
                                 let mut used = 0;
                                 let byte = t
                                     .char_indices()
@@ -249,7 +289,7 @@ impl Projection {
                     true
                 });
                 if found.is_none() && b.node.content().size() == 0 && pos == base + 1 {
-                    return Some(b.source.start);
+                    return empty_position(b, &self.source);
                 }
                 return found;
             }
@@ -293,6 +333,11 @@ impl Projection {
         }
         // Text-only edits can preserve delimiters and trivia even inside the block.
         if old_end - first == 1 && new_end - first == 1 {
+            if let Some(patch) =
+                task_toggle_patch(&self.blocks[first], next.child(first), &self.source)?
+            {
+                return Ok(Some(patch));
+            }
             if let Some((range, text)) =
                 single_text_patch(&self.blocks[first], next.child(first), &self.source)
             {
@@ -538,26 +583,147 @@ fn contains_opaque(n: &mdast::Node) -> bool {
         .is_some_and(|xs| xs.iter().any(contains_opaque))
 }
 fn single_text_patch(b: &Block, next: &Node, source: &str) -> Option<(Range<usize>, String)> {
-    // Only a single, unchanged-markup text leaf in a simple textblock is mapped
-    // by searching raw bytes. Ambiguous occurrences/escapes fall back locally.
-    if !b.node.same_markup(next) || b.node.child_count() != 1 || next.child_count() != 1 {
+    // Descend unchanged wrappers (list/table/marks) and require exactly one
+    // changed text leaf. Everything outside its verified raw range stays raw.
+    fn changed<'a>(a: &'a Node, z: &'a Node, out: &mut Vec<(&'a str, &'a str)>) -> Option<()> {
+        if a == z {
+            return Some(());
+        }
+        if !a.same_markup(z) {
+            return None;
+        }
+        if let (Some(x), Some(y)) = (a.text(), z.text()) {
+            out.push((x, y));
+            return Some(());
+        }
+        if a.child_count() != z.child_count() {
+            return None;
+        }
+        for i in 0..a.child_count() {
+            changed(a.child(i), z.child(i), out)?;
+        }
+        Some(())
+    }
+    let mut leaves = Vec::new();
+    changed(&b.node, next, &mut leaves)?;
+    if leaves.len() != 1 {
         return None;
     }
-    let a = b.node.child(0);
-    let z = next.child(0);
-    if !a.same_markup(z) {
-        return None;
-    }
-    let old = a.text()?;
-    let new = z.text()?;
-    let raw = &source[b.source.clone()];
-    let mut matches = raw.match_indices(old);
-    let (at, _) = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
+    let (old, new) = leaves[0];
+    let at = raw_text_start(b, old, source)?;
     Some((
         b.source.start + at..b.source.start + at + old.len(),
         new.into(),
     ))
+}
+
+fn fenced_content_start(b: &Block, text: &str, source: &str) -> Option<usize> {
+    let same_text = (b.node.child_count() == 0 && text.is_empty())
+        || (b.node.child_count() == 1 && b.node.child(0).text() == Some(text));
+    if b.opaque || b.node.ty().name() != "codeBlock" || !same_text {
+        return None;
+    }
+    let raw = &source[b.source.clone()];
+    let first = raw.split('\n').next()?.trim_start();
+    if !first.starts_with("```") && !first.starts_with("~~~") {
+        return None;
+    }
+    let at = raw.find('\n')? + 1;
+    (raw.get(at..at + text.len()) == Some(text)).then_some(at)
+}
+fn raw_text_start(b: &Block, text: &str, source: &str) -> Option<usize> {
+    if let Some(at) = fenced_content_start(b, text, source) {
+        return Some(at);
+    }
+    let raw = &source[b.source.clone()];
+    let mut matches = raw.match_indices(text);
+    let (at, _) = matches.next()?;
+    matches.next().is_none().then_some(at)
+}
+fn empty_position(b: &Block, source: &str) -> Option<usize> {
+    if b.node.ty().name() == "codeBlock" && !b.opaque {
+        return fenced_content_start(b, "", source).map(|at| b.source.start + at);
+    }
+    Some(b.source.start)
+}
+
+fn task_toggle_patch(
+    b: &Block,
+    next: &Node,
+    source: &str,
+) -> Result<Option<(Range<usize>, String)>, String> {
+    fn walk(
+        a: &Node,
+        z: &Node,
+        index: &mut usize,
+        changed: &mut Option<(usize, bool, bool)>,
+    ) -> bool {
+        if a.ty().name() != z.ty().name()
+            || a.text() != z.text()
+            || a.child_count() != z.child_count()
+        {
+            return false;
+        }
+        let task = a.ty().name() == "taskItem";
+        let ordinal = *index;
+        if task {
+            *index += 1;
+        }
+        if !a.same_markup(z) {
+            if !task || a.marks() != z.marks() || changed.is_some() {
+                return false;
+            }
+            let mut old = a.attrs().clone();
+            let mut new = z.attrs().clone();
+            let Some(x) = old.remove("checked").and_then(|v| v.as_bool()) else {
+                return false;
+            };
+            let Some(y) = new.remove("checked").and_then(|v| v.as_bool()) else {
+                return false;
+            };
+            if old != new || x == y {
+                return false;
+            }
+            *changed = Some((ordinal, x, y));
+        }
+        (0..a.child_count()).all(|i| walk(a.child(i), z.child(i), index, changed))
+    }
+    let mut change = None;
+    if !walk(&b.node, next, &mut 0, &mut change) {
+        return Ok(None);
+    }
+    let Some((ordinal, old, new)) = change else {
+        return Ok(None);
+    };
+    fn tasks(n: &mdast::Node, out: &mut Vec<(usize, bool)>) {
+        if let mdast::Node::ListItem(item) = n {
+            if let (Some(done), Some(p)) = (item.checked, item.position.as_ref()) {
+                out.push((p.start.offset, done));
+            }
+        }
+        if let Some(children) = n.children() {
+            for child in children {
+                tasks(child, out);
+            }
+        }
+    }
+    let raw = &source[b.source.clone()];
+    let ast = markdown::to_mdast(raw, &ParseOptions::gfm()).map_err(message)?;
+    let mut items = Vec::new();
+    tasks(&ast, &mut items);
+    let &(start, done) = items
+        .get(ordinal)
+        .ok_or("任务标记源位置不可映射，原文未变")?;
+    if done != old {
+        return Err("任务标记源状态不一致，原文未变".into());
+    }
+    let line = raw[start..].split('\n').next().unwrap_or("");
+    let marker = if old {
+        line.find("[x]").or_else(|| line.find("[X]"))
+    } else {
+        line.find("[ ]")
+    }
+    .ok_or("任务标记源语法不可映射，原文未变")?;
+    let at = b.source.start + start + marker + 1;
+    Ok(Some((at..at + 1, if new { "x" } else { " " }.into())))
 }

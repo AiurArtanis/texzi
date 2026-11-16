@@ -35,6 +35,8 @@
 
 ## 构建和产物
 
+后续已知结构文本候选：见 `../decisions/2026-11-17-structure-text-ranges.md`。普通单 ReplaceStep 在完整树往返验证后直接使用严格源范围；多步但单文本叶变化可递归保留列表/表格包装；围栏代码内部光标和 LF 身份单列。旧多行拒绝记录保留，并不等于现在或以后所有结构换行均已实现。新增 Owner 测试须随新 CI/GUI 结果交付，未运行不填PASS。
+
 后续段落候选：顶层空段落映射与具体 Enter/合并规则见 `../decisions/2026-11-17-rich-empty-paragraphs.md`。新增真实 Owner 测试覆盖段首/中/尾、空正文、Unicode 标量边界、连续空段继续输入及 Backspace 合并。提交前仅 fmt/diff 静态核对，组件及 GUI 结果须绑定新的 CI 身份，不能继承 18cc55e 的运行结论。
 
 README现有cargo build --release --locked --target x86_64-pc-windows-msvc命令不变。CI额外编译执行app单元测试，将真实rich-projection.exe与原双流/exit随包交独测；失败不打成功候选。原文档组件/窗口失败路径证据保留。
