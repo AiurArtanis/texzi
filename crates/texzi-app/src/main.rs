@@ -40,8 +40,12 @@ mod app {
         provide_context(source.buffer());
         let rich_mode = signal(false);
         let status = signal(String::new());
-        let active = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let active: std::rc::Rc<
+            std::cell::RefCell<Option<std::rc::Rc<crate::rich_owner::RichOwner>>>,
+        > = std::rc::Rc::new(std::cell::RefCell::new(None));
         let source_owner = source.clone();
+        let rich_source_owner = source.clone();
+        let source_mode_active = active.clone();
         let source_active = active.clone();
         view()
             .flex_1()
@@ -57,14 +61,28 @@ mod app {
                             .child(text("源码"))
                             .on_press(move |_: &()| {
                                 use nsh_base::editor::ExternalDocument;
+                                if source_mode_active
+                                    .borrow()
+                                    .as_ref()
+                                    .is_some_and(|o| o.session().composing())
+                                {
+                                    status.set("请先完成或取消中文组合，再切换模式".into());
+                                    return;
+                                }
                                 source_owner.fence();
+                                source_owner.trace_state("mode_source");
                                 rich_mode.set(false);
                             }),
                     )
                     .child(
                         nsh_base::button()
                             .child(text("富文本"))
-                            .on_press(move |_: &()| rich_mode.set(true)),
+                            .on_press(move |_: &()| {
+                                use nsh_base::editor::ExternalDocument;
+                                rich_source_owner.fence();
+                                rich_source_owner.trace_state("mode_rich");
+                                rich_mode.set(true)
+                            }),
                     ),
             )
             .child(text(move || status.get()).text_color(black()))

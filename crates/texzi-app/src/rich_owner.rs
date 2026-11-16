@@ -8,7 +8,7 @@ use nsh_base::{
     rich_editor::{
         commands::BoxCommand,
         extensions::keymap::keymap,
-        state::{EditorState, EditorStateConfig, Transaction},
+        state::{EditorState, EditorStateConfig, Transaction, TransactionOrigin},
         view::{EditorSession, NodeViews},
     },
 };
@@ -111,13 +111,13 @@ impl RichOwner {
     fn dispatch(&self, session: &EditorSession, tr: Transaction) -> Result<(), String> {
         let current = self.native.snapshot()?;
         if current.revision != self.revision.get() || current.view_epoch != self.epoch.get() {
-            return Err("Stale rich projection; switch to source and reopen rich view".into());
+            return Err("富文本视图版本已过期，请切回源码后重新打开富文本".into());
         }
         let old = session.state();
         let (next, applied) = old.apply_transaction(tr).map_err(|e| e.to_string())?;
         let p = self.projection.borrow();
         if old.doc() != &p.doc {
-            return Err("Stale rich document".into());
+            return Err("富文本视图已过期，请切回源码后重新打开富文本".into());
         }
         let patch = p.patch(next.doc())?;
         if let Some((range, text)) = patch {
@@ -129,12 +129,17 @@ impl RichOwner {
             }
             let a = projected
                 .source_position(next.selection().anchor())
-                .ok_or("Unmapped rich anchor")?;
+                .ok_or("选区起点暂不能保真映射，请切到源码编辑此范围")?;
             let h = projected
                 .source_position(next.selection().head())
-                .ok_or("Unmapped rich head")?;
+                .ok_or("选区终点暂不能保真映射，请切到源码编辑此范围")?;
             let kind = if applied.iter().any(|t| t.get_meta("composition").is_some()) {
                 ExternalEditKind::ImeCommit
+            } else if applied
+                .iter()
+                .all(|t| matches!(t.origin(), Some(TransactionOrigin::Input)))
+            {
+                ExternalEditKind::Typing
             } else {
                 ExternalEditKind::Other
             };

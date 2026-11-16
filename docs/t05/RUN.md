@@ -20,3 +20,5 @@
 ## 构建和产物
 
 README现有cargo build --release --locked --target x86_64-pc-windows-msvc命令不变。CI额外编译执行app单元测试，将真实rich-projection.exe与原双流/exit随包交独测；失败不打成功候选。原文档组件/窗口失败路径证据保留。
+
+补充：固定12语料每例100次无修改投影、跨逻辑View撤销/重做与原混合EOL字节恢复均为组件检查；真实GUI次数另计。显式长度诊断下的TX05_VIEW记录revision/token/history/dirty供核模式切换0文本事务，默认关闭，不输出正文。MIT移植许可补齐与blob来源见LICENSE-SOURCES.json；原NSH未注明移植所用PM/Tiptap revision，不自行编造。

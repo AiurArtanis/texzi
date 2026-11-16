@@ -285,6 +285,93 @@ mod tests {
         assert_eq!(dirty, store.dirty(s.doc).unwrap());
         assert_eq!(depth, store.history_depth(s.doc).unwrap());
     }
+    #[test]
+    fn rich_local_patch_uses_shared_history_and_source_view_can_undo_raw_eols() {
+        use texzi_document::*;
+        let m = manager();
+        let raw = "# 甲😀\r\n\r\n<custom>keep</custom>\n\n末尾\r";
+        let mut store = Store::new(HistoryBudget::default());
+        let s = store.open_utf8(raw, Profile::default(), false).unwrap();
+        let set = SelectionSet::caret(&s, 0);
+        let source = store
+            .open_view(
+                s.doc,
+                ModeTag::Source,
+                set.clone(),
+                set.selections[0].head,
+                0,
+            )
+            .unwrap();
+        let rich = store
+            .open_view(s.doc, ModeTag::Rich, set.clone(), set.selections[0].head, 0)
+            .unwrap();
+        let p = Projection::parse(m.schema(), s.body.source().to_string()).unwrap();
+        let n = edited(&p, 2, 4, "乙");
+        let (range, text) = p.patch(&n).unwrap().unwrap();
+        let caret = range.start + text.len();
+        let plan = store
+            .plan_view_edits(
+                rich.id,
+                s.revision,
+                rich.epoch,
+                vec![(range, text)],
+                vec![(caret, caret)],
+                0,
+                InputKind::Structural,
+                0,
+            )
+            .unwrap();
+        let r = store.submit_view(plan).unwrap();
+        assert_eq!(
+            r.snapshot.body.to_utf8(),
+            raw.replacen("😀", "乙", 1).as_bytes()
+        );
+        assert_eq!(store.history_depth(s.doc).unwrap(), (1, 0));
+        let v = store.view(source.id).unwrap();
+        store.undo_view(v.id, v.epoch).unwrap();
+        let undone = store.snapshot(s.doc).unwrap();
+        assert_eq!(undone.body.to_utf8(), raw.as_bytes());
+        assert_eq!(undone.token, s.token);
+        let v = store.view(rich.id).unwrap();
+        store.redo_view(v.id, v.epoch).unwrap();
+        assert_eq!(
+            store.snapshot(s.doc).unwrap().body.to_utf8(),
+            raw.replacen("😀", "乙", 1).as_bytes()
+        );
+    }
+    #[test]
+    fn frozen_corpus_noop_preserves_every_source_byte_and_gap() {
+        let m = manager();
+        let cases = [
+            include_str!("../tests/fixtures/markdown/code-fences.md"),
+            include_str!("../tests/fixtures/markdown/escaped-inline.md"),
+            include_str!("../tests/fixtures/markdown/images.md"),
+            include_str!("../tests/fixtures/markdown/links.md"),
+            include_str!("../tests/fixtures/markdown/list-style.md"),
+            include_str!("../tests/fixtures/markdown/mixed-known.md"),
+            include_str!("../tests/fixtures/markdown/no-final-newline.md"),
+            include_str!("../tests/fixtures/markdown/opaque-extension.md"),
+            include_str!("../tests/fixtures/markdown/opaque-html.md"),
+            include_str!("../tests/fixtures/markdown/setext-and-tabs.md"),
+            include_str!("../tests/fixtures/markdown/table-pipes.md"),
+            include_str!("../tests/fixtures/markdown/unclosed-fence.md"),
+        ];
+        for raw in cases {
+            for _ in 0..100 {
+                let p = Projection::parse(m.schema(), raw.into()).unwrap();
+                assert_eq!(p.source.as_bytes(), raw.as_bytes());
+                assert!(p.patch(&p.doc).unwrap().is_none());
+                let mut cursor = 0;
+                for b in &p.blocks {
+                    assert!(b.source.start >= cursor && b.source.end <= raw.len());
+                    assert!(
+                        raw.is_char_boundary(b.source.start) && raw.is_char_boundary(b.source.end)
+                    );
+                    cursor = b.source.end;
+                }
+            }
+        }
+    }
 }
 fn contains_opaque(n: &mdast::Node) -> bool {
     matches!(
@@ -293,6 +380,8 @@ fn contains_opaque(n: &mdast::Node) -> bool {
             | mdast::Node::Definition(_)
             | mdast::Node::FootnoteDefinition(_)
             | mdast::Node::FootnoteReference(_)
+            | mdast::Node::LinkReference(_)
+            | mdast::Node::ImageReference(_)
     ) || n
         .children()
         .is_some_and(|xs| xs.iter().any(contains_opaque))

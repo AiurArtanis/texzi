@@ -1,0 +1,90 @@
+{
+  "recorded": "2026-11-16",
+  "basis": "Fixed NSH 224d9a7 rich_editor/mod.rs and docs/dev/rich-editor.md credits; original port revisions unspecified by upstream, not invented here.",
+  "sources": [
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-model",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-model/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-transform",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-transform/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-state",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-state/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-commands",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-commands/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-schema-list",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-schema-list/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-history",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-history/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-keymap",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-keymap/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-inputrules",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-inputrules/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-gapcursor",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-gapcursor/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-dropcursor",
+      "path": "LICENSE",
+      "blob": "7e2295b307446b171b993b705239928d8e0347b8",
+      "url": "https://github.com/ProseMirror/prosemirror-dropcursor/blob/master/LICENSE"
+    },
+    {
+      "owner": "ProseMirror",
+      "repo": "prosemirror-tables",
+      "path": "LICENSE",
+      "blob": "c34a4f121f66f8b1837845d0b86f3f71a4f3e318",
+      "url": "https://github.com/ProseMirror/prosemirror-tables/blob/master/LICENSE"
+    },
+    {
+      "owner": "ueberdosis",
+      "repo": "tiptap",
+      "path": "LICENSE.md",
+      "blob": "4b28a553b563cc04587a3768c11755512ad42638",
+      "url": "https://github.com/ueberdosis/tiptap/blob/main/LICENSE.md"
+    }
+  ]
+}

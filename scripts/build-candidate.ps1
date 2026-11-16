@@ -99,6 +99,8 @@ try {
     Copy-Item vendor/nsh-platform-windows/TEXZI-PATCH.md dist/package/component-tests/NSH-WINDOWS-FORK.md
     Copy-Item vendor/nsh-platform-windows/UPSTREAM-MANIFEST.json dist/package/component-tests/NSH-WINDOWS-UPSTREAM-MANIFEST.json
     Copy-Item docs/t04/IME-01.md dist/package/component-tests/IME-01.md
+    Copy-Item docs/t05/RUN.md dist/package/component-tests/RICH-RUN.md
+    Copy-Item docs/t05/LICENSE-SOURCES.json dist/package/licenses/supplemental-rich-sources.json
     Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse
     Invoke-Checked rustc @('--print', 'sysroot') -StdoutFile 'build-evidence/rust-sysroot.txt'
     $sysroot = (Get-Content build-evidence/rust-sysroot.txt -Raw).Trim()

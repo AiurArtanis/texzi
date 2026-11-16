@@ -41,6 +41,30 @@ impl NativeView {
     pub fn buffer(self: &Rc<Self>) -> ExternalBuffer {
         ExternalBuffer(self.clone())
     }
+    pub fn trace_state(&self, action: &str) {
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+        let store = self.owner.store.borrow();
+        if let Ok(v) = store.view(self.view) {
+            if let (Ok(s), Ok((undo, redo)), Ok(dirty)) = (
+                store.snapshot(v.doc),
+                store.history_depth(v.doc),
+                store.dirty(v.doc),
+            ) {
+                log::info!(
+                    "TX05_VIEW action={} revision={} token={:?} bytes={} undo={} redo={} dirty={}",
+                    action,
+                    s.revision.0,
+                    s.token,
+                    s.body.len_bytes(),
+                    undo,
+                    redo,
+                    dirty
+                );
+            }
+        }
+    }
     pub fn sibling(&self) -> Result<Rc<Self>, String> {
         let mut store = self.owner.store.borrow_mut();
         let source = store.view(self.view).map_err(err)?;
