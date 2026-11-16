@@ -12,8 +12,8 @@ try {
         Invoke-Checked (Join-Path $PSHOME 'pwsh.exe') @('-NoProfile', '-Command', '[Console]::Out.WriteLine("TX00_FAILURE_STDOUT"); [Console]::Error.WriteLine("TX00_FAILURE_STDERR"); exit 23')
         throw 'Failure probe unexpectedly continued'
     }
-    $commit = (git rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot identify commit' }
+    Invoke-Checked git @('rev-parse', 'HEAD') -StdoutFile 'build-evidence/checkout-commit.txt'
+    $commit = (Get-Content build-evidence/checkout-commit.txt -Raw).Trim()
     if ($env:GITHUB_SHA -and $commit -ne $env:GITHUB_SHA) { throw 'Checkout SHA mismatch' }
     Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture | Format-List
     Write-Host "commit=$commit run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT image=$env:ImageOS/$env:ImageVersion"
@@ -21,7 +21,8 @@ try {
     Invoke-Checked $vswhere @('-latest', '-products', '*', '-format', 'json')
     $inventory = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" | Select-Object -ExpandProperty Name
     $inventory | Set-Content build-evidence/installed-sdk-directories.txt
-    $vs = & $vswhere -latest -products '*' -property installationPath
+    Invoke-Checked $vswhere @('-latest', '-products', '*', '-property', 'installationPath') -StdoutFile 'build-evidence/vs-installation.txt'
+    $vs = (Get-Content build-evidence/vs-installation.txt -Raw).Trim()
     $defaultMsvc = Get-Content (Join-Path $vs 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt')
     @{
         installed_sdk_directories=$inventory; default_msvc_file_version=$defaultMsvc;
@@ -49,8 +50,8 @@ try {
     Copy-Item target/x86_64-pc-windows-msvc/release/texzi-app.exe dist/package/
     Copy-Item LICENSE,docs/tx00/RUN.md dist/package/
     Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse
-    $sysroot = (& rustc --print sysroot).Trim()
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot locate Rust runtime licenses' }
+    Invoke-Checked rustc @('--print', 'sysroot') -StdoutFile 'build-evidence/rust-sysroot.txt'
+    $sysroot = (Get-Content build-evidence/rust-sysroot.txt -Raw).Trim()
     Copy-Item (Join-Path $sysroot 'share/doc/rust') dist/package/licenses/rust-runtime -Recurse
     $metadata = Get-Content build-evidence/metadata.json -Raw | ConvertFrom-Json
     $sbom = foreach ($package in $metadata.packages) {
