@@ -1,0 +1,1698 @@
+{
+  "schemaVersion": 1,
+  "product": "texzi",
+  "platform": "windows-x64",
+  "defaultsStatus": "proposed_except_explicitly_confirmed",
+  "scopePrecedence": [
+    "documentSession",
+    "workspaceLocal",
+    "user",
+    "builtIn"
+  ],
+  "settings": [
+    {
+      "id": "appearance.theme",
+      "category": "外观",
+      "name": "主题",
+      "description": "选择整体浅色、深色或跟随Windows系统；系统高对比度开启时优先使用可访问配色。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "system",
+          "label": "跟随系统"
+        },
+        {
+          "value": "light",
+          "label": "浅色"
+        },
+        {
+          "value": "dark",
+          "label": "深色"
+        }
+      ],
+      "default": "system",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "appearance.interfaceFontSize",
+      "category": "外观",
+      "name": "界面字号",
+      "description": "控制菜单、文件树、标签和设置控件字号，不改变正文。",
+      "type": "integer",
+      "options": [],
+      "default": 14,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "DIP",
+      "min": 12,
+      "max": 20,
+      "step": 1
+    },
+    {
+      "id": "appearance.reducedMotion",
+      "category": "外观",
+      "name": "减少动态效果",
+      "description": "关闭面板与滚动的装饰性过渡；不影响光标和进度反馈。system跟随Windows动画设置。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "system",
+          "label": "跟随系统"
+        },
+        {
+          "value": "on",
+          "label": "减少"
+        },
+        {
+          "value": "off",
+          "label": "标准"
+        }
+      ],
+      "default": "system",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.fontFamily",
+      "category": "编辑器",
+      "name": "源码与代码字体",
+      "description": "按顺序选择等宽字体；缺失时回退Consolas，再由Windows选择CJK字形。WYSIWYG正文另用Markdown字体。",
+      "type": "string",
+      "options": [],
+      "default": "Cascadia Mono, Consolas",
+      "apply": "立即重新排版并保留光标锚点",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.fontSize",
+      "category": "编辑器",
+      "name": "源码与代码字号",
+      "description": "只改变纯文本、代码和Markdown源码区域字号。",
+      "type": "integer",
+      "options": [],
+      "default": 16,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "DIP",
+      "min": 10,
+      "max": 36,
+      "step": 1
+    },
+    {
+      "id": "editor.lineHeight",
+      "category": "编辑器",
+      "name": "源码与代码行距",
+      "description": "源码、纯文本及代码行高相对于字号的倍数。",
+      "type": "number",
+      "options": [],
+      "default": 1.5,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "倍",
+      "min": 1.2,
+      "max": 2.2,
+      "step": 0.1
+    },
+    {
+      "id": "editor.lineNumbers",
+      "category": "编辑器",
+      "name": "显示行号",
+      "description": "在源码和代码区域显示逻辑行号；软换行续行不重复编号。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.renderWhitespace",
+      "category": "编辑器",
+      "name": "显示空白字符",
+      "description": "显示空格与Tab的辅助标记，不写入文件；全选区模式只标出选中范围。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "none",
+          "label": "不显示"
+        },
+        {
+          "value": "selection",
+          "label": "选区内"
+        },
+        {
+          "value": "all",
+          "label": "全部"
+        }
+      ],
+      "default": "selection",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.highlightCurrentLine",
+      "category": "编辑器",
+      "name": "突出当前行",
+      "description": "轻量背景提示主光标所在行；多光标不铺满整屏。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.cursorWidth",
+      "category": "编辑器",
+      "name": "光标宽度",
+      "description": "设置线形插入光标宽度；不改变文字宽度和输入位置。",
+      "type": "integer",
+      "options": [],
+      "default": 2,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "DIP",
+      "min": 1,
+      "max": 4,
+      "step": 1
+    },
+    {
+      "id": "editor.cursorBlinking",
+      "category": "编辑器",
+      "name": "光标闪烁",
+      "description": "system使用系统光标闪烁周期；solid保持常亮。输入法组合期间保留组合态可见。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "system",
+          "label": "跟随系统"
+        },
+        {
+          "value": "solid",
+          "label": "常亮"
+        }
+      ],
+      "default": "system",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.wordWrap.text",
+      "category": "编辑器",
+      "name": "纯文本自动换行",
+      "description": "控制.txt与未知语言纯文本的软换行；不插入实际换行符。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "on",
+          "label": "on"
+        },
+        {
+          "value": "off",
+          "label": "off"
+        }
+      ],
+      "default": "on",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal",
+        "documentSession"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.wordWrap.markdown",
+      "category": "编辑器",
+      "name": "Markdown源码自动换行",
+      "description": "仅控制Markdown源码视图；WYSIWYG正文按区域宽度排版。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "on",
+          "label": "on"
+        },
+        {
+          "value": "off",
+          "label": "off"
+        }
+      ],
+      "default": "on",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal",
+        "documentSession"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.wordWrap.code",
+      "category": "编辑器",
+      "name": "代码自动换行",
+      "description": "控制其他语法高亮语言的软换行。极长行保护可以临时关闭并给出状态提示。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "on",
+          "label": "on"
+        },
+        {
+          "value": "off",
+          "label": "off"
+        }
+      ],
+      "default": "off",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal",
+        "documentSession"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.tabSize",
+      "category": "编辑器",
+      "name": "缩进宽度",
+      "description": "Tab显示宽度与使用空格缩进的单级宽度；默认4，JSON不额外暗设2。",
+      "type": "integer",
+      "options": [],
+      "default": 4,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal",
+        "documentSession"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "列",
+      "min": 1,
+      "max": 8,
+      "step": 1
+    },
+    {
+      "id": "editor.insertSpaces",
+      "category": "编辑器",
+      "name": "缩进使用空格",
+      "description": "开启时Tab/增加缩进使用空格，关闭时使用Tab；不自动转换已有缩进。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal",
+        "documentSession"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.detectIndentation",
+      "category": "编辑器",
+      "name": "检测现有缩进",
+      "description": "打开已有文件时按有效非空行样本推断缩进；置信度不足采用设置。检测结果在状态栏可见，可手动覆盖。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "下次打开文件；手动重新检测即时",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.autoIndent",
+      "category": "编辑器",
+      "name": "自动缩进",
+      "description": "keep在Enter时延续当前行前导空白；none不补缩进。Markdown结构化列表处理独立于此项。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "keep",
+          "label": "保持上一行缩进"
+        },
+        {
+          "value": "none",
+          "label": "关闭"
+        }
+      ],
+      "default": "keep",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal",
+        "documentSession"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.multiCursorModifier",
+      "category": "编辑器",
+      "name": "鼠标添加光标修饰键",
+      "description": "默认Alt+单击添加光标；可改Ctrl。Ctrl被用于多光标时，打开链接改用Alt+单击并更新提示。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "alt",
+          "label": "alt"
+        },
+        {
+          "value": "ctrl",
+          "label": "ctrl"
+        }
+      ],
+      "default": "alt",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.copyEmptySelection",
+      "category": "编辑器",
+      "name": "空选区复制当前行",
+      "description": "源码中没有选区时，Ctrl+C/Ctrl+X复制/剪切整行；WYSIWYG中空选区不删除整个块。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.smoothScrolling",
+      "category": "编辑器",
+      "name": "平滑滚动",
+      "description": "开启短时滚动插值；关闭时直接响应滚轮/触控板增量。减少动态效果开启时强制关闭。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "立即生效",
+      "dependencies": [
+        "appearance.reducedMotion != on；system时取Windows实际状态"
+      ],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "editor.scrollBeyondLastLine",
+      "category": "编辑器",
+      "name": "末行后保留滚动空间",
+      "description": "允许末行滚动到视口中部；关闭时滚动范围止于内容末端。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "markdown.defaultView",
+      "category": "Markdown",
+      "name": "Markdown默认编辑方式",
+      "description": "新打开的Markdown默认采用可直接编辑的排版视图；源码按钮>_切换当前区域。已恢复区域沿用原模式。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "wysiwyg",
+          "label": "Markdown编辑"
+        },
+        {
+          "value": "source",
+          "label": "源码"
+        }
+      ],
+      "default": "wysiwyg",
+      "apply": "下次打开尚未记录视图状态的Markdown",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "user_confirmed",
+      "priority": "P0"
+    },
+    {
+      "id": "markdown.fontFamily",
+      "category": "Markdown",
+      "name": "Markdown正文字体",
+      "description": "仅控制WYSIWYG正文；system使用Segoe UI与Microsoft YaHei UI等Windows系统回退。代码块仍使用源码与代码字体。",
+      "type": "string",
+      "options": [],
+      "default": "system",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "markdown.fontSize",
+      "category": "Markdown",
+      "name": "Markdown正文字号",
+      "description": "控制段落基准字号；标题按设计比例派生。",
+      "type": "integer",
+      "options": [],
+      "default": 16,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "DIP",
+      "min": 12,
+      "max": 28,
+      "step": 1
+    },
+    {
+      "id": "markdown.lineHeight",
+      "category": "Markdown",
+      "name": "Markdown正文行距",
+      "description": "控制段落行高倍数；列表、引用和表格采用相同文字基线。",
+      "type": "number",
+      "options": [],
+      "default": 1.7,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "倍",
+      "min": 1.3,
+      "max": 2.2,
+      "step": 0.1
+    },
+    {
+      "id": "markdown.contentWidth",
+      "category": "Markdown",
+      "name": "Markdown正文宽度",
+      "description": "单栏排版的最大正文宽度；区域较窄时自动缩小，不强制扩大窗口。Zen可复用此宽度。",
+      "type": "integer",
+      "options": [],
+      "default": 760,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "DIP",
+      "min": 480,
+      "max": 1200,
+      "step": 40
+    },
+    {
+      "id": "markdown.syncScroll",
+      "category": "Markdown",
+      "name": "关联区域同步滚动",
+      "description": "同一文档的源码与WYSIWYG区域按源码锚点跟随主动滚动区域；手动关闭后各自滚动。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [
+        "同一文档同时在至少两个区域中显示；两区域模式不同"
+      ],
+      "scope": [
+        "user",
+        "workspaceLocal",
+        "documentSession"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "markdown.remoteImages",
+      "category": "Markdown",
+      "name": "远程图片加载",
+      "description": "ask显示占位及加载按钮，选择加载后只加载该资源；always按文档请求自动加载；never保持占位。相对本地图片正常显示。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "ask",
+          "label": "点击后加载"
+        },
+        {
+          "value": "always",
+          "label": "自动加载"
+        },
+        {
+          "value": "never",
+          "label": "不加载"
+        }
+      ],
+      "default": "ask",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "markdown.formatToolbar",
+      "category": "Markdown",
+      "name": "格式工具栏",
+      "description": "onSelection仅在选择正文后显示小型格式工具栏；hidden仅通过菜单、命令或Markdown输入操作。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "onSelection",
+          "label": "选中文字时显示"
+        },
+        {
+          "value": "hidden",
+          "label": "隐藏"
+        }
+      ],
+      "default": "onSelection",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "files.defaultEncoding",
+      "category": "文件与恢复",
+      "name": "新文件默认编码",
+      "description": "只影响新文档保存的初始选择；已有文件维持检测/手动指定的编码。编码不可表示字符时阻止保存并提供UTF-8或另存。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "utf-8",
+          "label": "UTF-8 无BOM"
+        },
+        {
+          "value": "utf-8-bom",
+          "label": "UTF-8 含BOM"
+        },
+        {
+          "value": "utf-16le",
+          "label": "UTF-16 LE 含BOM"
+        },
+        {
+          "value": "utf-16be",
+          "label": "UTF-16 BE 含BOM"
+        },
+        {
+          "value": "gb18030",
+          "label": "GB18030"
+        },
+        {
+          "value": "gbk",
+          "label": "GBK"
+        },
+        {
+          "value": "windows-1252",
+          "label": "Windows-1252"
+        }
+      ],
+      "default": "utf-8",
+      "apply": "新建文档；不转换已打开文件",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "文件"
+    },
+    {
+      "id": "files.defaultEol",
+      "category": "文件与恢复",
+      "name": "新文件默认换行",
+      "description": "只影响新文档；已有文件保留原换行。混合换行的统一转换需要显式命令。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "CRLF",
+          "label": "CRLF"
+        },
+        {
+          "value": "LF",
+          "label": "LF"
+        }
+      ],
+      "default": "CRLF",
+      "apply": "新建文档；不转换已打开文件",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "文件"
+    },
+    {
+      "id": "files.autoGuessEncoding",
+      "category": "文件与恢复",
+      "name": "尝试猜测无BOM编码",
+      "description": "UTF-8严格解码失败后尝试提示候选编码；关闭时直接要求选择。猜测不能覆盖用户手动选择，不以替换字符静默保存。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "下次打开文件",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "文件"
+    },
+    {
+      "id": "files.autoSave",
+      "category": "文件与恢复",
+      "name": "自动保存",
+      "description": "off只在显式保存时写原文件；afterDelay停止输入后保存；onFocusChange编辑区域失焦后保存。未命名文档仍进入恢复区，不自动挑选磁盘路径。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "off",
+          "label": "关闭"
+        },
+        {
+          "value": "afterDelay",
+          "label": "延迟后"
+        },
+        {
+          "value": "onFocusChange",
+          "label": "失去焦点时"
+        }
+      ],
+      "default": "off",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "文件"
+    },
+    {
+      "id": "files.autoSaveDelay",
+      "category": "文件与恢复",
+      "name": "自动保存延迟",
+      "description": "最后一次已提交编辑后经过此时间触发保存；输入法组合中不写半成品。外部冲突暂停自动保存。",
+      "type": "integer",
+      "options": [],
+      "default": 1000,
+      "apply": "立即生效",
+      "dependencies": [
+        "files.autoSave == afterDelay"
+      ],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "ms",
+      "min": 500,
+      "max": 60000,
+      "step": 100,
+      "subcategory": "文件"
+    },
+    {
+      "id": "files.trimTrailingWhitespace",
+      "category": "文件与恢复",
+      "name": "保存时移除尾随空白",
+      "description": "开启会修改正文，仅在显式保存事务中执行并可一次撤销；Markdown双空格硬换行不移除。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "文件"
+    },
+    {
+      "id": "files.insertFinalNewline",
+      "category": "文件与恢复",
+      "name": "保存时补末尾换行",
+      "description": "仅在末尾不存在换行时补一个，不额外删除空行；变更进入撤销记录。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "文件"
+    },
+    {
+      "id": "files.externalChange",
+      "category": "文件与恢复",
+      "name": "未修改文件的外部变更",
+      "description": "reloadClean仅在文档未修改时自动重载并保留位置；ask对未修改文档也先提示，用户确认后才重载。已修改文档不论此值均展示冲突，不自动覆盖。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "reloadClean",
+          "label": "未修改时自动重载"
+        },
+        {
+          "value": "ask",
+          "label": "始终询问"
+        }
+      ],
+      "default": "reloadClean",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "文件"
+    },
+    {
+      "id": "session.restoreOnStartup",
+      "category": "文件与恢复",
+      "name": "启动时恢复上次工作",
+      "description": "启动时恢复窗口、根目录、标签、编辑组、模式及位置；路径失效保留恢复项。与session.restoreUnsaved均开启且恢复快照成功刷盘时，窗口关闭可保留未保存文档；关闭本项不删除恢复日志。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "关闭窗口及下次启动时读取当前值；不关闭现有视图",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "恢复"
+    },
+    {
+      "id": "session.restoreUnsaved",
+      "category": "文件与恢复",
+      "name": "自动恢复未保存内容",
+      "description": "启动时自动挂载未保存恢复副本；关闭后仍保留记录并可从恢复中心访问。任一恢复开关关闭时，关闭最后dirty文档所在窗口走保存/放弃/取消，不默默隐藏内容。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "关闭窗口及下次启动时读取当前值；不关闭现有视图",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "恢复"
+    },
+    {
+      "id": "recovery.intervalSeconds",
+      "category": "文件与恢复",
+      "name": "未保存内容恢复间隔",
+      "description": "定期将已提交编辑记入恢复日志；与保存原文件的自动保存独立。组合输入未提交内容不构成已持久化承诺。",
+      "type": "integer",
+      "options": [],
+      "default": 1,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "秒",
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "subcategory": "恢复"
+    },
+    {
+      "id": "recovery.retentionDays",
+      "category": "文件与恢复",
+      "name": "已解决恢复记录保留期",
+      "description": "已保存/已确认放弃后的恢复历史保留天数；仍未处理的恢复副本不按此期限自动删除。",
+      "type": "integer",
+      "options": [],
+      "default": 30,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "天",
+      "min": 1,
+      "max": 90,
+      "step": 1,
+      "subcategory": "恢复"
+    },
+    {
+      "id": "window.openFiles",
+      "category": "窗口与标签",
+      "name": "外部打开文件的位置",
+      "description": "通过资源管理器或文件关联打开文件时，使用最近活动窗口或新窗口；对话框明确指定的位置优先。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "current",
+          "label": "最近活动窗口"
+        },
+        {
+          "value": "new",
+          "label": "新窗口"
+        }
+      ],
+      "default": "current",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "window.openFolders",
+      "category": "窗口与标签",
+      "name": "打开文件夹的位置",
+      "description": "每窗一个根文件夹。new在新窗口打开；current只替换当前根树与搜索范围，保留已打开标签、dirty文档和视图，不触发文档关闭的保存确认。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "new",
+          "label": "新窗口"
+        },
+        {
+          "value": "current",
+          "label": "当前窗口"
+        }
+      ],
+      "default": "new",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "window.restoreGeometry",
+      "category": "窗口与标签",
+      "name": "恢复窗口位置与大小",
+      "description": "启动时还原可见屏幕范围内的位置、大小和最大化状态；显示器缺失时回到主屏可见区。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "下次打开窗口",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "workbench.previewTabs",
+      "category": "窗口与标签",
+      "name": "启用预览标签",
+      "description": "文件树单击复用当前组的预览标签；双击、编辑或固定后成为常驻标签。未保存标签不得被替换。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "workbench.tabCloseButton",
+      "category": "窗口与标签",
+      "name": "标签关闭按钮",
+      "description": "all始终显示，active仅活动标签显示，hover在悬停或键盘焦点时显示。修改标记与关闭按钮不得互相遮蔽。",
+      "type": "enum",
+      "options": [
+        {
+          "value": "all",
+          "label": "全部标签"
+        },
+        {
+          "value": "active",
+          "label": "活动标签"
+        },
+        {
+          "value": "hover",
+          "label": "悬停或聚焦时"
+        }
+      ],
+      "default": "all",
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "workbench.showStatusBar",
+      "category": "窗口与标签",
+      "name": "显示状态栏",
+      "description": "显示编码、换行、语言、位置和文件状态；Zen中的隐藏只是临时覆盖。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0"
+    },
+    {
+      "id": "search.matchCase",
+      "category": "编辑器",
+      "name": "默认区分大小写",
+      "description": "新建查找会话的大小写开关；当前查找栏操作可以覆盖，不改变文档。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "新建查找会话；在查找栏操作即时",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "查找"
+    },
+    {
+      "id": "search.wholeWord",
+      "category": "编辑器",
+      "name": "默认全字匹配",
+      "description": "关闭即允许部分匹配；开启按既定Unicode词边界规则匹配，不启用中文语义分词。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "新建查找会话；在查找栏操作即时",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "查找"
+    },
+    {
+      "id": "search.regex",
+      "category": "编辑器",
+      "name": "默认正则表达式",
+      "description": "新建查找会话启用PCRE2约定语法；WYSIWYG开启正则时会原位切源码并清楚显示范围变更。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "新建查找会话；在查找栏操作即时",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "查找"
+    },
+    {
+      "id": "search.wrapAround",
+      "category": "编辑器",
+      "name": "查找到末尾后循环",
+      "description": "到最后/最前匹配后回到首/末项，并给出一次轻量提示。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "查找"
+    },
+    {
+      "id": "search.workspaceExclude",
+      "category": "编辑器",
+      "name": "文件夹搜索排除规则",
+      "description": "相对根文件夹的glob数组；只影响搜索，不隐藏文件树，不改动文件。界面显示排除已启用，可本次忽略。",
+      "type": "stringArray",
+      "options": [],
+      "default": [
+        ".git/**",
+        "node_modules/**",
+        "target/**"
+      ],
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "查找"
+    },
+    {
+      "id": "search.followSymlinks",
+      "category": "编辑器",
+      "name": "搜索跟随符号链接",
+      "description": "开启后仍使用规范路径去重与循环检测；不会扩大到用户未选根目录外。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "查找"
+    },
+    {
+      "id": "search.maxResults",
+      "category": "编辑器",
+      "name": "文件夹搜索结果上限",
+      "description": "达到上限停止收集并明确提示已截断；不展示虚假的完整匹配数。可继续缩小范围重新查找。",
+      "type": "integer",
+      "options": [],
+      "default": 20000,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "项",
+      "min": 100,
+      "max": 100000,
+      "step": 100,
+      "subcategory": "查找"
+    },
+    {
+      "id": "performance.largeFileThresholdMiB",
+      "category": "编辑器",
+      "name": "大文件模式阈值",
+      "description": "文件大小达到或超过此阈值（>=）时提供大文件优化路径；延迟非必要高亮/布局。WYSIWYG不静默切源码，仅提供明确可选的源码入口；为性能建议起点，须实测调整。",
+      "type": "integer",
+      "options": [],
+      "default": 20,
+      "apply": "下次打开文件；可通过当前文档命令重评",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "MiB",
+      "min": 5,
+      "max": 100,
+      "step": 5,
+      "subcategory": "大文件"
+    },
+    {
+      "id": "performance.hugeFileThresholdMiB",
+      "category": "编辑器",
+      "name": "超大文件提示阈值",
+      "description": "文件大小达到或超过此阈值（>=）时先做资源预估，提供只读流式查看与尝试编辑选项；不把只读模式宣称为完整编辑能力。",
+      "type": "integer",
+      "options": [],
+      "default": 200,
+      "apply": "下次打开文件",
+      "dependencies": [
+        "值必须大于 performance.largeFileThresholdMiB"
+      ],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "MiB",
+      "min": 50,
+      "max": 2048,
+      "step": 10,
+      "subcategory": "大文件"
+    },
+    {
+      "id": "performance.longLineThresholdChars",
+      "category": "编辑器",
+      "name": "超长行保护阈值",
+      "description": "逻辑行Unicode标量数量达到或超过阈值（>=）时，按可见片段绘制并暂停该行高亮/软换行；状态条说明临时降级，原内容不截断。",
+      "type": "integer",
+      "options": [],
+      "default": 20000,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user",
+        "workspaceLocal"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "unit": "字符",
+      "min": 5000,
+      "max": 1000000,
+      "step": 1000,
+      "subcategory": "大文件"
+    },
+    {
+      "id": "zen.hideTabs",
+      "category": "窗口与标签",
+      "name": "Zen中隐藏标签栏",
+      "description": "进入Zen时临时隐藏标签栏；退出恢复此前布局。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "Zen"
+    },
+    {
+      "id": "zen.hideSidebar",
+      "category": "窗口与标签",
+      "name": "Zen中隐藏侧栏",
+      "description": "进入Zen时临时隐藏文件夹侧栏；退出恢复此前布局。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "Zen"
+    },
+    {
+      "id": "zen.hideStatusBar",
+      "category": "窗口与标签",
+      "name": "Zen中隐藏状态栏",
+      "description": "进入Zen时隐藏常规状态栏；保存失败、恢复冲突仍保留可见提示。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "Zen"
+    },
+    {
+      "id": "zen.centerContent",
+      "category": "窗口与标签",
+      "name": "Zen中正文居中",
+      "description": "WYSIWYG采用Markdown正文宽度居中，源码采用当前编辑宽度；不改变文件换行。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": true,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "Zen"
+    },
+    {
+      "id": "zen.enterFullScreen",
+      "category": "窗口与标签",
+      "name": "Zen进入全屏",
+      "description": "开启时进入Zen同时进入全屏；关闭时保留普通窗口，方便多窗口办公。",
+      "type": "boolean",
+      "options": [
+        {
+          "value": false,
+          "label": "关闭"
+        },
+        {
+          "value": true,
+          "label": "开启"
+        }
+      ],
+      "default": false,
+      "apply": "立即生效",
+      "dependencies": [],
+      "scope": [
+        "user"
+      ],
+      "status": "suggested",
+      "priority": "P0",
+      "subcategory": "Zen"
+    }
+  ],
+  "navigation": [
+    {
+      "id": "common",
+      "name": "常用",
+      "settingIds": [
+        "appearance.theme",
+        "editor.fontFamily",
+        "editor.fontSize",
+        "editor.wordWrap.text",
+        "editor.lineNumbers",
+        "markdown.defaultView",
+        "files.autoSave",
+        "session.restoreOnStartup"
+      ]
+    },
+    {
+      "id": "editor",
+      "name": "编辑器",
+      "categories": [
+        "编辑器"
+      ],
+      "subcategories": [
+        "查找",
+        "大文件"
+      ]
+    },
+    {
+      "id": "appearance",
+      "name": "外观",
+      "categories": [
+        "外观"
+      ]
+    },
+    {
+      "id": "filesRecovery",
+      "name": "文件与恢复",
+      "categories": [
+        "文件与恢复"
+      ],
+      "subcategories": [
+        "文件",
+        "恢复"
+      ]
+    },
+    {
+      "id": "markdown",
+      "name": "Markdown",
+      "categories": [
+        "Markdown"
+      ]
+    },
+    {
+      "id": "windowsTabs",
+      "name": "窗口与标签",
+      "categories": [
+        "窗口与标签"
+      ],
+      "subcategories": [
+        "Zen"
+      ]
+    },
+    {
+      "id": "keybindings",
+      "name": "快捷键",
+      "commandPage": true
+    }
+  ],
+  "lifecyclePolicies": {
+    "windowCloseWithoutSavePrompt": "session.restoreOnStartup && session.restoreUnsaved && snapshotFlushSucceeded",
+    "explicitTabClose": "关闭最后一个dirty视图时仍执行保存/放弃/取消；其他视图仍引用文档则仅移除该视图。",
+    "recoveryLogs": "两个恢复开关控制自动恢复及关闭体验，不删除恢复日志；关闭自动恢复后仍可从恢复中心访问。",
+    "folderRootChange": "打开、替换或关闭根文件夹仅改变根树与搜索范围；保留已打开标签、dirty文档和视图。",
+    "thresholdComparison": ">=",
+    "settingsPage": "每窗口单个普通可关闭设置标签；七个顶层导航。"
+  }
+}

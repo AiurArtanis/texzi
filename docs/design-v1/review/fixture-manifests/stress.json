@@ -1,0 +1,866 @@
+{
+  "schema_version": 1,
+  "generator": {
+    "name": "texzi-fixtures",
+    "version": "1.0.0",
+    "script_sha256": "3c5dfdf9f6e88e764a2a7c680c2910ed66a9a898f3ce1446b1e6586adf257d08",
+    "python": "3.12.14",
+    "seed_algorithm": "LCG32: state=(1664525*state+1013904223) mod 2^32"
+  },
+  "profile": "stress",
+  "seed": 20261115,
+  "files": [
+    {
+      "id": "TXT-1",
+      "path": "texzi-fixtures/TXT-1.txt",
+      "category": "normal-text",
+      "seed_dependent": true,
+      "size_bytes": 1048576,
+      "sha256": "df55b594eb2b88426ace2db2a42e2c3cf7c06cd2caa3d0f3870c77ecaf5a2f55",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 5270,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 199,
+      "max_line_unicode_scalars": 94,
+      "line_endings": {
+        "CRLF": 5269,
+        "LF": 0,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 1048576,
+        "complete_records": 5269,
+        "content": "CJK/Latin/numbers/tab mixed"
+      }
+    },
+    {
+      "id": "MD-1",
+      "path": "texzi-fixtures/MD-1.md",
+      "category": "normal-markdown",
+      "seed_dependent": true,
+      "size_bytes": 1048576,
+      "sha256": "cf1465edb01758a1ef7425e5049a9758c82324e0fbb387f4260321c8bf46d6d7",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 7233,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 255,
+      "max_line_unicode_scalars": 255,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 7232,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 1048576,
+        "complete_sections": 100,
+        "generated_top_level_blocks": 701,
+        "structural_node_upper_bound_estimate": 4001,
+        "max_generated_paragraph_utf8_bytes": 9935,
+        "max_table_cells": 12,
+        "total_generated_table_cells": 1200,
+        "fenced_code_blocks": 100,
+        "network_resources": false,
+        "structure_counts_source": "known generator template; actual parser-derived counts not measured"
+      }
+    },
+    {
+      "id": "LONG-100K",
+      "path": "texzi-fixtures/LONG-100K.txt",
+      "category": "long-line",
+      "seed_dependent": true,
+      "size_bytes": 102400,
+      "sha256": "6df4c4ca5dbae299b31d26e002c2310040059e84cea3cab5229436ccc0a1d751",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 1,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 102400,
+      "max_line_unicode_scalars": 102400,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 0,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 102400,
+        "expected_line_count": 1,
+        "expected_max_line_unicode_scalars": 102400
+      }
+    },
+    {
+      "id": "MATCH-HIGH-SMOKE",
+      "path": "texzi-fixtures/MATCH-HIGH-SMOKE.txt",
+      "category": "high-match-count",
+      "seed_dependent": true,
+      "size_bytes": 65536,
+      "sha256": "2f6fc61f2c13863f2fe8d67cd9e8ad784921fb6f3413242f0b4e0cfbf950d148",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 4097,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 15,
+      "max_line_unicode_scalars": 15,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 4096,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 65536,
+        "literal_query": "needle",
+        "expected_literal_matches": 4096,
+        "record_bytes": 16
+      }
+    },
+    {
+      "id": "UNICODE",
+      "path": "texzi-fixtures/UNICODE.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 171,
+      "sha256": "ea653b3b1ea9cd6ae2adbf339975f250f26d1b8d37864ead2a20bfc6d2ff68f0",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 4,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 75,
+      "max_line_unicode_scalars": 24,
+      "line_endings": {
+        "CRLF": 1,
+        "LF": 1,
+        "CR": 1
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "contains": [
+          "combining mark",
+          "ZWJ emoji",
+          "skin tone modifier",
+          "supplementary CJK",
+          "tab"
+        ],
+        "no_final_newline": true
+      }
+    },
+    {
+      "id": "EOL-MIXED",
+      "path": "texzi-fixtures/EOL-MIXED.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 49,
+      "sha256": "ceb186e67ede834ced227399d6755f2083e61d5c0b493b896a144484b44eff0d",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 5,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 11,
+      "max_line_unicode_scalars": 11,
+      "line_endings": {
+        "CRLF": 2,
+        "LF": 1,
+        "CR": 1
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "expected_eols": {
+          "CRLF": 2,
+          "LF": 1,
+          "CR": 1
+        },
+        "dominant_eol": "CRLF",
+        "no_final_newline": true
+      }
+    },
+    {
+      "id": "EOL-TIE",
+      "path": "texzi-fixtures/EOL-TIE.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 18,
+      "sha256": "f52231ad5672c504b883d1db747dd9f0b62ea248b8aee66eee244bcdad6715e9",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 3,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 6,
+      "max_line_unicode_scalars": 6,
+      "line_endings": {
+        "CRLF": 1,
+        "LF": 1,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "expected_eols": {
+          "CRLF": 1,
+          "LF": 1,
+          "CR": 0
+        },
+        "tie_break_first_eol": "LF"
+      }
+    },
+    {
+      "id": "MD-FIDELITY",
+      "path": "texzi-fixtures/MD-FIDELITY.md",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 151,
+      "sha256": "5b769f44c13f378d1f4732b5f5993c1f0f53b064e1b1c65395428a0972a40482",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 14,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 37,
+      "max_line_unicode_scalars": 33,
+      "line_endings": {
+        "CRLF": 4,
+        "LF": 8,
+        "CR": 1
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "purpose": "source preservation, unknown syntax, mixed EOL, exact whitespace"
+      }
+    },
+    {
+      "id": "ENC-UTF8-BOM",
+      "path": "texzi-fixtures/ENC-UTF8-BOM.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 62,
+      "sha256": "990f45e20ce54dc1cfbba05b1cac87835359a6f21e47463e62da7090c788f8bf",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "efbbbf",
+      "bom_bytes": 3,
+      "line_count": 3,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 32,
+      "max_line_unicode_scalars": 14,
+      "line_endings": {
+        "CRLF": 1,
+        "LF": 1,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {}
+    },
+    {
+      "id": "ENC-UTF16LE",
+      "path": "texzi-fixtures/ENC-UTF16LE.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 64,
+      "sha256": "54b1f0d35ee2bbca9f084d53a85368364f8c15e9897b29f980e165a4bb1343aa",
+      "encoding": "utf-16-le",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "fffe",
+      "bom_bytes": 2,
+      "line_count": 3,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 28,
+      "max_line_unicode_scalars": 14,
+      "line_endings": {
+        "CRLF": 1,
+        "LF": 1,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {}
+    },
+    {
+      "id": "ENC-UTF16BE",
+      "path": "texzi-fixtures/ENC-UTF16BE.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 64,
+      "sha256": "0ce47f59179a56b1caf8722b8ab1df9119adfb3d671f97956c835faec83fce30",
+      "encoding": "utf-16-be",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "feff",
+      "bom_bytes": 2,
+      "line_count": 3,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 28,
+      "max_line_unicode_scalars": 14,
+      "line_endings": {
+        "CRLF": 1,
+        "LF": 1,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {}
+    },
+    {
+      "id": "ENC-GB18030",
+      "path": "texzi-fixtures/ENC-GB18030.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 47,
+      "sha256": "d617957ca726ca917e247af4f7c4e61354a1fff81b4b3cbe7a266b0b765cbf6c",
+      "encoding": "gb18030",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 3,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 24,
+      "max_line_unicode_scalars": 14,
+      "line_endings": {
+        "CRLF": 1,
+        "LF": 1,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "codec_mapping": "Python runtime gb18030 codec; GB18030 standard revision not asserted"
+      }
+    },
+    {
+      "id": "ENC-GBK",
+      "path": "texzi-fixtures/ENC-GBK.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 41,
+      "sha256": "140e9f267fc3d60a0c404f33502d3b67eafa82c914e788a1e8f797c213f18d95",
+      "encoding": "gbk",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 3,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 18,
+      "max_line_unicode_scalars": 14,
+      "line_endings": {
+        "CRLF": 1,
+        "LF": 1,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "code_page": 936,
+        "unrepresentable_probe": "🙂"
+      }
+    },
+    {
+      "id": "ENC-1252",
+      "path": "texzi-fixtures/ENC-1252.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 34,
+      "sha256": "d7212da3de86ff1c31c21eb97721e097333e5f8aaf8ab3a5c7dfd50b78a6d677",
+      "encoding": "cp1252",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 2,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 23,
+      "max_line_unicode_scalars": 23,
+      "line_endings": {
+        "CRLF": 1,
+        "LF": 0,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "code_page": 1252,
+        "unrepresentable_probe": "中文"
+      }
+    },
+    {
+      "id": "ENC-INVALID-UTF8",
+      "path": "texzi-fixtures/ENC-INVALID-UTF8.bin",
+      "category": "intentional-decoding-error",
+      "seed_dependent": false,
+      "size_bytes": 18,
+      "sha256": "21039db8b522b9438e4eb3c01b257adcab0e86d040d23799ef563d3af673e02b",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": false,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": null,
+      "max_line_bytes": null,
+      "max_line_unicode_scalars": null,
+      "structure": {
+        "semantic_line_statistics": "undefined until decoding policy is chosen",
+        "expected_behavior": "report decoding failure; never silently overwrite replacement characters"
+      }
+    },
+    {
+      "id": "ENC-INVALID-UTF16LE",
+      "path": "texzi-fixtures/ENC-INVALID-UTF16LE.bin",
+      "category": "intentional-decoding-error",
+      "seed_dependent": false,
+      "size_bytes": 17,
+      "sha256": "7d477b57efd5f5eebf8628e83b6a0ad5bb97cfc959ef7fe59d5bacf48cdbcad3",
+      "encoding": "utf-16-le",
+      "expected_strict_decode_valid": false,
+      "bom_hex": "fffe",
+      "bom_bytes": 2,
+      "line_count": null,
+      "max_line_bytes": null,
+      "max_line_unicode_scalars": null,
+      "structure": {
+        "semantic_line_statistics": "undefined until decoding policy is chosen",
+        "expected_behavior": "report decoding failure; never silently overwrite replacement characters"
+      }
+    },
+    {
+      "id": "REGEX-ADV",
+      "path": "texzi-fixtures/REGEX-ADV.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 32769,
+      "sha256": "e3e1c984aae168d3853c55bcac70205de4a0946fae799036680efd42b02787d5",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 1,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 32769,
+      "max_line_unicode_scalars": 32769,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 0,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "patterns": [
+          "(a+)+$",
+          "(?:a|aa)+$"
+        ],
+        "expected_behavior": "correct bounded completion or explicit limit/timeout; never freeze",
+        "engine_results_measured": false
+      }
+    },
+    {
+      "id": "REGEX-CASES",
+      "path": "texzi-fixtures/REGEX-CASES.txt",
+      "category": "correctness",
+      "seed_dependent": false,
+      "size_bytes": 39,
+      "sha256": "5fa94a6bd7eb5a07dc9b44e6b3252742dc1243f2cb094d439b2fc6b8f17c49b4",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 7,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 9,
+      "max_line_unicode_scalars": 9,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 6,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "patterns": [
+          "(?=a)",
+          "(a)?b",
+          "(?s)begin.*end",
+          "(?<=prefix)[A-Z]{3}",
+          "(["
+        ],
+        "invalid_pattern": "([",
+        "replacement_cases": [
+          "$0",
+          "$&",
+          "$1",
+          "${missing}",
+          "$$"
+        ],
+        "engine_results_measured": false
+      }
+    },
+    {
+      "id": "TXT-10",
+      "path": "texzi-fixtures/TXT-10.txt",
+      "category": "normal-text",
+      "seed_dependent": true,
+      "size_bytes": 10485760,
+      "sha256": "f969450a6b809989e6b4489f9b0ffed35dc4733db57d94fca2cfe32a678e1e3f",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 52690,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 199,
+      "max_line_unicode_scalars": 145,
+      "line_endings": {
+        "CRLF": 52689,
+        "LF": 0,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 10485760,
+        "complete_records": 52689,
+        "content": "CJK/Latin/numbers/tab mixed"
+      }
+    },
+    {
+      "id": "TXT-100",
+      "path": "texzi-fixtures/TXT-100.txt",
+      "category": "normal-text",
+      "seed_dependent": true,
+      "size_bytes": 104857600,
+      "sha256": "d207c1166ed1552affd008b23daa711d346fc686d19e3b9ea43cee54fcaae0e8",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 526911,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 199,
+      "max_line_unicode_scalars": 196,
+      "line_endings": {
+        "CRLF": 526910,
+        "LF": 0,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 104857600,
+        "complete_records": 526910,
+        "content": "CJK/Latin/numbers/tab mixed"
+      }
+    },
+    {
+      "id": "ASCII-10",
+      "path": "texzi-fixtures/ASCII-10.txt",
+      "category": "normal-text",
+      "seed_dependent": true,
+      "size_bytes": 10485760,
+      "sha256": "97d74e94ca271f26f666ae41190d73f8eba098482a66ac4a57f03070f92b91bc",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 77673,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 134,
+      "max_line_unicode_scalars": 134,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 77672,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 10485760,
+        "complete_records": 77672,
+        "content": "ASCII log"
+      }
+    },
+    {
+      "id": "ASCII-100",
+      "path": "texzi-fixtures/ASCII-100.txt",
+      "category": "normal-text",
+      "seed_dependent": true,
+      "size_bytes": 104857600,
+      "sha256": "a792e9d2d899cefec86f0d50238e17279f4325678bd75f6716d845724edd9e96",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 776723,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 134,
+      "max_line_unicode_scalars": 134,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 776722,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 104857600,
+        "complete_records": 776722,
+        "content": "ASCII log"
+      }
+    },
+    {
+      "id": "MD-10",
+      "path": "texzi-fixtures/MD-10.md",
+      "category": "normal-markdown",
+      "seed_dependent": true,
+      "size_bytes": 10485760,
+      "sha256": "f23c6d01c31f0202a8b9bb2bc1449abe7028626670e389f0c438ec24f11cbb64",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 72580,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 255,
+      "max_line_unicode_scalars": 255,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 72579,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 10485760,
+        "complete_sections": 1008,
+        "generated_top_level_blocks": 7057,
+        "structural_node_upper_bound_estimate": 40321,
+        "max_generated_paragraph_utf8_bytes": 9935,
+        "max_table_cells": 12,
+        "total_generated_table_cells": 12096,
+        "fenced_code_blocks": 1008,
+        "network_resources": false,
+        "structure_counts_source": "known generator template; actual parser-derived counts not measured"
+      }
+    },
+    {
+      "id": "MD-100-SOURCE",
+      "path": "texzi-fixtures/MD-100-SOURCE.md",
+      "category": "normal-markdown",
+      "seed_dependent": true,
+      "size_bytes": 104857600,
+      "sha256": "7fe822c2da5bd77f8830e5af90f97694499f9e607a84a6a128b669ca0350efd1",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 725792,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 255,
+      "max_line_unicode_scalars": 255,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 725791,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 104857600,
+        "complete_sections": 10080,
+        "generated_top_level_blocks": 70561,
+        "structural_node_upper_bound_estimate": 403201,
+        "max_generated_paragraph_utf8_bytes": 9935,
+        "max_table_cells": 12,
+        "total_generated_table_cells": 120960,
+        "fenced_code_blocks": 10080,
+        "network_resources": false,
+        "structure_counts_source": "known generator template; actual parser-derived counts not measured"
+      }
+    },
+    {
+      "id": "LONG-1M",
+      "path": "texzi-fixtures/LONG-1M.txt",
+      "category": "long-line",
+      "seed_dependent": true,
+      "size_bytes": 1048576,
+      "sha256": "a142b883ef4e6f421488add4907f0a559cd53142f0006b791f9a0ad6765f4d86",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 1,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 1048576,
+      "max_line_unicode_scalars": 1048576,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 0,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 1048576,
+        "expected_line_count": 1,
+        "expected_max_line_unicode_scalars": 1048576
+      }
+    },
+    {
+      "id": "MATCH-HIGH-10",
+      "path": "texzi-fixtures/MATCH-HIGH-10.txt",
+      "category": "high-match-count",
+      "seed_dependent": true,
+      "size_bytes": 10485760,
+      "sha256": "92ef12fedac4ea2946d5a82f084ea9dfaf0f0251e79e7521d981cc48ca2d7c4f",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 655361,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 15,
+      "max_line_unicode_scalars": 15,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 655360,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 10485760,
+        "literal_query": "needle",
+        "expected_literal_matches": 655360,
+        "record_bytes": 16
+      }
+    },
+    {
+      "id": "MATCH-HIGH-100",
+      "path": "texzi-fixtures/MATCH-HIGH-100.txt",
+      "category": "high-match-count",
+      "seed_dependent": true,
+      "size_bytes": 104857600,
+      "sha256": "018a17bdc3272bc9d7ca46560b229c7ecff5e905c94b39c206b1d5fc93a5583a",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 6553601,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 15,
+      "max_line_unicode_scalars": 15,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 6553600,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 104857600,
+        "literal_query": "needle",
+        "expected_literal_matches": 6553600,
+        "record_bytes": 16
+      }
+    },
+    {
+      "id": "LONG-100M",
+      "path": "texzi-fixtures/LONG-100M.txt",
+      "category": "long-line",
+      "seed_dependent": true,
+      "size_bytes": 104857600,
+      "sha256": "6bd9593e54ed7c0c1c50f8856407c86602431535fdf9e6078587162dd8682562",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 1,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 104857600,
+      "max_line_unicode_scalars": 104857600,
+      "line_endings": {
+        "CRLF": 0,
+        "LF": 0,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 104857600,
+        "expected_line_count": 1,
+        "expected_max_line_unicode_scalars": 104857600
+      }
+    },
+    {
+      "id": "MIXED-LONG-100M",
+      "path": "texzi-fixtures/MIXED-LONG-100M.txt",
+      "category": "mixed-long-line",
+      "seed_dependent": true,
+      "size_bytes": 104857600,
+      "sha256": "93dce9a20c782b76060781391d60886180b32e127d141f88d8835e50c28f63f3",
+      "encoding": "utf-8",
+      "expected_strict_decode_valid": true,
+      "bom_hex": "",
+      "bom_bytes": 0,
+      "line_count": 521644,
+      "line_count_definition": "CRLF/LF/CR delimiters + 1; trailing empty line included",
+      "max_line_bytes": 1048576,
+      "max_line_unicode_scalars": 1048576,
+      "line_endings": {
+        "CRLF": 521641,
+        "LF": 2,
+        "CR": 0
+      },
+      "line_lengths_exclude": "BOM and line-ending bytes",
+      "structure": {
+        "exact_target_bytes": 104857600,
+        "long_line_scalars": 1048576,
+        "complete_normal_records": 521641
+      }
+    }
+  ],
+  "summary": {
+    "file_count": 29,
+    "total_bytes": 674435848
+  },
+  "coverage": {
+    "generated_ids": [
+      "TXT-1",
+      "MD-1",
+      "LONG-100K",
+      "MATCH-HIGH-SMOKE",
+      "UNICODE",
+      "EOL-MIXED",
+      "EOL-TIE",
+      "MD-FIDELITY",
+      "ENC-UTF8-BOM",
+      "ENC-UTF16LE",
+      "ENC-UTF16BE",
+      "ENC-GB18030",
+      "ENC-GBK",
+      "ENC-1252",
+      "ENC-INVALID-UTF8",
+      "ENC-INVALID-UTF16LE",
+      "REGEX-ADV",
+      "REGEX-CASES",
+      "TXT-10",
+      "TXT-100",
+      "ASCII-10",
+      "ASCII-100",
+      "MD-10",
+      "MD-100-SOURCE",
+      "LONG-1M",
+      "MATCH-HIGH-10",
+      "MATCH-HIGH-100",
+      "LONG-100M",
+      "MIXED-LONG-100M"
+    ],
+    "not_implemented": [
+      "MD-COMPLEX: deep nesting, giant tables and parser-derived structure counts",
+      "HUGE-1G: 1 GiB inputs are not generated by this version",
+      "THRESHOLD: exact 20/200 MiB +/-1 byte and 19999/20000/20001 scalar cases",
+      "IMAGE: local image decoding and remote-resource timing fixtures",
+      "Windows app, ETW/PresentMon runner, hardware/IME automation and measurements"
+    ],
+    "not_generated_in_smoke": "10/100 MiB normal fixtures; use standard",
+    "stress_additions": [
+      "LONG-100M",
+      "MIXED-LONG-100M"
+    ],
+    "windows_performance_measured": false,
+    "parser_structure_validated": false
+  }
+}

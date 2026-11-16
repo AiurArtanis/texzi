@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>texzi · 完整设计交付手册</title>
+<meta name="description" content="texzi Windows 原生文本编辑器：产品、交互、技术、原型、验收和实施交接。">
+<style>{{CSS}}</style>
+</head>
+<body>
+<aside class="rail">
+  <a class="brand" href="#overview"><span class="brand-mark">t</span><span>texzi<small>设计与实施交付</small></span></a>
+  <label class="search"><span aria-hidden="true">⌕</span><input id="doc-search" type="search" placeholder="搜索完整设计…" aria-label="搜索完整设计"><kbd>/</kbd></label>
+  <nav aria-label="文档目录">{{NAV}}</nav>
+  <div class="rail-bottom"><strong>v1.0</strong><span>2026-11-15</span><p>Windows 10 · x64<br>概念确认后的完整设计基线</p></div>
+</aside>
+<div class="main-shell">
+  <header class="topbar"><div id="current-section">交付总览</div><div><a href="#prototype-page">交互原型</a><button id="print">打印 / 保存 PDF</button></div></header>
+  <main id="main">
+    <article class="page active" id="overview">
+      <div class="eyebrow">WINDOWS NATIVE TEXT EDITOR · DESIGN V1.0</div>
+      <h1 class="cover-title">texzi<span>把文字留在中心。</span></h1>
+      <p class="lead">面向临时文本、Markdown 与代码片段的 Windows 原生编辑器。<br>从确认概念图到可交接的功能规则、原型与工程验收。</p>
+      <div class="tags"><span>Windows 10 x64</span><span>NSH 原生路线</span><span>Markdown 所见即所得</span><span>Zen</span></div>
+      <div class="cover-actions"><a class="primary" href="#prototype-page">审阅交互原型 <span>↗</span></a><a href="#handoff">交给实施团队 →</a><a href="#verification">查看验证状态</a></div>
+      <figure class="cover-image"><img src="{{MAIN_IMAGE}}" alt="texzi已确认的主界面概念图：同一顶栏菜单、多标签、左侧文件夹和日常文字"><figcaption>已确认的概念基准 · 主界面。下面的交互原型依据这套视觉方向实现。</figcaption></figure>
+      <div class="stats"><div><strong>{{FR_COUNT}}</strong><span>功能规则</span></div><div><strong>{{COMMAND_COUNT}}</strong><span>命令定义</span></div><div><strong>{{SETTING_COUNT}}</strong><span>逐项设置</span></div><div><strong>{{AC_COUNT}}</strong><span>产品验收</span></div><div><strong>19</strong><span>实施任务</span></div></div>
+      <section><h2>审阅入口</h2><div class="reading-grid">
+        <a href="#prd"><b>01 · 产品与范围</b><span>首版是什么、每项功能怎么工作、异常时怎么办。</span></a>
+        <a href="#ui-spec"><b>02 · 界面与交互</b><span>多标签、分屏、Markdown、设置和状态的具体规则。</span></a>
+        <a href="#technical"><b>03 · 原生实施</b><span>NSH 能力与缺口、唯一文档、保真桥接、Windows 适配。</span></a>
+        <a href="#performance"><b>04 · 测量与验收</b><span>目标值、环境、样本、分位数和可执行证据。</span></a>
+      </div></section>
+      <section class="decision-note"><h2>本次设计的关键决定</h2><p>Markdown 默认直接编辑排版正文，右上 <code>&gt;_</code> 原位切源码。两种模式使用同一文档和撤销历史；切换本身不改写原文。Windows 窗口菜单融入单行外框，左上不重复显示应用标题。</p><p>20 MiB 是建议的渐进处理阈值，不能据此自动变成只读。100 MiB 性能目标明确针对普通文本与源码；复杂富文档单列验证。</p></section>
+      <section><h2>交付的完成边界</h2><p>本手册提供完整设计和浏览器交互原型，原生 NSH 客户端由下一阶段实施团队开发。纯逻辑测试已实际运行；本地浏览器渲染检查受当前环境限制，真实浏览器与 Windows 原生验收保持 <strong>NotRun</strong>，详情见验证报告。</p></section>
+    </article>
+    <article class="page" id="concepts-page">
+      <div class="eyebrow">APPROVED CONCEPTS</div><h1>视觉基准</h1><p class="lead">三张概念图定义同一套简洁工作台。正文规格修正概念中的文字误差，交互以 PRD 为准。</p>
+      <h2>主界面</h2><figure class="concept"><img src="{{MAIN_IMAGE}}" alt="主界面概念"><figcaption>文件树与多标签；菜单融入顶栏，正文保留大面积连续空间。</figcaption></figure>
+      <h2>分屏与所见即所得</h2><figure class="concept"><img src="{{SPLIT_IMAGE}}" alt="所见即所得 Markdown 与多个编辑区域概念"><figcaption>Markdown 正文可直接编辑；右上 &gt;_ 原位切源码；右侧展示代码与普通文字。</figcaption></figure>
+      <h2>设置</h2><figure class="concept"><img src="{{SETTINGS_IMAGE}}" alt="七类导航和行式设置概念"><figcaption>设置是普通标签，分类在侧栏；常用项优先，配置按行展示。</figcaption></figure>
+    </article>
+    <article class="page" id="prototype-page">
+      <div class="eyebrow">INTERACTIVE REVIEW</div><h1>高保真交互原型</h1><p class="lead">直接修改文字、切换 Markdown 模式、查找替换、调整分屏和设置，审阅主要状态。</p>
+      <div class="notice"><strong>能力边界</strong><p>这是浏览器实现的交互原型。大文件/文件监听/异常来源为明确标记的模拟；它不证明 NSH、Windows IME 或原生性能。嵌入式查看适合快速审阅，新窗口、下载及会话测试建议使用独立文件。</p></div>
+      <div class="cover-actions"><button class="primary" id="load-prototype">在本页载入原型</button><button id="download-prototype">下载独立原型</button><a href="#prototype-guide">运行方式与真实 / 模拟清单 →</a></div>
+      <div id="prototype-host"><p>点击“在本页载入原型”开始。原型资源均已内置，不请求外部网络。</p></div>
+    </article>
+    {{ARTICLES}}
+    <article class="page" id="search-page"><div class="eyebrow">SEARCH DESIGN</div><h1>搜索设计内容</h1><div id="search-summary"></div><div id="search-results"></div></article>
+  </main>
+  <footer>texzi · 完整设计交付 v1.0 <span>需求 / 建议 / 待验证事实分别标记</span></footer>
+</div>
+<script>{{DATA}}</script>
+<script>
+(function(){
+  'use strict';
+  var pages=Array.from(document.querySelectorAll('.page'));
+  var entries=window.HANDBOOK.entries;
+  var search=document.getElementById('doc-search');
+  function escapeHTML(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function activate(id){
+    if(!document.getElementById(id)||!document.getElementById(id).classList.contains('page'))id='overview';
+    pages.forEach(function(p){p.classList.toggle('active',p.id===id);});
+    document.querySelectorAll('.rail nav a').forEach(function(a){a.classList.toggle('selected',a.hash==='#'+id);if(a.hash==='#'+id)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
+    var entry=entries.find(function(x){return x.id===id;});
+    document.getElementById('current-section').textContent=entry?entry.title:id==='search-page'?'搜索结果':'交付总览';
+    window.scrollTo(0,0);
+  }
+  window.addEventListener('hashchange',function(){activate(location.hash.slice(1));});
+  document.addEventListener('click',function(e){
+    var link=e.target.closest('a[href^="#"]');if(!link)return;
+    var id=link.getAttribute('href').slice(1);if(!document.getElementById(id))return;
+    e.preventDefault();search.value='';if(location.hash!=='#'+id)location.hash=id;activate(id);
+  });
+  activate(location.hash.slice(1)||'overview');
+  document.getElementById('print').onclick=function(){window.print();};
+  document.addEventListener('keydown',function(e){if(e.key==='/'&&!e.target.matches('input,textarea,[contenteditable]')){e.preventDefault();search.focus();}if(e.key==='Escape'&&document.activeElement===search){search.value='';search.blur();location.hash='overview';}});
+  search.addEventListener('input',function(){
+    var query=search.value.trim().toLowerCase();if(!query){activate(location.hash.slice(1)||'overview');return;}
+    var results=entries.map(function(x){var page=document.getElementById(x.id);var text=page.textContent.replace(/\s+/g,' ');var at=text.toLowerCase().indexOf(query);return{entry:x,text:text,at:at};}).filter(function(r){return r.at>=0;});
+    document.getElementById('search-summary').textContent='“'+search.value+'” · '+results.length+' 个章节包含匹配';
+    document.getElementById('search-results').innerHTML=results.map(function(r){var start=Math.max(0,r.at-55),end=Math.min(r.text.length,r.at+150);return'<a class="search-result" href="#'+r.entry.id+'"><strong>'+escapeHTML(r.entry.title)+'</strong><p>'+escapeHTML(r.text.slice(start,end))+'</p><span>查看完整章节 →</span></a>';}).join('')||'<p>没有结果。可搜索“输入法”“恢复”“快捷键”“20 MiB”或具体命令ID。</p>';
+    activate('search-page');
+  });
+  document.getElementById('load-prototype').onclick=function(){
+    var host=document.getElementById('prototype-host');if(host.querySelector('iframe'))return;
+    var frame=document.createElement('iframe');frame.title='texzi 可操作交互原型';frame.srcdoc=window.HANDBOOK.prototype;host.replaceChildren(frame);this.textContent='原型已载入';this.disabled=true;
+  };
+  document.getElementById('download-prototype').onclick=function(){var blob=new Blob([window.HANDBOOK.prototype],{type:'text/html;charset=utf-8'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='texzi-prototype.html';a.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
+})();
+</script>
+</body>
+</html>

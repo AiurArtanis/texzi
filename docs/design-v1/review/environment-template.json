@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "status": "NotRun",
+  "os": {
+    "family": "Windows",
+    "architecture": "x64",
+    "version": null,
+    "build": null
+  },
+  "cpu": null,
+  "memoryGiB": null,
+  "disk": null,
+  "gpu": null,
+  "driver": null,
+  "display": {
+    "width": null,
+    "height": null,
+    "refreshHz": null,
+    "dpi": null
+  },
+  "inputMethods": [],
+  "fonts": [],
+  "powerPlan": null,
+  "defenderState": null,
+  "appCommit": null,
+  "nshCommit": "224d9a795c7ac9d10d75750de9351adac5549675",
+  "cargoLockSha256": null,
+  "fixtureManifestSha256": null,
+  "notes": "Fill with actual machine data. The proposed reference machine is defined in PERFORMANCE_PLAN; it is not a measured or user-supplied environment."
+}

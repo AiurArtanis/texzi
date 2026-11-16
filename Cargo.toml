@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/texzi-app"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "224d9a795c7ac9d10d75750de9351adac5549675", default-features = false }
+nsh-platform-windows = { git = "https://github.com/longbridge/nsh", rev = "224d9a795c7ac9d10d75750de9351adac5549675", default-features = false }
+log = "=0.4.29"
+

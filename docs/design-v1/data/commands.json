@@ -1,0 +1,4458 @@
+{
+  "schemaVersion": 1,
+  "product": "texzi",
+  "platform": "windows-x64",
+  "baseline": {
+    "vscodeVersion": "1.146.0",
+    "commit": "69047191fc427f2f92828279aae1d90d8eeda7ab",
+    "releaseDate": "2026-11-11",
+    "verifiedAt": "2026-11-15 Asia/Shanghai",
+    "sources": [
+      {
+        "id": "CORE",
+        "title": "VS Code 1.146.0 src/vs/editor/browser/coreCommands.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/browser/coreCommands.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "EXT",
+        "title": "VS Code 1.146.0 src/vs/editor/browser/editorExtensions.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/browser/editorExtensions.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "WORDS",
+        "title": "VS Code 1.146.0 src/vs/editor/contrib/wordOperations/browser/wordOperations.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/wordOperations/browser/wordOperations.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "LINES",
+        "title": "VS Code 1.146.0 src/vs/editor/contrib/linesOperations/browser/linesOperations.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/linesOperations/browser/linesOperations.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "MULTI",
+        "title": "VS Code 1.146.0 src/vs/editor/contrib/multicursor/browser/multicursor.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/multicursor/browser/multicursor.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "CURSOR",
+        "title": "VS Code 1.146.0 src/vs/editor/contrib/cursorUndo/browser/cursorUndo.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/cursorUndo/browser/cursorUndo.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "CLIP",
+        "title": "VS Code 1.146.0 src/vs/editor/contrib/clipboard/browser/clipboard.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/clipboard/browser/clipboard.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "LINESEL",
+        "title": "VS Code 1.146.0 src/vs/editor/contrib/lineSelection/browser/lineSelection.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/lineSelection/browser/lineSelection.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "FIND",
+        "title": "VS Code 1.146.0 src/vs/editor/contrib/find/browser/findController.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/find/browser/findController.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "FINDMODEL",
+        "title": "VS Code 1.146.0 src/vs/editor/contrib/find/browser/findModel.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/find/browser/findModel.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "FILE",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/files/browser/fileCommands.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/files/browser/fileCommands.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "FILECONST",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/files/browser/fileConstants.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/files/browser/fileConstants.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "WORKSPACE",
+        "title": "VS Code 1.146.0 src/vs/workbench/browser/actions/workspaceActions.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/actions/workspaceActions.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "TABS",
+        "title": "VS Code 1.146.0 src/vs/workbench/browser/parts/editor/editorCommands.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/parts/editor/editorCommands.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "GROUPS",
+        "title": "VS Code 1.146.0 src/vs/workbench/browser/parts/editor/editorActions.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/parts/editor/editorActions.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "WINDOW",
+        "title": "VS Code 1.146.0 src/vs/workbench/browser/actions/windowActions.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/actions/windowActions.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "WINNATIVE",
+        "title": "VS Code 1.146.0 src/vs/workbench/electron-browser/actions/windowActions.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/electron-browser/actions/windowActions.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "LAYOUT",
+        "title": "VS Code 1.146.0 src/vs/workbench/browser/actions/layoutActions.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/actions/layoutActions.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "PREFS",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/preferences/browser/preferences.contribution.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/preferences/browser/preferences.contribution.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "GOTO",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/codeEditor/browser/quickaccess/gotoLineQuickAccess.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/codeEditor/browser/quickaccess/gotoLineQuickAccess.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "QUICK",
+        "title": "VS Code 1.146.0 src/vs/workbench/browser/actions/quickAccessActions.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/actions/quickAccessActions.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "WRAP",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/codeEditor/browser/toggleWordWrap.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/codeEditor/browser/toggleWordWrap.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "SEARCH",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/search/browser/search.contribution.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/search/browser/search.contribution.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "RELEASE",
+        "title": "VS Code 1.146 Stable（2026-11-11，下载版本1.146.0）",
+        "url": "https://code.visualstudio.com/updates/v1_146",
+        "kind": "official_release",
+        "read": true
+      },
+      {
+        "id": "TAG",
+        "title": "1.146.0 tag指向固定commit",
+        "url": "https://api.github.com/repos/microsoft/vscode/git/ref/tags/1.146.0",
+        "kind": "official_tag",
+        "read": true
+      },
+      {
+        "id": "REF",
+        "title": "官方Windows默认快捷键参考（动态页面，不能单独证明固定版本）",
+        "url": "https://code.visualstudio.com/docs/reference/default-keybindings",
+        "kind": "official_reference",
+        "read": true
+      },
+      {
+        "id": "PDF",
+        "title": "官方Windows快捷键PDF（动态文件）",
+        "url": "https://code.visualstudio.com/shortcuts/keyboard-shortcuts-windows.pdf",
+        "kind": "official_reference",
+        "read": true
+      },
+      {
+        "id": "ZEN",
+        "title": "VS Code 1.146.0 src/vs/workbench/browser/workbench.zenMode.contribution.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/workbench.zenMode.contribution.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "PALETTE",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "FILENATIVE",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/files/electron-browser/fileActions.contribution.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/files/electron-browser/fileActions.contribution.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "TABFOCUS",
+        "title": "VS Code 1.146.0 src/vs/editor/contrib/toggleTabFocusMode/browser/toggleTabFocusMode.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/toggleTabFocusMode/browser/toggleTabFocusMode.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "EDITORSTATUS",
+        "title": "VS Code 1.146.0 src/vs/workbench/browser/parts/editor/editorStatus.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/parts/editor/editorStatus.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "SEARCHFIND",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/search/browser/searchActionsFind.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/search/browser/searchActionsFind.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "SEARCHCONST",
+        "title": "VS Code 1.146.0 src/vs/workbench/contrib/search/common/constants.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/search/common/constants.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "OPTIONS",
+        "title": "VS Code 1.146.0 src/vs/editor/common/config/editorOptions.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/common/config/editorOptions.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "VIEWCTRL",
+        "title": "VS Code 1.146.0 src/vs/editor/browser/view/viewController.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/browser/view/viewController.ts",
+        "kind": "pinned_source",
+        "read": true
+      },
+      {
+        "id": "MOUSE",
+        "title": "VS Code 1.146.0 src/vs/editor/browser/controller/mouseHandler.ts",
+        "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/browser/controller/mouseHandler.ts",
+        "kind": "pinned_source",
+        "read": true
+      }
+    ]
+  },
+  "policies": {
+    "ime": "composition期间输入与候选键由TSF/输入法处理；不执行本文档编辑命令，不以Alt/Ctrl/Shift的单独按下或抬起触发操作。",
+    "osReserved": "不注册系统全局键盘钩子；不重绑Win键组合、Alt+Tab、Ctrl+Alt+Delete；Alt+F4经系统关闭事件处理。Ctrl+Space、Shift中英切换、Ctrl+Shift与Alt+Shift布局切换保留给系统。",
+    "contextPriority": [
+      "IME/composition",
+      "原生对话框或顶部模态",
+      "当前弹层/查找输入控件",
+      "WYSIWYG/源码局部命令",
+      "窗口命令"
+    ],
+    "chords": "空格分隔顺序按键；每一步独立记录修饰键。Ctrl+K后1.5秒建议超时；Esc取消。未匹配第二键不写入正文并提示无此组合。",
+    "customBindings": "用户重绑优先于同上下文默认；上下文重叠的重复键必须显式选择替换或取消，不能静默覆盖；系统保留键不可绑定。",
+    "wysiwyg": "WYSIWYG首版为单主选区。多光标、矩形选择和按源码行操作通过原位切源码执行，保留源码锚点；建议边界写入PRD。",
+    "findScopes": "WYSIWYG普通查找是可见正文；启用正则、替换或选择全部匹配时先切源码、说明范围变化并重算。部分匹配=全字关闭。",
+    "baselineMeaning": "verified_source核实的是VSCode1.146.0命令与默认键，texzi的业务语义与上下文仍以本文件为准。reference_verified_version_pending表示官方参考已验证，但该版本实现位置仍待复核，不能声称已完成逐项源码核验。",
+    "unassigned": "defaultKeys为空即默认未绑定；仍可通过菜单、按钮或命令面板触发。",
+    "sourceTransitions": "context表示真正执行前需要满足的状态；带viewTransition的命令可在invocationContext（含WYSIWYG）调用，先映射到源码，再验证executionContext执行。菜单/绑定不得因初始WYSIWYG不满足sourceEditorFocus而静默禁用这些桥接命令。",
+    "paste": "普通粘贴为纯文字；texzi多选元数据与光标等数时一对一，外部多行不自动猜分配。显式Markdown粘贴与按行分配粘贴为独立命令。",
+    "windowCloseRecovery": "无保存确认保留dirty窗口关闭条件：restoreOnStartup && restoreUnsaved && snapshotFlushSucceeded；否则最后dirty文档引用走保存/放弃/取消。恢复开关不关闭后台崩溃日志。",
+    "zeroWidthRegex": "零宽全局枚举按Unicode scalar前进，EOF最多一次；UI光标按grapheme移动是另一层规则，不能混用。"
+  },
+  "commands": [
+    {
+      "id": "texzi.file.new",
+      "name": "新建文本",
+      "category": "文件",
+      "defaultKeys": [
+        "Ctrl+N"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "创建独立未命名缓冲区；默认纯文本，立即可输入。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.files.newUntitledFile",
+      "vsCodeKeys": [
+        "Ctrl+N"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FILE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+N",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.file.open",
+      "name": "打开文件",
+      "category": "文件",
+      "defaultKeys": [
+        "Ctrl+O"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "多选打开文件；已打开的规范路径复用缓冲区。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.files.openFile",
+      "vsCodeKeys": [
+        "Ctrl+O"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "WORKSPACE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+O",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.folder.open",
+      "name": "打开文件夹",
+      "category": "文件",
+      "defaultKeys": [
+        "Ctrl+K Ctrl+O"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "打开单根文件夹；按window.openFolders决定当前/新窗口。在当前窗口替换根树时保留所有已打开标签、dirty文档和视图，不触发关闭文档的保存确认。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.files.openFolder",
+      "vsCodeKeys": [
+        "Ctrl+K Ctrl+O"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "WORKSPACE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K Ctrl+O",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.folder.close",
+      "name": "关闭文件夹",
+      "category": "文件",
+      "defaultKeys": [
+        "Ctrl+K F"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "仅移除当前工作区根树和根目录搜索范围；已打开标签、dirty文档、独立文件与视图保持，不删除磁盘文件、不触发文档关闭确认。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.closeFolder",
+      "vsCodeKeys": [
+        "Ctrl+K F"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "WORKSPACE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K F",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.file.save",
+      "name": "保存",
+      "category": "文件",
+      "defaultKeys": [
+        "Ctrl+S"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "保存活动文档；未命名时弹原生另存对话框；冲突或编码错误不覆盖。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.files.save",
+      "vsCodeKeys": [
+        "Ctrl+S"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FILE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+S",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.file.saveAs",
+      "name": "另存为",
+      "category": "文件",
+      "defaultKeys": [
+        "Ctrl+Shift+S"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "选路径和编码后原子写入；当前文档身份切换到新路径。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.files.saveAs",
+      "vsCodeKeys": [
+        "Ctrl+Shift+S"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FILE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+S",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.file.saveAll",
+      "name": "全部保存",
+      "category": "文件",
+      "defaultKeys": [
+        "Ctrl+K S"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "保存当前窗口所有已修改文档；未命名逐一选择路径；失败汇总且可重试。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "saveAll",
+      "vsCodeKeys": [
+        "Ctrl+K S"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FILE"
+      ],
+      "conflictHandling": "第二段是S，不是Ctrl+S；Ctrl+K Ctrl+S为快捷键设置。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K S",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.file.revert",
+      "name": "从磁盘重新载入",
+      "category": "文件",
+      "defaultKeys": [],
+      "context": "windowFocus && !modalOpen && !imeComposing && fileBacked",
+      "behavior": "有未保存改动先确认并保留恢复副本，随后读取磁盘当前版本。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.files.revert",
+      "vsCodeKeys": [],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FILE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.file.reopenWithEncoding",
+      "name": "以编码重新打开",
+      "category": "文件",
+      "defaultKeys": [],
+      "context": "windowFocus && !modalOpen && !imeComposing && fileBacked",
+      "behavior": "先预览候选解码；确认后重载。未保存内容先处理，不能将解码替换字符当成成功。",
+      "markdownBehavior": "重新解码后重建派生Markdown视图；保留源码锚点。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.file.saveWithEncoding",
+      "name": "使用编码保存",
+      "category": "文件",
+      "defaultKeys": [],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "选择编码后检查所有字符是否可表示；失败不落盘，可改UTF-8或另存。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.file.changeEol",
+      "name": "转换换行符",
+      "category": "文件",
+      "defaultKeys": [],
+      "context": "editorFocus && !imeComposing",
+      "behavior": "明确选择CRLF或LF；整个文档一次事务，混合换行不自动转换。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.file.copyPath",
+      "name": "复制完整路径",
+      "category": "文件",
+      "defaultKeys": [
+        "Ctrl+K P"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && fileBacked",
+      "behavior": "复制磁盘绝对路径；未命名文档禁用。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.files.copyPathOfActiveFile",
+      "vsCodeKeys": [
+        "Ctrl+K P"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FILE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K P",
+          "when": "windowFocus && !modalOpen && !imeComposing && fileBacked"
+        }
+      ]
+    },
+    {
+      "id": "texzi.file.revealInExplorer",
+      "name": "在Windows资源管理器中显示",
+      "category": "文件",
+      "defaultKeys": [
+        "Ctrl+K R"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && fileBacked",
+      "behavior": "用Shell打开所在目录并选中文件。与应用内文件树定位不同。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.files.revealActiveFileInWindows",
+      "vsCodeKeys": [
+        "Ctrl+K R"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FILENATIVE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K R",
+          "when": "windowFocus && !modalOpen && !imeComposing && fileBacked"
+        }
+      ]
+    },
+    {
+      "id": "texzi.window.new",
+      "name": "新建窗口",
+      "category": "窗口",
+      "defaultKeys": [
+        "Ctrl+Shift+N"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "创建空原生窗口，共用应用进程内文档服务。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.newWindow",
+      "vsCodeKeys": [
+        "Ctrl+Shift+N"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "WINDOW"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+N",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.window.close",
+      "name": "关闭窗口",
+      "category": "窗口",
+      "defaultKeys": [
+        "Alt+F4",
+        "Ctrl+Shift+W"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "关闭当前窗口：仅当session.restoreOnStartup与session.restoreUnsaved均为true且该窗口恢复快照成功刷盘，才可保留dirty文档后直接关闭；否则对将失去最后视图的dirty文档按DocId执行保存/放弃/取消。仍被其他窗口引用的文档只移除本窗口视图。失败或取消时保留未完成关闭的窗口和数据。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.closeWindow",
+      "vsCodeKeys": [
+        "Alt+F4",
+        "Ctrl+Shift+W"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "WINNATIVE"
+      ],
+      "conflictHandling": "Alt+F4交由Windows系统关闭消息处理，不用全局钩子拦截；Ctrl+Shift+W为应用入口。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+F4",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+W",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.undo",
+      "name": "撤销",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+Z"
+      ],
+      "context": "textInputFocus && !imeComposing",
+      "behavior": "正文按文档事务撤销；搜索/设置输入框只撤销该输入框；模式切换不占撤销步。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "undo",
+      "vsCodeKeys": [
+        "Ctrl+Z"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "EXT"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Z",
+          "when": "textInputFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.redo",
+      "name": "重做",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+Y",
+        "Ctrl+Shift+Z"
+      ],
+      "context": "textInputFocus && !imeComposing",
+      "behavior": "重做同一文档历史；发生新编辑后清空对应redo分支。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "redo",
+      "vsCodeKeys": [
+        "Ctrl+Y",
+        "Ctrl+Shift+Z"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "EXT"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Y",
+          "when": "textInputFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+Z",
+          "when": "textInputFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.cut",
+      "name": "剪切",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+X",
+        "Shift+Delete"
+      ],
+      "context": "textInputFocus && writable && !imeComposing",
+      "behavior": "剪切选区；源码空选区且设置开启时剪切当前行；多选区一次事务。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "editor.action.clipboardCutAction",
+      "vsCodeKeys": [
+        "Ctrl+X",
+        "Shift+Delete"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CLIP"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+X",
+          "when": "textInputFocus && writable && !imeComposing"
+        },
+        {
+          "key": "Shift+Delete",
+          "when": "textInputFocus && writable && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.copy",
+      "name": "复制",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+C",
+        "Ctrl+Insert"
+      ],
+      "context": "textInputFocus && !imeComposing",
+      "behavior": "复制选区；源码空选区按editor.copyEmptySelection；WYSIWYG提供纯文本及兼容HTML剪贴板表示。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "editor.action.clipboardCopyAction",
+      "vsCodeKeys": [
+        "Ctrl+C",
+        "Ctrl+Insert"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CLIP"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+C",
+          "when": "textInputFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Insert",
+          "when": "textInputFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.paste",
+      "name": "粘贴",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+V",
+        "Shift+Insert"
+      ],
+      "context": "textInputFocus && writable && !imeComposing",
+      "behavior": "普通粘贴优先读取剪贴板纯文字，不解析HTML或Markdown结构。源码多光标：texzi多选元数据与光标数相等时一对一；普通外部文本完整粘到每个光标；元数据数量不匹配则提示并取消。换行按目标文档规则，一次事务提交。",
+      "markdownBehavior": "WYSIWYG按字面文字插入，Markdown符号不自动转结构；只有显式“粘贴Markdown”才解析结构。",
+      "vsCodeId": "editor.action.clipboardPasteAction",
+      "vsCodeKeys": [
+        "Ctrl+V",
+        "Shift+Insert"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CLIP"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+V",
+          "when": "textInputFocus && writable && !imeComposing"
+        },
+        {
+          "key": "Shift+Insert",
+          "when": "textInputFocus && writable && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.pastePlain",
+      "name": "原样粘贴文本",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+Shift+V"
+      ],
+      "context": "markdownWysiwygFocus && writable && !imeComposing",
+      "behavior": "显式忽略HTML、Markdown及多选剪贴板元数据，作为普通文字插入；Markdown符号按字面插入，不触发自动结构转换。",
+      "markdownBehavior": "仅在WYSIWYG正文使用；与普通粘贴相同的纯文字结果，保留明确的无格式入口。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "仅WYSIWYG定义；源码Ctrl+V本来就是文本粘贴，Ctrl+Shift+V可作为同义键。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+V",
+          "when": "markdownWysiwygFocus && writable && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.selectAll",
+      "name": "全选",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+A"
+      ],
+      "context": "textInputFocus && !imeComposing",
+      "behavior": "全选当前正文或当前输入控件内容；不跨文档。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "editor.action.selectAll",
+      "vsCodeKeys": [
+        "Ctrl+A"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "EXT"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+A",
+          "when": "textInputFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.deleteBackward",
+      "name": "向前删除",
+      "category": "编辑",
+      "defaultKeys": [
+        "Backspace",
+        "Shift+Backspace"
+      ],
+      "context": "editorFocus && !imeComposing && writable",
+      "behavior": "有选区删除选区，否则删除前一个grapheme cluster；不拆开代理对/组合字符。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "deleteLeft",
+      "vsCodeKeys": [
+        "Backspace",
+        "Shift+Backspace"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CORE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Backspace",
+          "when": "editorFocus && !imeComposing && writable"
+        },
+        {
+          "key": "Shift+Backspace",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.deleteForward",
+      "name": "向后删除",
+      "category": "编辑",
+      "defaultKeys": [
+        "Delete"
+      ],
+      "context": "editorFocus && !imeComposing && writable",
+      "behavior": "有选区删除选区，否则删除后一个grapheme cluster。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "deleteRight",
+      "vsCodeKeys": [
+        "Delete"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CORE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Delete",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.deleteWordLeft",
+      "name": "删除前一个词",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+Backspace"
+      ],
+      "context": "editorFocus && !imeComposing && writable",
+      "behavior": "按明确Unicode词边界向前删除；中文不声称智能分词。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "deleteWordLeft",
+      "vsCodeKeys": [
+        "Ctrl+Backspace"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "WORDS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Backspace",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.deleteWordRight",
+      "name": "删除后一个词",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+Delete"
+      ],
+      "context": "editorFocus && !imeComposing && writable",
+      "behavior": "按词边界向后删除；多个选区合并重叠编辑后一次提交。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "deleteWordRight",
+      "vsCodeKeys": [
+        "Ctrl+Delete"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "WORDS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Delete",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.indent",
+      "name": "增加缩进",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+]"
+      ],
+      "context": "editorFocus && !imeComposing && writable",
+      "behavior": "源码对涉及行增加一级缩进；WYSIWYG对列表项增加层级，普通段落不插入不可逆样式。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "editor.action.indentLines",
+      "vsCodeKeys": [
+        "Ctrl+]"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINES"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+]",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.outdent",
+      "name": "减少缩进",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+["
+      ],
+      "context": "editorFocus && !imeComposing && writable",
+      "behavior": "源码减少不超过一级缩进；WYSIWYG列表减少层级。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "editor.action.outdentLines",
+      "vsCodeKeys": [
+        "Ctrl+["
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINES"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+[",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.tab",
+      "name": "Tab输入或结构导航",
+      "category": "编辑",
+      "defaultKeys": [
+        "Tab"
+      ],
+      "context": "editorFocus && !imeComposing && writable && !tabMovesFocus",
+      "behavior": "源码插入缩进/缩进选中行；WYSIWYG表格进入下一格，列表增加层级，其余按既定Tab规则。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "tab",
+      "vsCodeKeys": [
+        "Tab"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CORE"
+      ],
+      "conflictHandling": "tabMovesFocus=true时交给焦点导航；不在设置表单中插入Tab字符。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Tab",
+          "when": "editorFocus && !imeComposing && writable && !tabMovesFocus"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.shiftTab",
+      "name": "反向Tab或减少缩进",
+      "category": "编辑",
+      "defaultKeys": [
+        "Shift+Tab"
+      ],
+      "context": "editorFocus && !imeComposing && writable && !tabMovesFocus",
+      "behavior": "源码减少缩进；WYSIWYG表格上一格、列表减少层级。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "outdent",
+      "vsCodeKeys": [
+        "Shift+Tab"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CORE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Shift+Tab",
+          "when": "editorFocus && !imeComposing && writable && !tabMovesFocus"
+        }
+      ]
+    },
+    {
+      "id": "texzi.edit.moveLineUp",
+      "name": "上移行",
+      "category": "编辑",
+      "defaultKeys": [
+        "Alt+Up"
+      ],
+      "context": "sourceEditorFocus && !imeComposing && writable",
+      "behavior": "作用于所有选区覆盖的逻辑行，重叠行去重；文档边界不额外制造空行，一次撤销恢复。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.moveLinesUpAction",
+      "vsCodeKeys": [
+        "Alt+Up"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINES"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+Up",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing && writable",
+      "invocationContext": "editorFocus && !imeComposing && writable",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.edit.moveLineDown",
+      "name": "下移行",
+      "category": "编辑",
+      "defaultKeys": [
+        "Alt+Down"
+      ],
+      "context": "sourceEditorFocus && !imeComposing && writable",
+      "behavior": "作用于所有选区覆盖的逻辑行，重叠行去重；文档边界不额外制造空行，一次撤销恢复。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.moveLinesDownAction",
+      "vsCodeKeys": [
+        "Alt+Down"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINES"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+Down",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing && writable",
+      "invocationContext": "editorFocus && !imeComposing && writable",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.edit.copyLineUp",
+      "name": "向上复制行",
+      "category": "编辑",
+      "defaultKeys": [
+        "Shift+Alt+Up"
+      ],
+      "context": "sourceEditorFocus && !imeComposing && writable",
+      "behavior": "作用于所有选区覆盖的逻辑行，重叠行去重；文档边界不额外制造空行，一次撤销恢复。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.copyLinesUpAction",
+      "vsCodeKeys": [
+        "Shift+Alt+Up"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINES"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Shift+Alt+Up",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing && writable",
+      "invocationContext": "editorFocus && !imeComposing && writable",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.edit.copyLineDown",
+      "name": "向下复制行",
+      "category": "编辑",
+      "defaultKeys": [
+        "Shift+Alt+Down"
+      ],
+      "context": "sourceEditorFocus && !imeComposing && writable",
+      "behavior": "作用于所有选区覆盖的逻辑行，重叠行去重；文档边界不额外制造空行，一次撤销恢复。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.copyLinesDownAction",
+      "vsCodeKeys": [
+        "Shift+Alt+Down"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINES"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Shift+Alt+Down",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing && writable",
+      "invocationContext": "editorFocus && !imeComposing && writable",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.edit.deleteLine",
+      "name": "删除整行",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+Shift+K"
+      ],
+      "context": "sourceEditorFocus && !imeComposing && writable",
+      "behavior": "删除选区覆盖的完整逻辑行；最后一行与唯一空行单独处理，不越界。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.deleteLines",
+      "vsCodeKeys": [
+        "Ctrl+Shift+K"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINES"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+K",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing && writable",
+      "invocationContext": "editorFocus && !imeComposing && writable",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.edit.insertLineAbove",
+      "name": "在上方插入行",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+Shift+Enter"
+      ],
+      "context": "sourceEditorFocus && !imeComposing && writable",
+      "behavior": "在当前逻辑行前插入一行，按自动缩进规则定位光标。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.insertLineBefore",
+      "vsCodeKeys": [
+        "Ctrl+Shift+Enter"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINES"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+Enter",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing && writable",
+      "invocationContext": "editorFocus && !imeComposing && writable",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.edit.insertLineBelow",
+      "name": "在下方插入行",
+      "category": "编辑",
+      "defaultKeys": [
+        "Ctrl+Enter"
+      ],
+      "context": "sourceEditorFocus && !imeComposing && writable",
+      "behavior": "在当前逻辑行后插入一行，保留当前行内容。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.insertLineAfter",
+      "vsCodeKeys": [
+        "Ctrl+Enter"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINES"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Enter",
+          "when": "editorFocus && !imeComposing && writable"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing && writable",
+      "invocationContext": "editorFocus && !imeComposing && writable",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.edit.pasteLinesToCursors",
+      "name": "按行分配粘贴",
+      "category": "编辑",
+      "defaultKeys": [],
+      "context": "sourceEditorFocus && writable && !imeComposing && multipleCursors",
+      "behavior": "显式将剪贴板纯文字按CRLF/LF/CR拆成逻辑行，按文档顺序一行对应一个光标；末尾终止换行不额外产生一行。行数与光标数必须相等，不等则说明实际数量并取消；一次事务提交。",
+      "markdownBehavior": "仅源码/代码多光标可用；WYSIWYG首版单选区，命令禁用并说明需先进入源码建立多个光标。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.cursor.move",
+      "name": "移动光标（逐方向）",
+      "category": "导航",
+      "defaultKeys": [
+        "Left",
+        "Right",
+        "Up",
+        "Down",
+        "Home",
+        "End",
+        "Ctrl+Home",
+        "Ctrl+End",
+        "PageUp",
+        "PageDown",
+        "Ctrl+Left",
+        "Ctrl+Right"
+      ],
+      "context": "editorFocus && !imeComposing",
+      "behavior": "方向逐项见variants；上下移动按视觉行并记忆目标列；水平移动按grapheme cluster。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "见variants",
+      "vsCodeKeys": [
+        "Left",
+        "Right",
+        "Up",
+        "Down",
+        "Home",
+        "End",
+        "Ctrl+Home",
+        "Ctrl+End",
+        "PageUp",
+        "PageDown",
+        "Ctrl+Left",
+        "Ctrl+Right"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CORE",
+        "WORDS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "variants": [
+        {
+          "args": {
+            "direction": "left"
+          },
+          "defaultKey": "Left",
+          "vsCodeId": "cursorLeft",
+          "name": "前一字符",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "right"
+          },
+          "defaultKey": "Right",
+          "vsCodeId": "cursorRight",
+          "name": "后一字符",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "up"
+          },
+          "defaultKey": "Up",
+          "vsCodeId": "cursorUp",
+          "name": "上一视觉行",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "down"
+          },
+          "defaultKey": "Down",
+          "vsCodeId": "cursorDown",
+          "name": "下一视觉行",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "home"
+          },
+          "defaultKey": "Home",
+          "vsCodeId": "cursorHome",
+          "name": "行首/首个非空字符",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "end"
+          },
+          "defaultKey": "End",
+          "vsCodeId": "cursorEnd",
+          "name": "行尾",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "documentStart"
+          },
+          "defaultKey": "Ctrl+Home",
+          "vsCodeId": "cursorTop",
+          "name": "文档开头",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "documentEnd"
+          },
+          "defaultKey": "Ctrl+End",
+          "vsCodeId": "cursorBottom",
+          "name": "文档结尾",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "pageUp"
+          },
+          "defaultKey": "PageUp",
+          "vsCodeId": "cursorPageUp",
+          "name": "上一屏",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "pageDown"
+          },
+          "defaultKey": "PageDown",
+          "vsCodeId": "cursorPageDown",
+          "name": "下一屏",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "wordLeft"
+          },
+          "defaultKey": "Ctrl+Left",
+          "vsCodeId": "cursorWordLeft",
+          "name": "前一词边界",
+          "verification": "verified_source",
+          "sourceIds": [
+            "WORDS"
+          ]
+        },
+        {
+          "args": {
+            "direction": "wordRight"
+          },
+          "defaultKey": "Ctrl+Right",
+          "vsCodeId": "cursorWordEndRight",
+          "name": "后一词结尾",
+          "verification": "verified_source",
+          "sourceIds": [
+            "WORDS"
+          ]
+        }
+      ],
+      "bindings": [
+        {
+          "key": "Left",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Right",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Up",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Down",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Home",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "End",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Home",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+End",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "PageUp",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "PageDown",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Left",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Right",
+          "when": "editorFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.selection.extend",
+      "name": "扩展选区（逐方向）",
+      "category": "选择",
+      "defaultKeys": [
+        "Shift+Left",
+        "Shift+Right",
+        "Shift+Up",
+        "Shift+Down",
+        "Shift+Home",
+        "Shift+End",
+        "Ctrl+Shift+Home",
+        "Ctrl+Shift+End",
+        "Shift+PageUp",
+        "Shift+PageDown",
+        "Ctrl+Shift+Left",
+        "Ctrl+Shift+Right"
+      ],
+      "context": "editorFocus && !imeComposing",
+      "behavior": "保留anchor移动head；跨行、反向选择与软换行均保持可恢复的源码位置。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "见variants",
+      "vsCodeKeys": [
+        "Shift+Left",
+        "Shift+Right",
+        "Shift+Up",
+        "Shift+Down",
+        "Shift+Home",
+        "Shift+End",
+        "Ctrl+Shift+Home",
+        "Ctrl+Shift+End",
+        "Shift+PageUp",
+        "Shift+PageDown",
+        "Ctrl+Shift+Left",
+        "Ctrl+Shift+Right"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CORE",
+        "WORDS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "variants": [
+        {
+          "args": {
+            "direction": "left"
+          },
+          "defaultKey": "Shift+Left",
+          "vsCodeId": "cursorLeftSelect",
+          "name": "向前扩选",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "right"
+          },
+          "defaultKey": "Shift+Right",
+          "vsCodeId": "cursorRightSelect",
+          "name": "向后扩选",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "up"
+          },
+          "defaultKey": "Shift+Up",
+          "vsCodeId": "cursorUpSelect",
+          "name": "向上扩选",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "down"
+          },
+          "defaultKey": "Shift+Down",
+          "vsCodeId": "cursorDownSelect",
+          "name": "向下扩选",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "home"
+          },
+          "defaultKey": "Shift+Home",
+          "vsCodeId": "cursorHomeSelect",
+          "name": "扩选到行首",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "end"
+          },
+          "defaultKey": "Shift+End",
+          "vsCodeId": "cursorEndSelect",
+          "name": "扩选到行尾",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "documentStart"
+          },
+          "defaultKey": "Ctrl+Shift+Home",
+          "vsCodeId": "cursorTopSelect",
+          "name": "扩选到文档开头",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "documentEnd"
+          },
+          "defaultKey": "Ctrl+Shift+End",
+          "vsCodeId": "cursorBottomSelect",
+          "name": "扩选到文档结尾",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "pageUp"
+          },
+          "defaultKey": "Shift+PageUp",
+          "vsCodeId": "cursorPageUpSelect",
+          "name": "向上一屏扩选",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "pageDown"
+          },
+          "defaultKey": "Shift+PageDown",
+          "vsCodeId": "cursorPageDownSelect",
+          "name": "向下一屏扩选",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "wordLeft"
+          },
+          "defaultKey": "Ctrl+Shift+Left",
+          "vsCodeId": "cursorWordLeftSelect",
+          "name": "向前按词扩选",
+          "verification": "verified_source",
+          "sourceIds": [
+            "WORDS"
+          ]
+        },
+        {
+          "args": {
+            "direction": "wordRight"
+          },
+          "defaultKey": "Ctrl+Shift+Right",
+          "vsCodeId": "cursorWordEndRightSelect",
+          "name": "向后按词扩选",
+          "verification": "verified_source",
+          "sourceIds": [
+            "WORDS"
+          ]
+        }
+      ],
+      "bindings": [
+        {
+          "key": "Shift+Left",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Shift+Right",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Shift+Up",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Shift+Down",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Shift+Home",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Shift+End",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+Home",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+End",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Shift+PageUp",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Shift+PageDown",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+Left",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+Right",
+          "when": "editorFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.selection.line",
+      "name": "选择当前行",
+      "category": "选择",
+      "defaultKeys": [
+        "Ctrl+L"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "选当前逻辑行；重复执行向后增加一行。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "expandLineSelection",
+      "vsCodeKeys": [
+        "Ctrl+L"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "LINESEL"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+L",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.navigation.gotoLine",
+      "name": "转到行/列",
+      "category": "导航",
+      "defaultKeys": [
+        "Ctrl+G"
+      ],
+      "context": "editorFocus && !imeComposing",
+      "behavior": "输入行号或行:列；非法范围显示校验，不悄悄跳到错误位置。Markdown转源码后定位。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "workbench.action.gotoLine",
+      "vsCodeKeys": [
+        "Ctrl+G"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GOTO"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+G",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "editorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.navigation.quickOpen",
+      "name": "快速打开文件",
+      "category": "导航",
+      "defaultKeys": [
+        "Ctrl+P",
+        "Ctrl+E"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "搜索已打开/最近/当前根目录文件；只做文件定位，不索引代码符号。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.quickOpen",
+      "vsCodeKeys": [
+        "Ctrl+P",
+        "Ctrl+E"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "QUICK"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+P",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+E",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.navigation.back",
+      "name": "后退到上个位置",
+      "category": "导航",
+      "defaultKeys": [
+        "Alt+Left"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "按窗口内显式跳转历史回退，不把每个按键加入历史。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.navigateBack",
+      "vsCodeKeys": [
+        "Alt+Left"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+Left",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.navigation.forward",
+      "name": "前进到下个位置",
+      "category": "导航",
+      "defaultKeys": [
+        "Alt+Right"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "在仍有效的导航历史中前进。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.navigateForward",
+      "vsCodeKeys": [
+        "Alt+Right"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+Right",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.multicursor.addMouse",
+      "name": "鼠标添加光标",
+      "category": "多光标",
+      "defaultKeys": [
+        "Alt+Click"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "在点击处添加/切换一个光标；重复位置去重，设置可改Ctrl。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "createCursor",
+      "vsCodeKeys": [
+        "Alt+Click"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "OPTIONS",
+        "VIEWCTRL",
+        "CORE"
+      ],
+      "conflictHandling": "受editor.multiCursorModifier影响；不抢系统窗口拖动行为。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+Click",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.multicursor.above",
+      "name": "在上方添加光标",
+      "category": "多光标",
+      "defaultKeys": [
+        "Ctrl+Alt+Up"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "在上一视觉行相同目标列添加光标，短行停在行尾。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.insertCursorAbove",
+      "vsCodeKeys": [
+        "Ctrl+Alt+Up"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "MULTI"
+      ],
+      "conflictHandling": "可能被显卡旋转热键捕获；允许改键，不修改系统/驱动快捷键。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Alt+Up",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.multicursor.below",
+      "name": "在下方添加光标",
+      "category": "多光标",
+      "defaultKeys": [
+        "Ctrl+Alt+Down"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "在下一视觉行相同目标列添加光标。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.insertCursorBelow",
+      "vsCodeKeys": [
+        "Ctrl+Alt+Down"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "MULTI"
+      ],
+      "conflictHandling": "可能被显卡旋转热键捕获；允许改键，不修改系统/驱动快捷键。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Alt+Down",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.multicursor.addNext",
+      "name": "选择下一个相同内容",
+      "category": "多光标",
+      "defaultKeys": [
+        "Ctrl+D"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "无选区先选当前词；再加入下一个相同文本，循环后不重复添加。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.addSelectionToNextFindMatch",
+      "vsCodeKeys": [
+        "Ctrl+D"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "MULTI"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+D",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.multicursor.skipNext",
+      "name": "跳过当前匹配选择下一个",
+      "category": "多光标",
+      "defaultKeys": [
+        "Ctrl+K Ctrl+D"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "移动最后添加的选区到下一个相同文本，其他选区不变。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.moveSelectionToNextFindMatch",
+      "vsCodeKeys": [
+        "Ctrl+K Ctrl+D"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "MULTI"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K Ctrl+D",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.multicursor.selectAllOccurrences",
+      "name": "选择所有相同内容",
+      "category": "多光标",
+      "defaultKeys": [
+        "Ctrl+Shift+L"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "选择当前选区全部出现位置；超过受测多光标预算时给出提示，不创建无界光标。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.selectHighlights",
+      "vsCodeKeys": [
+        "Ctrl+Shift+L"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "MULTI"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+L",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.multicursor.selectWordOccurrences",
+      "name": "选择当前词全部出现位置",
+      "category": "多光标",
+      "defaultKeys": [
+        "Ctrl+F2"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "按当前词和明确边界规则添加所有匹配。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.changeAll",
+      "vsCodeKeys": [
+        "Ctrl+F2"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "MULTI"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+F2",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.multicursor.undo",
+      "name": "撤销上次光标操作",
+      "category": "多光标",
+      "defaultKeys": [
+        "Ctrl+U"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "只恢复上一次选区/光标集合，不撤销正文输入。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "cursorUndo",
+      "vsCodeKeys": [
+        "Ctrl+U"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CURSOR"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+U",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.multicursor.lineEnds",
+      "name": "在所选行末添加光标",
+      "category": "多光标",
+      "defaultKeys": [
+        "Shift+Alt+I"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "在每个被选中的逻辑行末尾添加光标，空行位置有效。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.insertCursorAtEndOfEachLineSelected",
+      "vsCodeKeys": [
+        "Shift+Alt+I"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "MULTI"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Shift+Alt+I",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.selection.column",
+      "name": "矩形选择",
+      "category": "多光标",
+      "defaultKeys": [
+        "Ctrl+Shift+Alt+Left",
+        "Ctrl+Shift+Alt+Right",
+        "Ctrl+Shift+Alt+Up",
+        "Ctrl+Shift+Alt+Down",
+        "Ctrl+Shift+Alt+PageUp",
+        "Ctrl+Shift+Alt+PageDown",
+        "Shift+Alt+Drag"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "按显示列建立矩形范围；Tab跨度与短行按视觉位置映射，不自动补入空格。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "见variants；columnSelect",
+      "vsCodeKeys": [
+        "Ctrl+Shift+Alt+Left",
+        "Ctrl+Shift+Alt+Right",
+        "Ctrl+Shift+Alt+Up",
+        "Ctrl+Shift+Alt+Down",
+        "Ctrl+Shift+Alt+PageUp",
+        "Ctrl+Shift+Alt+PageDown",
+        "Shift+Alt+Drag"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "CORE",
+        "OPTIONS",
+        "VIEWCTRL",
+        "MOUSE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "variants": [
+        {
+          "args": {
+            "direction": "left"
+          },
+          "defaultKey": "Ctrl+Shift+Alt+Left",
+          "vsCodeId": "cursorColumnSelectLeft",
+          "name": "向左扩列",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "right"
+          },
+          "defaultKey": "Ctrl+Shift+Alt+Right",
+          "vsCodeId": "cursorColumnSelectRight",
+          "name": "向右扩列",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "up"
+          },
+          "defaultKey": "Ctrl+Shift+Alt+Up",
+          "vsCodeId": "cursorColumnSelectUp",
+          "name": "向上扩行",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "down"
+          },
+          "defaultKey": "Ctrl+Shift+Alt+Down",
+          "vsCodeId": "cursorColumnSelectDown",
+          "name": "向下扩行",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "pageUp"
+          },
+          "defaultKey": "Ctrl+Shift+Alt+PageUp",
+          "vsCodeId": "cursorColumnSelectPageUp",
+          "name": "向上一屏扩行",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        },
+        {
+          "args": {
+            "direction": "pageDown"
+          },
+          "defaultKey": "Ctrl+Shift+Alt+PageDown",
+          "vsCodeId": "cursorColumnSelectPageDown",
+          "name": "向下一屏扩行",
+          "verification": "verified_source",
+          "sourceIds": [
+            "CORE"
+          ]
+        }
+      ],
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+Alt+Left",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+Alt+Right",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+Alt+Up",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+Alt+Down",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+Alt+PageUp",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Ctrl+Shift+Alt+PageDown",
+          "when": "editorFocus && !imeComposing"
+        },
+        {
+          "key": "Shift+Alt+Drag",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "sourceEditorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.find.open",
+      "name": "查找",
+      "category": "查找",
+      "defaultKeys": [
+        "Ctrl+F"
+      ],
+      "context": "editorFocus && !imeComposing",
+      "behavior": "源码搜索原始文本；WYSIWYG保持排版态搜索可见正文含代码块，栏内标正文，不搜索Markdown标记。",
+      "markdownBehavior": "保持WYSIWYG；显式显示搜索范围“正文”。",
+      "vsCodeId": "actions.find",
+      "vsCodeKeys": [
+        "Ctrl+F"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+F",
+          "when": "editorFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.find.replaceOpen",
+      "name": "替换",
+      "category": "查找",
+      "defaultKeys": [
+        "Ctrl+H"
+      ],
+      "context": "editorFocus && !imeComposing",
+      "behavior": "展开替换行；WYSIWYG切源码并提示范围变为源码，重算匹配数。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.startFindReplaceAction",
+      "vsCodeKeys": [
+        "Ctrl+H"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+H",
+          "when": "editorFocus && !imeComposing"
+        }
+      ],
+      "executionContext": "editorFocus && !imeComposing",
+      "invocationContext": "editorFocus && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.find.next",
+      "name": "下一个匹配",
+      "category": "查找",
+      "defaultKeys": [
+        "F3",
+        "Enter"
+      ],
+      "context": "findWidgetVisible && !imeComposing",
+      "behavior": "跳到下一个匹配；是否循环由search.wrapAround决定。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "editor.action.nextMatchFindAction",
+      "vsCodeKeys": [
+        "F3",
+        "Enter"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "F3",
+          "when": "editorFocus && findQueryExists && !imeComposing"
+        },
+        {
+          "key": "Enter",
+          "when": "findInputFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.find.previous",
+      "name": "上一个匹配",
+      "category": "查找",
+      "defaultKeys": [
+        "Shift+F3",
+        "Shift+Enter"
+      ],
+      "context": "findWidgetVisible && !imeComposing",
+      "behavior": "跳到上一个匹配。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "editor.action.previousMatchFindAction",
+      "vsCodeKeys": [
+        "Shift+F3",
+        "Shift+Enter"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Shift+F3",
+          "when": "editorFocus && findQueryExists && !imeComposing"
+        },
+        {
+          "key": "Shift+Enter",
+          "when": "findInputFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.find.toggleCase",
+      "name": "区分大小写",
+      "category": "查找",
+      "defaultKeys": [
+        "Alt+C"
+      ],
+      "context": "findWidgetVisible && !imeComposing",
+      "behavior": "切换大小写匹配并重新计算结果。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "toggleFindCaseSensitive",
+      "vsCodeKeys": [
+        "Alt+C"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND",
+        "FINDMODEL"
+      ],
+      "conflictHandling": "仅查找栏可见时消费Alt+C；菜单助记键在其他上下文正常工作。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+C",
+          "when": "findWidgetVisible && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.find.toggleWholeWord",
+      "name": "全字/部分匹配",
+      "category": "查找",
+      "defaultKeys": [
+        "Alt+W"
+      ],
+      "context": "findWidgetVisible && !imeComposing",
+      "behavior": "切换全字；关闭即部分匹配。词边界不等同中文语义分词。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "toggleFindWholeWord",
+      "vsCodeKeys": [
+        "Alt+W"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND",
+        "FINDMODEL"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+W",
+          "when": "findWidgetVisible && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.find.toggleRegex",
+      "name": "正则表达式",
+      "category": "查找",
+      "defaultKeys": [
+        "Alt+R"
+      ],
+      "context": "findWidgetVisible && !imeComposing",
+      "behavior": "切换PCRE2正则模式；语法错误即时显示、不启动替换。WYSIWYG开启时转源码并重算。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "toggleFindRegex",
+      "vsCodeKeys": [
+        "Alt+R"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND",
+        "FINDMODEL"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+R",
+          "when": "findWidgetVisible && !imeComposing"
+        }
+      ],
+      "executionContext": "findWidgetVisible && !imeComposing",
+      "invocationContext": "findWidgetVisible && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.find.toggleSelection",
+      "name": "仅在选区中查找",
+      "category": "查找",
+      "defaultKeys": [
+        "Alt+L"
+      ],
+      "context": "findWidgetVisible && !imeComposing",
+      "behavior": "锁定当前非空选区为搜索范围，编辑后用锚点追踪边界；无选区禁用。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "toggleFindInSelection",
+      "vsCodeKeys": [
+        "Alt+L"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND",
+        "FINDMODEL"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+L",
+          "when": "findWidgetVisible && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.find.replaceOne",
+      "name": "替换当前匹配",
+      "category": "查找",
+      "defaultKeys": [
+        "Ctrl+Shift+1",
+        "Enter"
+      ],
+      "context": "findWidgetVisible && !imeComposing && writable && validPattern",
+      "behavior": "替换当前匹配，一次事务；按同一快照确定下一匹配。零宽枚举后前进一个Unicode scalar（不是grapheme或UTF-16码元），EOF零宽最多一次，防止原地循环。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.replaceOne",
+      "vsCodeKeys": [
+        "Ctrl+Shift+1",
+        "Enter"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND"
+      ],
+      "conflictHandling": "Enter仅在替换输入框执行替换；查找输入框Enter是下一个匹配。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+1",
+          "when": "findWidgetVisible && !imeComposing && writable && validPattern"
+        },
+        {
+          "key": "Enter",
+          "when": "findWidgetVisible && !imeComposing && writable && validPattern"
+        }
+      ],
+      "executionContext": "findWidgetVisible && !imeComposing && writable && validPattern",
+      "invocationContext": "findWidgetVisible && !imeComposing && writable && validPattern",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.find.replaceAll",
+      "name": "替换全部匹配",
+      "category": "查找",
+      "defaultKeys": [
+        "Ctrl+Alt+Enter"
+      ],
+      "context": "findWidgetVisible && !imeComposing && writable && validPattern",
+      "behavior": "以同一文档快照计算替换，一次原子事务；可一次撤销，不跨文件执行。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.replaceAll",
+      "vsCodeKeys": [
+        "Ctrl+Alt+Enter"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Alt+Enter",
+          "when": "findWidgetVisible && !imeComposing && writable && validPattern"
+        }
+      ],
+      "executionContext": "findWidgetVisible && !imeComposing && writable && validPattern",
+      "invocationContext": "findWidgetVisible && !imeComposing && writable && validPattern",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.find.selectAllMatches",
+      "name": "选中全部查找匹配",
+      "category": "查找",
+      "defaultKeys": [
+        "Alt+Enter"
+      ],
+      "context": "findWidgetVisible && !imeComposing",
+      "behavior": "源码建立匹配选区集合；WYSIWYG先切源码并重新搜索，再建立选区。",
+      "markdownBehavior": "WYSIWYG执行时先原位切换源码，映射主选区/视口后执行；模式切换不进入撤销栈。",
+      "vsCodeId": "editor.action.selectAllMatches",
+      "vsCodeKeys": [
+        "Alt+Enter"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+Enter",
+          "when": "findWidgetVisible && !imeComposing"
+        }
+      ],
+      "executionContext": "findWidgetVisible && !imeComposing",
+      "invocationContext": "findWidgetVisible && !imeComposing",
+      "viewTransition": {
+        "from": "markdownWysiwyg",
+        "to": "markdownSource",
+        "before": "contextEvaluationAndExecution",
+        "preserve": [
+          "documentRevision",
+          "undoStack",
+          "sourceSelectionAnchor",
+          "viewportAnchor"
+        ]
+      }
+    },
+    {
+      "id": "texzi.find.close",
+      "name": "关闭查找栏",
+      "category": "查找",
+      "defaultKeys": [
+        "Escape",
+        "Shift+Escape"
+      ],
+      "context": "findWidgetVisible && !imeComposing",
+      "behavior": "关闭查找栏，保留查询状态但移除临时匹配层，焦点回正文。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "closeFindWidget",
+      "vsCodeKeys": [
+        "Escape",
+        "Shift+Escape"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "FIND"
+      ],
+      "conflictHandling": "IME候选/组合拥有Escape优先权；关闭最上层菜单/弹层后才关闭查找。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Escape",
+          "when": "findWidgetVisible && !imeComposing"
+        },
+        {
+          "key": "Shift+Escape",
+          "when": "findWidgetVisible && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.find.inFolder",
+      "name": "在文件夹中查找",
+      "category": "查找",
+      "defaultKeys": [
+        "Ctrl+Shift+F"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && workspaceOpen",
+      "behavior": "搜索当前根内文本文件，遵循排除规则/结果上限，可取消；点击结果定位源码。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.findInFiles",
+      "vsCodeKeys": [
+        "Ctrl+Shift+F"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "SEARCHFIND",
+        "SEARCHCONST"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+F",
+          "when": "windowFocus && !modalOpen && !imeComposing && workspaceOpen"
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.close",
+      "name": "关闭标签",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+W",
+        "Ctrl+F4"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "关闭当前区域的文档视图；最后一个视图关闭时处理未保存内容。空编辑组可按同键关闭。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.closeActiveEditor",
+      "vsCodeKeys": [
+        "Ctrl+W",
+        "Ctrl+F4"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "TABS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+W",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        },
+        {
+          "key": "Ctrl+F4",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.closeOthers",
+      "name": "关闭同组其他标签",
+      "category": "标签",
+      "defaultKeys": [],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "仅关闭当前组其他标签，默认排除固定标签并在菜单注明；最后视图的dirty文档才确认。批量处理允许取消剩余关闭操作，不重复询问同一文档。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.closeOtherEditors",
+      "vsCodeKeys": [],
+      "verification": "verified_source",
+      "sourceIds": [
+        "TABS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.tab.closeAll",
+      "name": "关闭窗口所有标签",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+K Ctrl+W"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "关闭当前窗口所有组中的标签；不影响其他原生窗口。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.closeAllEditors",
+      "vsCodeKeys": [
+        "Ctrl+K Ctrl+W"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K Ctrl+W",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.reopenClosed",
+      "name": "重新打开已关闭标签",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+Shift+T"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "恢复最近关闭的文档视图及位置；若文件不存在显示恢复选择。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.reopenClosedEditor",
+      "vsCodeKeys": [
+        "Ctrl+Shift+T"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+T",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.keepOpen",
+      "name": "将预览标签转为常驻",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+K Enter"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && previewTab",
+      "behavior": "取消预览复用标记；与固定到标签栏左侧的“固定”不同。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.keepEditor",
+      "vsCodeKeys": [
+        "Ctrl+K Enter"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "TABS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K Enter",
+          "when": "windowFocus && !modalOpen && !imeComposing && previewTab"
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.pin",
+      "name": "固定/取消固定标签",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+K Shift+Enter"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "切换标签固定状态，固定标签置于组内左侧。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.pinEditor / workbench.action.unpinEditor",
+      "vsCodeKeys": [
+        "Ctrl+K Shift+Enter"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "TABS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K Shift+Enter",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.next",
+      "name": "下一个标签",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+PageDown"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "按组内显示顺序向后循环；texzi范围限定当前组。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.nextEditor",
+      "vsCodeKeys": [
+        "Ctrl+PageDown"
+      ],
+      "verification": "verified_source_with_texzi_scope_change",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+PageDown",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.previous",
+      "name": "上一个标签",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+PageUp"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "按组内显示顺序向前循环。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.previousEditor",
+      "vsCodeKeys": [
+        "Ctrl+PageUp"
+      ],
+      "verification": "verified_source_with_texzi_scope_change",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+PageUp",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.recent",
+      "name": "按最近使用顺序切换标签",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+Tab",
+        "Ctrl+Shift+Tab"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "按住Ctrl展示MRU列表，Tab向前，Shift+Tab向后，松开Ctrl确认。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup / workbench.action.quickOpenLeastRecentlyUsedEditorInGroup",
+      "vsCodeKeys": [
+        "Ctrl+Tab",
+        "Ctrl+Shift+Tab"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Tab",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        },
+        {
+          "key": "Ctrl+Shift+Tab",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ],
+      "variants": [
+        {
+          "args": {
+            "direction": "next"
+          },
+          "defaultKey": "Ctrl+Tab",
+          "vsCodeId": "workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup",
+          "name": "沿MRU列表向前",
+          "verification": "verified_source",
+          "sourceIds": [
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "direction": "previous"
+          },
+          "defaultKey": "Ctrl+Shift+Tab",
+          "vsCodeId": "workbench.action.quickOpenLeastRecentlyUsedEditorInGroup",
+          "name": "沿MRU列表向后",
+          "verification": "verified_source",
+          "sourceIds": [
+            "GROUPS"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.moveLeft",
+      "name": "将标签左移",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+Shift+PageUp"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "在当前组内左移一个位置，不跨固定/非固定区边界。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.moveEditorLeftInGroup",
+      "vsCodeKeys": [
+        "Ctrl+Shift+PageUp"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+PageUp",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.tab.moveRight",
+      "name": "将标签右移",
+      "category": "标签",
+      "defaultKeys": [
+        "Ctrl+Shift+PageDown"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "在当前组内右移一个位置。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.moveEditorRightInGroup",
+      "vsCodeKeys": [
+        "Ctrl+Shift+PageDown"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+PageDown",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.group.splitRight",
+      "name": "向右拆分",
+      "category": "分屏分窗",
+      "defaultKeys": [
+        "Ctrl+\\"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "在右侧新建编辑组，共享当前文档缓冲区，各自选区/滚动/模式独立。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.splitEditor",
+      "vsCodeKeys": [
+        "Ctrl+\\"
+      ],
+      "verification": "verified_source_with_texzi_direction_rule",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+\\",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.group.splitDown",
+      "name": "向下拆分",
+      "category": "分屏分窗",
+      "defaultKeys": [
+        "Ctrl+K Ctrl+\\"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "在下方新建编辑组；与默认右拆分方向正交，超过最小可用尺寸时提示。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.splitEditorOrthogonal",
+      "vsCodeKeys": [
+        "Ctrl+K Ctrl+\\"
+      ],
+      "verification": "verified_source_with_texzi_direction_rule",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K Ctrl+\\",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.group.focusIndex",
+      "name": "聚焦编辑组",
+      "category": "分屏分窗",
+      "defaultKeys": [
+        "Ctrl+1",
+        "Ctrl+2",
+        "Ctrl+3",
+        "Ctrl+4",
+        "Ctrl+5",
+        "Ctrl+6",
+        "Ctrl+7",
+        "Ctrl+8"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "按视觉从左到右、从上到下编号；不存在的组不创建新文档。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "见variants",
+      "vsCodeKeys": [
+        "Ctrl+1",
+        "Ctrl+2",
+        "Ctrl+3",
+        "Ctrl+4",
+        "Ctrl+5",
+        "Ctrl+6",
+        "Ctrl+7",
+        "Ctrl+8"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "TABS",
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "variants": [
+        {
+          "args": {
+            "index": 1
+          },
+          "defaultKey": "Ctrl+1",
+          "vsCodeId": "workbench.action.focusFirstEditorGroup",
+          "name": "聚焦第1组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "TABS",
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "index": 2
+          },
+          "defaultKey": "Ctrl+2",
+          "vsCodeId": "workbench.action.focusSecondEditorGroup",
+          "name": "聚焦第2组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "TABS",
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "index": 3
+          },
+          "defaultKey": "Ctrl+3",
+          "vsCodeId": "workbench.action.focusThirdEditorGroup",
+          "name": "聚焦第3组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "TABS",
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "index": 4
+          },
+          "defaultKey": "Ctrl+4",
+          "vsCodeId": "workbench.action.focusFourthEditorGroup",
+          "name": "聚焦第4组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "TABS",
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "index": 5
+          },
+          "defaultKey": "Ctrl+5",
+          "vsCodeId": "workbench.action.focusFifthEditorGroup",
+          "name": "聚焦第5组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "TABS",
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "index": 6
+          },
+          "defaultKey": "Ctrl+6",
+          "vsCodeId": "workbench.action.focusSixthEditorGroup",
+          "name": "聚焦第6组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "TABS",
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "index": 7
+          },
+          "defaultKey": "Ctrl+7",
+          "vsCodeId": "workbench.action.focusSeventhEditorGroup",
+          "name": "聚焦第7组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "TABS",
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "index": 8
+          },
+          "defaultKey": "Ctrl+8",
+          "vsCodeId": "workbench.action.focusEighthEditorGroup",
+          "name": "聚焦第8组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "TABS",
+            "GROUPS"
+          ]
+        }
+      ],
+      "bindings": [
+        {
+          "key": "Ctrl+1",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+2",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+3",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+4",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+5",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+6",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+7",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+8",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.group.focusDirection",
+      "name": "聚焦相邻编辑组",
+      "category": "分屏分窗",
+      "defaultKeys": [
+        "Ctrl+K Ctrl+Left",
+        "Ctrl+K Ctrl+Right",
+        "Ctrl+K Ctrl+Up",
+        "Ctrl+K Ctrl+Down"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "按空间方向寻找相邻组；没有邻居时保持原组。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.focusLeftGroup / focusRightGroup / focusAboveGroup / focusBelowGroup",
+      "vsCodeKeys": [
+        "Ctrl+K Ctrl+Left",
+        "Ctrl+K Ctrl+Right",
+        "Ctrl+K Ctrl+Up",
+        "Ctrl+K Ctrl+Down"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K Ctrl+Left",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+K Ctrl+Right",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+K Ctrl+Up",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+K Ctrl+Down",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ],
+      "variants": [
+        {
+          "args": {
+            "direction": "left"
+          },
+          "defaultKey": "Ctrl+K Ctrl+Left",
+          "vsCodeId": "workbench.action.focusLeftGroup",
+          "name": "左侧组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "direction": "right"
+          },
+          "defaultKey": "Ctrl+K Ctrl+Right",
+          "vsCodeId": "workbench.action.focusRightGroup",
+          "name": "右侧组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "direction": "up"
+          },
+          "defaultKey": "Ctrl+K Ctrl+Up",
+          "vsCodeId": "workbench.action.focusAboveGroup",
+          "name": "上方组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "GROUPS"
+          ]
+        },
+        {
+          "args": {
+            "direction": "down"
+          },
+          "defaultKey": "Ctrl+K Ctrl+Down",
+          "vsCodeId": "workbench.action.focusBelowGroup",
+          "name": "下方组",
+          "verification": "verified_source",
+          "sourceIds": [
+            "GROUPS"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "texzi.group.joinAll",
+      "name": "合并为单一编辑组",
+      "category": "分屏分窗",
+      "defaultKeys": [],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "按当前视觉顺序合并标签；同一文档重复视图合并但不丢未保存缓冲区。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.joinAllGroups",
+      "vsCodeKeys": [],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.tab.moveToNewWindow",
+      "name": "将标签移到新窗口",
+      "category": "分屏分窗",
+      "defaultKeys": [],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "移动当前视图到新的原生窗口；未保存文档保持同一ID和恢复记录。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.moveEditorToNewWindow",
+      "vsCodeKeys": [],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.tab.copyToNewWindow",
+      "name": "在新窗口打开同一文档",
+      "category": "分屏分窗",
+      "defaultKeys": [
+        "Ctrl+K O"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "新窗口新建同一文档的视图，原窗口保留；不是复制为新文件。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.copyEditorToNewWindow",
+      "vsCodeKeys": [
+        "Ctrl+K O"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "GROUPS"
+      ],
+      "conflictHandling": "第二段是O；Ctrl+K Ctrl+O是打开文件夹。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K O",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.sidebar.toggle",
+      "name": "显示/隐藏侧栏",
+      "category": "界面",
+      "defaultKeys": [
+        "Ctrl+B",
+        "Ctrl+K Ctrl+B"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "切换文件夹侧栏；Ctrl+K Ctrl+B在所有正文模式通用。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.toggleSidebarVisibility",
+      "vsCodeKeys": [
+        "Ctrl+B"
+      ],
+      "verification": "verified_source_with_texzi_context_override",
+      "sourceIds": [
+        "LAYOUT"
+      ],
+      "conflictHandling": "WYSIWYG正文Ctrl+B用于加粗；全局组合键为texzi建议，菜单显示当前上下文可用键。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+B",
+          "when": "windowFocus && !markdownWysiwygFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "Ctrl+K Ctrl+B",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.view.toggleZen",
+      "name": "进入/退出Zen",
+      "category": "界面",
+      "defaultKeys": [
+        "Ctrl+K Z"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "临时收起标签/侧栏/状态栏并按Zen设置居中；退出恢复原布局。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.toggleZenMode",
+      "vsCodeKeys": [
+        "Ctrl+K Z"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "ZEN"
+      ],
+      "conflictHandling": "第二段为Z不是Ctrl+Z；不抢正文Ctrl+Z撤销。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K Z",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.view.exitZen",
+      "name": "退出Zen",
+      "category": "界面",
+      "defaultKeys": [
+        "Escape Escape"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && zenActive",
+      "behavior": "连续两次Escape退出；有IME、菜单、查找时先处理更高优先级，不把消除弹层算成双击退出。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.exitZenMode",
+      "vsCodeKeys": [
+        "Escape Escape"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "ZEN"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Escape Escape",
+          "when": "windowFocus && !modalOpen && !imeComposing && zenActive"
+        }
+      ]
+    },
+    {
+      "id": "texzi.view.toggleFullScreen",
+      "name": "切换全屏",
+      "category": "界面",
+      "defaultKeys": [
+        "F11"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "切换当前原生窗口全屏；与Zen是独立状态。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.toggleFullScreen",
+      "vsCodeKeys": [
+        "F11"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "WINDOW"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "F11",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.editor.toggleWrap",
+      "name": "切换自动换行",
+      "category": "界面",
+      "defaultKeys": [
+        "Alt+Z"
+      ],
+      "context": "sourceEditorFocus && !imeComposing",
+      "behavior": "只切换当前文档软换行，不修改实际换行；大文件保护生效时说明限制。",
+      "markdownBehavior": "WYSIWYG正文始终按可用宽度排版；此命令在源码上下文生效。",
+      "vsCodeId": "editor.action.toggleWordWrap",
+      "vsCodeKeys": [
+        "Alt+Z"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "WRAP"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Alt+Z",
+          "when": "sourceEditorFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.settings.open",
+      "name": "打开设置",
+      "category": "界面",
+      "defaultKeys": [
+        "Ctrl+,"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "在当前窗口打开单个设置页；已有设置页则聚焦，不重复创建。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.openSettings",
+      "vsCodeKeys": [
+        "Ctrl+,"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "PREFS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+,",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.settings.keybindings",
+      "name": "打开键盘快捷键",
+      "category": "界面",
+      "defaultKeys": [
+        "Ctrl+K Ctrl+S"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "打开快捷键管理；按命令/键组合搜索，显示上下文与冲突。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.openGlobalKeybindings",
+      "vsCodeKeys": [
+        "Ctrl+K Ctrl+S"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "PREFS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K Ctrl+S",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.commandPalette.open",
+      "name": "打开命令面板",
+      "category": "界面",
+      "defaultKeys": [
+        "Ctrl+Shift+P",
+        "F1"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "搜索所有可用命令；禁用项显示原因，不混入IDE命令。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.showCommands",
+      "vsCodeKeys": [
+        "Ctrl+Shift+P",
+        "F1"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "PALETTE"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+Shift+P",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        },
+        {
+          "key": "F1",
+          "when": "windowFocus && !modalOpen && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.editor.toggleTabFocus",
+      "name": "Tab切换焦点模式",
+      "category": "界面",
+      "defaultKeys": [
+        "Ctrl+M"
+      ],
+      "context": "editorFocus && !imeComposing",
+      "behavior": "切换Tab是在编辑器内缩进/导航结构，还是移到下一个界面控件；状态栏提示当前模式。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "editor.action.toggleTabFocusMode",
+      "vsCodeKeys": [
+        "Ctrl+M"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "TABFOCUS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+M",
+          "when": "editorFocus && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.file.changeLanguage",
+      "name": "更改语言高亮模式",
+      "category": "界面",
+      "defaultKeys": [
+        "Ctrl+K M"
+      ],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "切换当前文档语言标记，只影响高亮/Markdown视图可用性，不转换文件。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": "workbench.action.editor.changeLanguageMode",
+      "vsCodeKeys": [
+        "Ctrl+K M"
+      ],
+      "verification": "verified_source",
+      "sourceIds": [
+        "EDITORSTATUS"
+      ],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+K M",
+          "when": "windowFocus && !modalOpen && !imeComposing && activeEditor"
+        }
+      ]
+    },
+    {
+      "id": "texzi.markdown.toggleSource",
+      "name": "切换Markdown编辑/源码",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "editorFocus && !imeComposing && languageMarkdown",
+      "behavior": "正文右上>_切换当前区域；文档版本、未保存标记、撤销历史不变，选区与视口按源码锚点映射。",
+      "markdownBehavior": "WYSIWYG与源码双向切换；纯文本/代码文件不显示此按钮。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；不借用VSCode只读Markdown预览快捷键冒充。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.bold",
+      "name": "切换加粗",
+      "category": "Markdown",
+      "defaultKeys": [
+        "Ctrl+B"
+      ],
+      "context": "markdownWysiwygFocus && writable && !imeComposing",
+      "behavior": "对选区切换粗体，空选区切换后续输入格式；以源码局部事务记录。",
+      "markdownBehavior": "仅在WYSIWYG正文上下文执行，修改通过局部源码事务进入共享撤销历史；源码模式可直接编辑标记或使用>_进入排版。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "覆盖此上下文中的侧栏Ctrl+B；侧栏可用Ctrl+K Ctrl+B。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+B",
+          "when": "markdownWysiwygFocus && writable && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.markdown.italic",
+      "name": "切换斜体",
+      "category": "Markdown",
+      "defaultKeys": [
+        "Ctrl+I"
+      ],
+      "context": "markdownWysiwygFocus && writable && !imeComposing",
+      "behavior": "切换选区/后续输入斜体；不启用代码建议等IDE功能。",
+      "markdownBehavior": "仅在WYSIWYG正文上下文执行，修改通过局部源码事务进入共享撤销历史；源码模式可直接编辑标记或使用>_进入排版。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [
+        {
+          "key": "Ctrl+I",
+          "when": "markdownWysiwygFocus && writable && !imeComposing"
+        }
+      ]
+    },
+    {
+      "id": "texzi.markdown.insertLink",
+      "name": "插入或编辑链接",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing",
+      "behavior": "工具栏/菜单打开链接浮层；确认时只修改目标源范围。",
+      "markdownBehavior": "仅在WYSIWYG正文上下文执行，修改通过局部源码事务进入共享撤销历史；源码模式可直接编辑标记或使用>_进入排版。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "不占用Ctrl+K前缀；默认未绑定。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.toggleSyncScroll",
+      "name": "切换关联区域同步滚动",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "windowFocus && !modalOpen && !imeComposing && linkedMarkdownViews",
+      "behavior": "切换同文档源码/WYSIWYG区域的锚点同步；不强制两个区域同模式。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.pasteMarkdown",
+      "name": "粘贴Markdown",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing",
+      "behavior": "显式读取剪贴板Markdown格式，缺少时读取纯文字作为Markdown源片段；解析为首版支持结构后一次插入。未知语法保留原样片段，不从任意HTML推断无损结构；失败不部分插入。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.copyMarkdown",
+      "name": "复制Markdown",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "editorFocus && languageMarkdown && nonEmptySelection && !imeComposing",
+      "behavior": "复制选区对应的原始Markdown片段。源码选区直接取源范围；WYSIWYG通过SourceMap取覆盖当前选择的最小连续源范围，包含范围内必要标记；无法可靠映射则禁用并给源码入口。无选区时禁用，全篇可先全选。",
+      "markdownBehavior": "两种Markdown模式可用，只读也可复制，不修改文档或撤销历史。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.exitCodeBlock",
+      "name": "退出代码块",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing && codeBlockFocus",
+      "behavior": "将插入点移至后续可编辑块开头；文末没有后续可编辑块时，在代码块后创建一个空段落并移入。纯焦点移动不生成撤销步，创建段落为一个事务。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.strikethrough",
+      "name": "切换删除线",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing",
+      "behavior": "切换选区或后续输入的删除线标记，只修改所需定界符；与输入法未提交文字隔离。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.inlineCode",
+      "name": "切换行内代码",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing",
+      "behavior": "切换选区或后续输入的行内代码格式；根据内容中的反引号选择足够的定界符长度，保留节点外原文。跨不支持的块选择时禁用并解释。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.toggleTask",
+      "name": "切换任务完成状态",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing && taskItemFocus",
+      "behavior": "切换当前任务框勾选，仅修改该项任务标记，保留缩进与正文。按钮点击与键盘调用使用同一事务。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.setCodeLanguage",
+      "name": "设置代码块语言",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing && codeBlockFocus",
+      "behavior": "打开语言选择，更新当前围栏语言标记并保留其他可识别信息；只影响高亮，不执行或格式化代码。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.table.insertRow",
+      "name": "插入表格行",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing && tableCellFocus",
+      "behavior": "参数position=before/after，默认after；在当前正文行前/后插入空行，聚焦对应列。表头的before不可用，after插入首个正文行。整次结构修改一个事务。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [],
+      "argsSchema": {
+        "position": {
+          "type": "enum",
+          "values": [
+            "before",
+            "after"
+          ],
+          "default": "after"
+        }
+      }
+    },
+    {
+      "id": "texzi.markdown.table.deleteRow",
+      "name": "删除表格行",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing && tableCellFocus",
+      "behavior": "删除当前行；删除表头时首个正文行升为表头。删除表格最后一行时移除该表格并留下可输入空段落；一次撤销恢复完整表格与选区。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.table.insertColumn",
+      "name": "插入表格列",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing && tableCellFocus",
+      "behavior": "参数position=before/after，默认after；在当前列前/后插入空列，所有行保持矩形。新列默认未指定对齐，聚焦新列；一次事务。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [],
+      "argsSchema": {
+        "position": {
+          "type": "enum",
+          "values": [
+            "before",
+            "after"
+          ],
+          "default": "after"
+        }
+      }
+    },
+    {
+      "id": "texzi.markdown.table.deleteColumn",
+      "name": "删除表格列",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing && tableCellFocus",
+      "behavior": "删除当前列并映射单元格选区；删除最后一列时移除表格并留下可输入空段落。一次撤销恢复完整源片段。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.markdown.table.alignColumn",
+      "name": "设置表格列对齐",
+      "category": "Markdown",
+      "defaultKeys": [],
+      "context": "markdownWysiwygFocus && writable && !imeComposing && tableCellFocus",
+      "behavior": "参数alignment=none/left/center/right；修改当前列对应分隔单元的冒号对齐标记，保留其他列及表格外原文；一次事务。",
+      "markdownBehavior": "仅在WYSIWYG当前文档上下文执行；内容修改均为一次局部源码事务，可一次撤销。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "默认未绑定；通过上下文菜单、格式按钮或命令面板调用，遵守IME与焦点优先级。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": [],
+      "argsSchema": {
+        "alignment": {
+          "type": "enum",
+          "values": [
+            "none",
+            "left",
+            "center",
+            "right"
+          ],
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "texzi.recovery.open",
+      "name": "打开恢复中心",
+      "category": "恢复",
+      "defaultKeys": [],
+      "context": "windowFocus && !modalOpen && !imeComposing",
+      "behavior": "列出恢复副本与保存失败记录，可逐一打开、另存、比较或明确丢弃。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    },
+    {
+      "id": "texzi.performance.reassessDocument",
+      "name": "重新评估当前文档模式",
+      "category": "大文件",
+      "defaultKeys": [],
+      "context": "windowFocus && !modalOpen && !imeComposing && activeEditor",
+      "behavior": "根据规模和选项重新选择标准编辑/大文件轻量编辑；尝试完整模式前显示代价并可取消。",
+      "markdownBehavior": "两种Markdown编辑模式均可用，按当前文档事务执行。",
+      "vsCodeId": null,
+      "vsCodeKeys": [],
+      "verification": "texzi_proposed",
+      "sourceIds": [],
+      "conflictHandling": "遵守全局路由与IME规则；无同上下文默认冲突。",
+      "priority": "P0",
+      "defaultStatus": "texzi_proposed",
+      "bindings": []
+    }
+  ]
+}

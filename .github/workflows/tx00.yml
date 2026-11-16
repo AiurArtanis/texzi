@@ -1,0 +1,32 @@
+name: TX-00 Windows Release candidate
+on:
+  push:
+    branches: ['cindy/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build locked private test candidate
+        shell: pwsh
+        run: ./scripts/build-candidate.ps1
+      - name: Upload complete candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: texzi-tx00-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tx00-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build-evidence/*
+          if-no-files-found: error

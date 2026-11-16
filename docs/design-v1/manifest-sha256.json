@@ -1,0 +1,260 @@
+{
+  "schemaVersion": 1,
+  "product": "texzi",
+  "designVersion": "1.0",
+  "date": "2026-11-15",
+  "hash": "SHA-256",
+  "note": "This manifest excludes itself. Checksums verify package content, not native product performance.",
+  "files": [
+    {
+      "path": "DESIGN.md",
+      "bytes": 2185,
+      "sha256": "b70bb865c7e7a5f03cd7e81aaca3e1bc2f09ede5c77bd710b89fecaa4c0de309"
+    },
+    {
+      "path": "PRODUCT.md",
+      "bytes": 2363,
+      "sha256": "e4bad61b40f30206b60b29cf06ab33740693e5f9466b32e6ed91eb881c11aaf2"
+    },
+    {
+      "path": "README.md",
+      "bytes": 6621,
+      "sha256": "5d24d09f97c0e9c57cf02988922cc6f394337e6359df51e426eba4959897e570"
+    },
+    {
+      "path": "concepts/01-main.png",
+      "bytes": 1542843,
+      "sha256": "f092c4f33463a93ef47952186dc8e53092b697705e8768fe158b0bfb1f47ce8f"
+    },
+    {
+      "path": "concepts/02-markdown-wysiwyg-split.png",
+      "bytes": 1516993,
+      "sha256": "320c9a884db954fe7acb017ddb5fd0addd69926cc33e15740099d3bdb75691b0"
+    },
+    {
+      "path": "concepts/03-settings.png",
+      "bytes": 1226281,
+      "sha256": "42b7d1d129f5f1ea92dcada4973cc3521bc67d576eb42623999032f8e0dfd815"
+    },
+    {
+      "path": "data/acceptance.json",
+      "bytes": 45442,
+      "sha256": "33c6fa074fb2bc1ec4fad4ddeb6bdebb56e3e8271ec51ad7e53f28f5118ea38f"
+    },
+    {
+      "path": "data/commands.json",
+      "bytes": 154463,
+      "sha256": "baaf3fd8d4194b8d68ff09c4847a628efc3a60cf5a74711a0b626a7cc2358bf1"
+    },
+    {
+      "path": "data/settings.json",
+      "bytes": 44687,
+      "sha256": "4ae27ef3ee519f2a7990b1e84da1d95ab5154ed42c5663bbba56f55622f713bc"
+    },
+    {
+      "path": "data/source-index.json",
+      "bytes": 29635,
+      "sha256": "8301b3cf69f3f71da16eb090a056f1824cbd7f326eb10f554c7ec6cab1d5ccd5"
+    },
+    {
+      "path": "docs/ACCEPTANCE.md",
+      "bytes": 32995,
+      "sha256": "b5fb4be40f05c13f9acceff4e3b1069f7818f71f19b4a21cd1e48301ccf678d8"
+    },
+    {
+      "path": "docs/COMMANDS.md",
+      "bytes": 79494,
+      "sha256": "d40903ed02c2be2039f136db4df4ecd70ff20028eddbc9bc3dc8275b00f69dc3"
+    },
+    {
+      "path": "docs/DECISIONS.md",
+      "bytes": 9904,
+      "sha256": "45fdebe5f9171b70c3a0e9a13cf5109112fb5a6798db5f37efc5bf1a45e9455b"
+    },
+    {
+      "path": "docs/HANDOFF.md",
+      "bytes": 26647,
+      "sha256": "ceaca70d35cc833bba2f7f8b7699f7120ee1c6f69f23e2d34819b36bc9f20193"
+    },
+    {
+      "path": "docs/PERFORMANCE_PLAN.md",
+      "bytes": 29304,
+      "sha256": "64604fc30bc91c6345cb21265b3edafb179fc80f5124f979f540d2f07648f184"
+    },
+    {
+      "path": "docs/PRD.md",
+      "bytes": 41596,
+      "sha256": "e8fe3d78501ee6b637037c9be2104178cad81a882ffd1a242df5d362d25b7418"
+    },
+    {
+      "path": "docs/PROTOTYPE_GUIDE.md",
+      "bytes": 7094,
+      "sha256": "d018243fab221915ab834b2bade4c69012cb0837c72e63447ec24b4a36938055"
+    },
+    {
+      "path": "docs/REFERENCE_RESEARCH.md",
+      "bytes": 6108,
+      "sha256": "21d5375eb4dce8c189c70c501567c28e469acfcc592a11799a2a42cf89fabfc6"
+    },
+    {
+      "path": "docs/SETTINGS.md",
+      "bytes": 29124,
+      "sha256": "987b5a50f1c44af8726cd8037af2351ae4e71e924f9b9a09bc4a8fe29f95eac3"
+    },
+    {
+      "path": "docs/SOURCES.md",
+      "bytes": 5606,
+      "sha256": "230752e6662936176446b349c29fdc149a79594530e32cc93d20540cdccf4b1a"
+    },
+    {
+      "path": "docs/TECHNICAL_DESIGN.md",
+      "bytes": 47030,
+      "sha256": "9bd94fb1981fe8ed5ec6a7d8ca9294c4da195b9f278710a3e7aad244be928b34"
+    },
+    {
+      "path": "docs/UI_SPEC.md",
+      "bytes": 25105,
+      "sha256": "86756a9faf06bfd443e062d6d5d0fac87d892bf15fb47ec0b04844663778d859"
+    },
+    {
+      "path": "docs/VERIFICATION.md",
+      "bytes": 5507,
+      "sha256": "587bbd04ba4ba628805f2044b7e5a89caff72b15d68a94489f445a73252c909a"
+    },
+    {
+      "path": "prototype/index.html",
+      "bytes": 287426,
+      "sha256": "24436a77d3a691ae66b9b47ace601f384ed6edc2f3a7b2c609b1912624c1fcce"
+    },
+    {
+      "path": "prototype/src/app.css",
+      "bytes": 25528,
+      "sha256": "5ff982781d9d4632987192971a87d3c1b9b8ccdf86d0e0332b9e0bdeb9f21c1f"
+    },
+    {
+      "path": "prototype/src/app.js",
+      "bytes": 105484,
+      "sha256": "346081ef0d3d75f2009742adc2e3485f18c7436adb359f3ce5091a37110b1c02"
+    },
+    {
+      "path": "prototype/src/index.html",
+      "bytes": 2826,
+      "sha256": "a075d83508d4e410a495f8d0613716ec874e3e2916c173d6fb56c53cfd02413c"
+    },
+    {
+      "path": "review/acceptance-results.csv",
+      "bytes": 25231,
+      "sha256": "978da1e6738ca4def6da1ac2178f84c623095ba84f199df5b9cf50bf7516f443"
+    },
+    {
+      "path": "review/document-flow.svg",
+      "bytes": 1870,
+      "sha256": "688b39e03c94141201aa24f7d13a5a101eeeeb336b8a80df9b03f585dbe80ddd"
+    },
+    {
+      "path": "review/environment-template.json",
+      "bytes": 718,
+      "sha256": "7e83c8f343462916b7b42872fc774b9768bf031fd8394ebdcab6c6e46179e1b6"
+    },
+    {
+      "path": "review/fixture-manifests/smoke.json",
+      "bytes": 16768,
+      "sha256": "1fc86725807c1e7cc9ac8f5f65002f69120800a6cbf813d49a4f612def40308b"
+    },
+    {
+      "path": "review/fixture-manifests/standard.json",
+      "bytes": 25455,
+      "sha256": "64ae2e1633322525fcd9f68abbc9a173830a6f107a13073cf3e78ae2b66202e7"
+    },
+    {
+      "path": "review/fixture-manifests/stress.json",
+      "bytes": 27252,
+      "sha256": "42e404caeab8426aae1303288530257aa6d7808c929a01c7b2b3dc0362755ea4"
+    },
+    {
+      "path": "review/handbook-shell.html",
+      "bytes": 9818,
+      "sha256": "babafe4a0e94beb124fa6ec76d51e5399ab727dd487ceac1310340e39ea4dfab"
+    },
+    {
+      "path": "review/handbook.css",
+      "bytes": 10035,
+      "sha256": "96693faf70b71932b1a15445254cf8eee29f4874984e42ea60e4a8b5891782a5"
+    },
+    {
+      "path": "review/performance-results-template.csv",
+      "bytes": 161,
+      "sha256": "2e9a7d2768bd347ec3adcf28600ea5adc4ba607c5e1f39fd27545f448d48b79b"
+    },
+    {
+      "path": "review/test-results.json",
+      "bytes": 1080,
+      "sha256": "222ec30447d239bab89ee6adf675a53f6f28dcad7a43826e4efd666a77957dc9"
+    },
+    {
+      "path": "start-local-server.cmd",
+      "bytes": 127,
+      "sha256": "43e30a12f416a3263d42bd29fe8656da2ab631bf0f9d843006378a1e82647670"
+    },
+    {
+      "path": "start-preview.cmd",
+      "bytes": 65,
+      "sha256": "296e3636916d0eb29712db084ba6b21c16d5eeda6cf9e8d59da8c235651f284e"
+    },
+    {
+      "path": "tests/browser_smoke.py",
+      "bytes": 13668,
+      "sha256": "159ec02702365200944477b314769e5b9c7852f6764244135368109e92b8da7e"
+    },
+    {
+      "path": "tests/core.test.cjs",
+      "bytes": 14208,
+      "sha256": "b835768724fb0b0d16bc45b58c18618666e2f56ece1318d38039577010f56c21"
+    },
+    {
+      "path": "texzi-design-handbook.html",
+      "bytes": 8548370,
+      "sha256": "35a057ed60bc2c938ae412bc6e8600c0bfaa5ce6e6d4af95820e48f593cd2ed4"
+    },
+    {
+      "path": "tools/bench/generate_fixtures.py",
+      "bytes": 19579,
+      "sha256": "3c5dfdf9f6e88e764a2a7c680c2910ed66a9a898f3ce1446b1e6586adf257d08"
+    },
+    {
+      "path": "tools/build.py",
+      "bytes": 1361,
+      "sha256": "e120fb0802403f8e8a049657000be504fa6f7b93e93ac76fc1d95d455daed817"
+    },
+    {
+      "path": "tools/build_handbook.mjs",
+      "bytes": 5442,
+      "sha256": "a59ffb99121e6cdc796d3696e1c2a323c2fd4891fa586cd2a4f4ac5bc62c6100"
+    },
+    {
+      "path": "tools/package.py",
+      "bytes": 2736,
+      "sha256": "452e9d2dca8c98b031303a8e3ff663a8ca0401696efd93b7a1c4058f3f406714"
+    },
+    {
+      "path": "tools/serve.py",
+      "bytes": 582,
+      "sha256": "19cd51f39f0167171b2f740c41564c58c1ed58fc0eeefb2286cc99959556997a"
+    },
+    {
+      "path": "tools/validate_package.py",
+      "bytes": 3613,
+      "sha256": "66d470bdf03c748ea568c31fa4a949dfa924cb15c332c6dacc65376efb7abedc"
+    },
+    {
+      "path": "tools/vendor/marked-LICENSE.md",
+      "bytes": 2942,
+      "sha256": "8e3a3f82f59a60958f56ca08f445647c32a4733dc7ca6c2c46f6eb898471ab9c"
+    },
+    {
+      "path": "tools/vendor/marked.mjs",
+      "bytes": 41661,
+      "sha256": "0b4487359ce6b85108708e7a532e1242a27f4718241e7b2de109ac6cd307d2dc"
+    }
+  ]
+}

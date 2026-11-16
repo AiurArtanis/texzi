@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-15",
+  "scope": "design delivery and browser prototype source",
+  "coreTests": {
+    "command": "node --test tests/core.test.cjs",
+    "tests": 31,
+    "passed": 31,
+    "failed": 0,
+    "skipped": 0,
+    "observedDurationMs": 191.642978,
+    "notProductPerformance": true
+  },
+  "browserSmoke": {
+    "cases": 11,
+    "status": "NotRun",
+    "attemptedPreviewStatus": "Blocked",
+    "reason": "Local Chromium socket permission; Browser connector timeout; Cloud Browser file-protocol policy. No bypass attempted."
+  },
+  "nativeAcceptance": {
+    "cases": 112,
+    "status": "NotRun"
+  },
+  "nativePerformance": {
+    "status": "NotRun"
+  },
+  "fixtureGenerator": {
+    "smoke": {
+      "files": 18,
+      "bytes": 2298632,
+      "status": "Pass",
+      "repeatable": true
+    },
+    "standard": {
+      "files": 27,
+      "bytes": 464720648,
+      "status": "Pass"
+    },
+    "stress": {
+      "files": 29,
+      "bytes": 674435848,
+      "status": "Pass"
+    }
+  },
+  "packageValidation": {
+    "status": "Pass",
+    "errors": 0
+  }
+}
