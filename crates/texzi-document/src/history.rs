@@ -1,6 +1,7 @@
 use crate::{
     Body, DocId, Eol, Error, Profile, Revision, SourceByte, StateToken, coordinates::boundary,
 };
+use crate::{FenceReason, InputKind, SelectionSet, ViewId, ViewState, ViewTransaction};
 use std::{
     collections::{HashMap, VecDeque},
     ops::Range,
@@ -67,6 +68,8 @@ pub struct Receipt {
 }
 #[derive(Clone)]
 struct Entry {
+    selection_before: Option<SelectionSet>,
+    selection_after: Option<SelectionSet>,
     before: Arc<Body>,
     after: Arc<Body>,
     old: StateToken,
@@ -75,8 +78,11 @@ struct Entry {
     inverse: Vec<Delta>,
     charge: usize,
 }
-struct Document {
-    current: Snapshot,
+pub(crate) struct Document {
+    pub(crate) views: HashMap<ViewId, ViewState>,
+    pub(crate) merge: Option<MergeState>,
+    pub(crate) last_fence: FenceReason,
+    pub(crate) current: Snapshot,
     baseline: StateToken,
     backed: bool,
     undo: VecDeque<Entry>,
@@ -101,7 +107,8 @@ impl Default for HistoryBudget {
 
 /// All mutating APIs require &mut Store: one serial owner, no callback reentrancy.
 pub struct Store {
-    docs: HashMap<DocId, Document>,
+    pub(crate) docs: HashMap<DocId, Document>,
+    pub(crate) view_docs: HashMap<ViewId, DocId>,
     next_token: u64,
     budget: HistoryBudget,
     charge: usize,
@@ -165,6 +172,7 @@ impl Store {
         );
         self.targets.insert(target, doc);
         self.next_save = next;
+        self.fence(doc, FenceReason::Save)?;
         Ok(capture)
     }
     fn active_save(&self, c: &SaveCapture) -> Result<&ActiveSave, Error> {
@@ -233,6 +241,7 @@ impl Store {
     pub fn new(budget: HistoryBudget) -> Self {
         Self {
             docs: HashMap::new(),
+            view_docs: HashMap::new(),
             next_token: 1,
             budget,
             charge: 0,
@@ -264,6 +273,9 @@ impl Store {
             current.doc,
             Document {
                 current: current.clone(),
+                views: HashMap::new(),
+                merge: None,
+                last_fence: FenceReason::Explicit,
                 baseline: token,
                 backed: backed_by_disk,
                 undo: VecDeque::new(),
@@ -300,7 +312,15 @@ impl Store {
     pub fn history_charge(&self) -> usize {
         self.charge
     }
+    /// Trusted document-service entry; view adapters must use submit_view.
     pub fn submit(&mut self, txn: Transaction) -> Result<Receipt, Error> {
+        self.submit_inner(txn, None)
+    }
+    pub(crate) fn submit_inner(
+        &mut self,
+        txn: Transaction,
+        context: Option<&ViewTransaction>,
+    ) -> Result<Receipt, Error> {
         let s = self.snapshot(txn.doc)?;
         if s.revision != txn.base {
             return Err(Error::StaleRevision);
@@ -365,14 +385,31 @@ impl Store {
                 .ok_or(Error::InvalidBoundary)?;
         }
         if forward.is_empty() {
-            return Ok(Receipt {
+            let receipt = Receipt {
                 snapshot: s.clone(),
                 previous: s.revision,
                 previous_body: s.body.clone(),
                 forward,
                 inverse,
                 changed: false,
-            });
+            };
+            let views =
+                self.prepare_views(&receipt, context.map(|v| (v.view, &v.selection_after)))?;
+            let d = self.docs.get_mut(&s.doc).unwrap();
+            if let Some(v) = context {
+                if v.kind != InputKind::Typing
+                    || d.merge.as_ref().is_some_and(|m| m.view != v.view)
+                    || d.views.get(&v.view) != views.get(&v.view)
+                {
+                    d.merge = None;
+                    d.last_fence = FenceReason::Navigation;
+                }
+            } else {
+                d.merge = None;
+                d.last_fence = FenceReason::Service;
+            }
+            d.views = views;
+            return Ok(receipt);
         }
         let mut body = (*s.body).clone();
         for d in forward.iter().rev() {
@@ -381,7 +418,7 @@ impl Store {
         let charge = 4096usize
             .checked_add(bytes.checked_mul(8).ok_or(Error::HistoryBudget)?)
             .ok_or(Error::HistoryBudget)?;
-        self.commit(s, Arc::new(body), forward, inverse, charge)
+        self.commit(s, Arc::new(body), forward, inverse, charge, context)
     }
     /// Metadata-only transaction; UTF-8/BOM and EOL policy changes are undoable.
     pub fn set_serialization(
@@ -415,7 +452,7 @@ impl Store {
             body.change_eols(e);
         }
         let charge = 4096 + s.body.len_bytes().saturating_mul(2);
-        self.commit(s, Arc::new(body), vec![], vec![], charge)
+        self.commit(s, Arc::new(body), vec![], vec![], charge, None)
     }
     fn commit(
         &mut self,
@@ -424,6 +461,7 @@ impl Store {
         forward: Vec<Delta>,
         inverse: Vec<Delta>,
         charge: usize,
+        context: Option<&ViewTransaction>,
     ) -> Result<Receipt, Error> {
         let d = self.docs.get(&s.doc).unwrap();
         let freed: usize = d.redo.iter().map(|e| e.charge).sum();
@@ -435,6 +473,22 @@ impl Store {
             return Err(Error::HistoryBudget);
         }
         let revision = Revision(s.revision.0.checked_add(1).ok_or(Error::CounterExhausted)?);
+        let preview = Receipt {
+            snapshot: Snapshot {
+                doc: s.doc,
+                revision,
+                token: s.token,
+                body: body.clone(),
+            },
+            previous: s.revision,
+            previous_body: s.body.clone(),
+            forward: forward.clone(),
+            inverse: inverse.clone(),
+            changed: true,
+        };
+        let views = self.prepare_views(&preview, context.map(|v| (v.view, &v.selection_after)))?;
+        let before_selection = context.map(|v| d.views[&v.view].selection.clone());
+        let merge = merge_candidate(d, &s, &forward, context);
         let token = self.allocate_token()?;
         let next = Snapshot {
             doc: s.doc,
@@ -442,7 +496,7 @@ impl Store {
             token,
             body: body.clone(),
         };
-        let entry = Entry {
+        let mut entry = Entry {
             before: s.body.clone(),
             after: body,
             old: s.token,
@@ -450,13 +504,34 @@ impl Store {
             forward: forward.clone(),
             inverse: inverse.clone(),
             charge,
+            selection_before: before_selection,
+            selection_after: context.map(|v| v.selection_after.clone()),
         };
         let d = self.docs.get_mut(&s.doc).unwrap();
+        if merge {
+            let old = d.undo.back().unwrap();
+            entry.before = old.before.clone();
+            entry.old = old.old;
+            entry.selection_before = old.selection_before.clone();
+            entry.forward = old.forward.clone();
+            entry.forward[0].text.push_str(&forward[0].text);
+            entry.inverse = old.inverse.clone();
+            entry.inverse[0].range.end += forward[0].text.len();
+            entry.charge += old.charge;
+        }
         d.redo.clear();
+        if merge {
+            d.undo.pop_back();
+        }
         d.undo.push_back(entry);
+        d.merge = typing_cursor(&s, &forward, context, token);
+        if d.merge.is_none() {
+            d.last_fence = FenceReason::Service;
+        }
         d.charge = doc_charge + charge;
         self.charge = process_charge + charge;
         d.current = next.clone();
+        d.views = views;
         Ok(Receipt {
             snapshot: next,
             previous: s.revision,
@@ -467,13 +542,18 @@ impl Store {
         })
     }
     pub fn undo(&mut self, doc: DocId) -> Result<Receipt, Error> {
-        self.travel(doc, false)
+        self.travel(doc, false, None)
     }
     pub fn redo(&mut self, doc: DocId) -> Result<Receipt, Error> {
-        self.travel(doc, true)
+        self.travel(doc, true, None)
     }
-    fn travel(&mut self, doc: DocId, redo: bool) -> Result<Receipt, Error> {
-        let d = self.docs.get_mut(&doc).ok_or(Error::InvalidDoc)?;
+    pub(crate) fn travel(
+        &mut self,
+        doc: DocId,
+        redo: bool,
+        invoking: Option<ViewId>,
+    ) -> Result<Receipt, Error> {
+        let d = self.docs.get(&doc).ok_or(Error::InvalidDoc)?;
         let revision = Revision(
             d.current
                 .revision
@@ -481,12 +561,9 @@ impl Store {
                 .checked_add(1)
                 .ok_or(Error::CounterExhausted)?,
         );
-        let entry = if redo {
-            d.redo.pop()
-        } else {
-            d.undo.pop_back()
-        }
-        .ok_or(Error::NoHistory)?;
+        let entry = if redo { d.redo.last() } else { d.undo.back() }
+            .ok_or(Error::NoHistory)?
+            .clone();
         let previous = d.current.revision;
         let previous_body = d.current.body.clone();
         let (body, token, forward, inverse) = if redo {
@@ -510,19 +587,122 @@ impl Store {
             token,
             body,
         };
-        d.current = next.clone();
-        if redo {
-            d.undo.push_back(entry);
-        } else {
-            d.redo.push(entry);
-        }
-        Ok(Receipt {
-            snapshot: next,
+        let receipt = Receipt {
+            snapshot: next.clone(),
             previous,
             previous_body,
             forward,
             inverse,
             changed: true,
-        })
+        };
+        let restored = invoking.map(|view| {
+            let stored = if redo {
+                &entry.selection_after
+            } else {
+                &entry.selection_before
+            };
+            let selections = stored
+                .as_ref()
+                .map(|s| s.reversion(&next))
+                .unwrap_or_else(|| {
+                    let offset = receipt
+                        .forward
+                        .first()
+                        .map_or(0, |d| d.range.start.min(next.body.len_bytes()));
+                    let a = crate::views::snap_anchor(
+                        &next,
+                        crate::Anchor {
+                            position: SourceByte::at(&next, offset),
+                            affinity: crate::Affinity::Before,
+                        },
+                    )
+                    .unwrap()
+                    .0;
+                    SelectionSet::caret(&next, a.position.offset)
+                });
+            (view, selections)
+        });
+        let views = self.prepare_views(&receipt, restored.as_ref().map(|(v, s)| (*v, s)))?;
+        let d = self.docs.get_mut(&doc).unwrap();
+        d.current = next;
+        d.views = views;
+        d.merge = None;
+        d.last_fence = FenceReason::UndoRedo;
+        if redo {
+            d.redo.pop();
+            d.undo.push_back(entry);
+        } else {
+            d.undo.pop_back();
+            d.redo.push(entry);
+        }
+        Ok(receipt)
     }
+}
+
+pub(crate) struct MergeState {
+    view: ViewId,
+    tick_ms: u64,
+    end: usize,
+    token: StateToken,
+}
+pub const INPUT_MERGE_WINDOW_MS: u64 = 750;
+pub const INPUT_MERGE_MAX_BYTES: usize = 64 * 1024;
+fn typing_cursor(
+    _s: &Snapshot,
+    forward: &[Delta],
+    v: Option<&ViewTransaction>,
+    token: StateToken,
+) -> Option<MergeState> {
+    let v = v?;
+    if v.kind != InputKind::Typing || forward.len() != 1 || v.selection_after.selections.len() != 1
+    {
+        return None;
+    }
+    let d = &forward[0];
+    let range = v.selection_after.selections[0].range();
+    if !d.range.is_empty()
+        || d.text.is_empty()
+        || d.text.contains('\n')
+        || !range.is_empty()
+        || range.start != d.range.start + d.text.len()
+    {
+        return None;
+    }
+    if d.text.len() > INPUT_MERGE_MAX_BYTES {
+        return None;
+    }
+    Some(MergeState {
+        view: v.view,
+        tick_ms: v.tick_ms,
+        end: d.range.start + d.text.len(),
+        token,
+    })
+}
+fn merge_candidate(
+    d: &Document,
+    s: &Snapshot,
+    forward: &[Delta],
+    v: Option<&ViewTransaction>,
+) -> bool {
+    let Some(next) = typing_cursor(s, forward, v, s.token) else {
+        return false;
+    };
+    let Some(previous) = &d.merge else {
+        return false;
+    };
+    let Some(last) = d.undo.back() else {
+        return false;
+    };
+    let v = v.unwrap();
+    let before = &d.views[&v.view].selection;
+    next.view == previous.view
+        && s.token == previous.token
+        && last.new == s.token
+        && d.redo.is_empty()
+        && v.tick_ms >= previous.tick_ms
+        && v.tick_ms - previous.tick_ms <= INPUT_MERGE_WINDOW_MS
+        && forward[0].range.start == previous.end
+        && before.selections.len() == 1
+        && before.selections[0].range() == (previous.end..previous.end)
+        && last.forward[0].text.len() + forward[0].text.len() <= INPUT_MERGE_MAX_BYTES
 }

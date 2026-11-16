@@ -1,4 +1,5 @@
 use texzi_document::*;
+mod views;
 
 fn store(raw: &str) -> (Store, Snapshot) {
     let mut store = Store::new(HistoryBudget::default());

@@ -14,6 +14,7 @@ and rustfmt are selected by rust-toolchain.toml.
 
 ```powershell
 cargo fmt --all -- --check
+cargo build -p texzi-document --features probe --bin document-probe --release --locked --target x86_64-pc-windows-msvc
 cargo test -p texzi-document --release --locked --target x86_64-pc-windows-msvc --test contracts -- --include-ignored --nocapture --test-threads=1
 cargo build --release --locked --target x86_64-pc-windows-msvc
 ./scripts/build-candidate.ps1
@@ -30,7 +31,10 @@ uploaded separately and is not a successful candidate. The script compiles and
 executes the document contracts suite (including the million-edit property case)
 before building the app, and packages the exact component test executable for
 local verification. This is component evidence; the crate is not integrated into
-the native window. See [T03a scope and remaining work](docs/tx03/README.md),
+the native window. A JSON-lines `document-probe.exe` permits separately written
+component oracles; CI runs scripts/test-document-probe.py before the application
+build and packages the executable/protocol. See [T03b logical views and history](docs/tx03b/README.md),
+[probe protocol](docs/tx03b/PROTOCOL.md), [T03a scope](docs/tx03/README.md),
 [runtime checks](docs/tx00/RUN.md) and
 [dependency decisions and design errata](docs/tx00/DECISIONS.md).
 

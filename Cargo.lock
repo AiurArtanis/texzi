@@ -2394,6 +2394,7 @@ name = "texzi-document"
 version = "0.0.1"
 dependencies = [
  "ropey",
+ "serde_json",
  "unicode-segmentation",
 ]
 

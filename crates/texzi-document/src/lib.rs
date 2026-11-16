@@ -6,12 +6,16 @@ mod body;
 mod coordinates;
 mod history;
 mod provenance;
+mod view_store;
+mod views;
 
 pub use anchors::Affinity;
 pub use body::{Body, Eol, Profile};
 pub use coordinates::{Coordinate, GraphemeIndex, GraphemeOffset, SourceByte, Utf16Offset};
 pub use history::*;
 pub use provenance::OriginSpan;
+pub use view_store::DocumentViewSnapshot;
+pub use views::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DocId(pub(crate) u64);
@@ -36,4 +40,7 @@ pub enum Error {
     Busy,
     InvalidSave,
     TooLate,
+    InvalidView,
+    StaleView,
+    InvalidSelection,
 }

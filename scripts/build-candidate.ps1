@@ -44,6 +44,8 @@ try {
     Write-Host "Design manifest: $($manifest.files.Count) entries verified"
     Invoke-Checked cargo @('fmt', '--all', '--', '--check')
     Invoke-Checked cargo @('tree', '--locked', '--target', 'x86_64-pc-windows-msvc', '-e', 'features')
+    Invoke-Checked cargo @('tree', '-p', 'texzi-document', '--features', 'probe', '--locked', '--target', 'x86_64-pc-windows-msvc', '-e', 'features')
+    Invoke-Checked cargo @('build', '-p', 'texzi-document', '--features', 'probe', '--bin', 'document-probe', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc')
     Invoke-Checked cargo @('test', '-p', 'texzi-document', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc', '--test', 'contracts', '--no-run', '--message-format=json') -StdoutFile 'build-evidence/document-test-build.jsonl'
     # --print=link-args adds native link command text to stdout even in JSON mode.
     # Preserve the entire raw stream; parse only JSON records, retaining strict JSON errors.
@@ -56,10 +58,15 @@ try {
         Copy-Item $testExecutables[0] build-evidence/failed-document-contracts.exe
         throw
     }
-    Invoke-Checked cargo @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc')
-    $buildResult = Get-ChildItem build-evidence -Filter '*.result.json' | ForEach-Object { Get-Content $_ -Raw | ConvertFrom-Json } |
-        Where-Object { $_.program -eq 'cargo' -and $_.arguments[0] -eq 'build' }
-    $linkCommands = Get-Content (Join-Path build-evidence $buildResult.stdout_file)
+    Invoke-Checked python @('--version')
+    try {
+        Invoke-Checked python @('scripts/test-document-probe.py', '--probe', 'target/x86_64-pc-windows-msvc/release/document-probe.exe', '--trace', 'build-evidence/probe-oracle.jsonl')
+    } catch {
+        Copy-Item target/x86_64-pc-windows-msvc/release/document-probe.exe build-evidence/failed-document-probe.exe
+        throw
+    }
+    Invoke-Checked cargo @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc') -StdoutFile 'build-evidence/application-build.stdout.log'
+    $linkCommands = Get-Content build-evidence/application-build.stdout.log
     $finalLink = @($linkCommands | Where-Object { $_ -match '/OUT:.*texzi[-_]app.*\.exe' })
     if ($finalLink.Count -ne 1) { throw 'Cannot identify the actual final application linker invocation' }
     foreach ($selectedPath in @($effectiveLinker) + $selectedLibs) {
@@ -70,6 +77,8 @@ try {
     New-Item dist/package/licenses -ItemType Directory -Force | Out-Null
     New-Item dist/package/component-tests -ItemType Directory | Out-Null
     Copy-Item $testExecutables[0] dist/package/component-tests/document-contracts.exe
+    Copy-Item target/x86_64-pc-windows-msvc/release/document-probe.exe dist/package/component-tests/
+    Copy-Item scripts/test-document-probe.py,docs/tx03b/PROTOCOL.md dist/package/component-tests/
     Copy-Item target/x86_64-pc-windows-msvc/release/texzi-app.exe dist/package/
     Copy-Item LICENSE,docs/tx00/RUN.md,docs/tx00/STARTUP_FAILURE.md dist/package/
     Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse
