@@ -571,6 +571,12 @@ checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 
 [[package]]
 name = "foldhash"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
@@ -765,6 +771,15 @@ checksum = "e20f99e46474f56bd905c56e817ebddcf377a611f94c53ac4649e4d3fa3c0cd0"
 dependencies = [
  "arraydeque",
  "smallvec",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.15.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+dependencies = [
+ "foldhash 0.1.5",
 ]
 
 [[package]]
@@ -992,13 +1007,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65b27460c2c92b037f3f94c538ed9a3342f3fdf923606781629ccb35f82d042a"
 
 [[package]]
+name = "imara-diff"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f01d462f766df78ab820dd06f5eb700233c51f0f4c2e846520eaf4ba6aa5c5c"
+dependencies = [
+ "hashbrown 0.15.5",
+ "memchr",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
- "hashbrown",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -1300,15 +1325,16 @@ dependencies = [
 [[package]]
 name = "nsh-base"
 version = "0.5.1"
-source = "git+https://github.com/longbridge/nsh?rev=224d9a795c7ac9d10d75750de9351adac5549675#224d9a795c7ac9d10d75750de9351adac5549675"
 dependencies = [
  "chrono",
  "html5ever",
+ "imara-diff",
  "log",
  "markdown",
  "markup5ever_rcdom",
  "nsh-core",
  "regex",
+ "ropey",
  "rustc-hash",
  "serde",
  "serde_json",
@@ -1868,7 +1894,7 @@ checksum = "e806c2a9701cbd6043992cd935c30cb1fdb128fa15e7b506f3b46f97045737c0"
 dependencies = [
  "arc-swap",
  "base62",
- "foldhash",
+ "foldhash 0.2.0",
  "globwalk",
  "itertools",
  "normpath",
@@ -2385,8 +2411,10 @@ name = "texzi-app"
 version = "0.0.1"
 dependencies = [
  "log",
+ "nsh-base",
  "nsh-core",
  "nsh-platform-windows",
+ "texzi-document",
 ]
 
 [[package]]

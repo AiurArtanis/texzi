@@ -8,6 +8,7 @@ mod history;
 mod observe;
 mod observed_writes;
 mod provenance;
+mod ui_plan;
 mod view_store;
 mod views;
 

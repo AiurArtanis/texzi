@@ -4,3 +4,5 @@ docs/design-v1/** -text
 crates/texzi-document/tests/fixtures/** -text
 # Reviewed independent oracle is an exact-byte verification input, not a fmt target.
 tests/oracles/** -text
+# Traceable upstream fork: retain original source bytes across checkout.
+vendor/nsh-base/** -text

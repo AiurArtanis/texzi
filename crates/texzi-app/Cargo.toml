@@ -8,7 +8,9 @@ publish = false
 
 [dependencies]
 log.workspace = true
+texzi-document = { path = "../texzi-document" }
 
 [target.'cfg(windows)'.dependencies]
 nsh-core.workspace = true
 nsh-platform-windows.workspace = true
+nsh-base = { path = "../../vendor/nsh-base", default-features = false, features = ["editor"] }

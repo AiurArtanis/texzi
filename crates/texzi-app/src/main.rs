@@ -1,4 +1,4 @@
-//! TX-00 native window baseline. No document IO or editor implementation.
+//! Native editing checkpoint. File IO and rich-text integration follow separately.
 
 struct StderrLogger;
 
@@ -19,6 +19,8 @@ impl log::Log for StderrLogger {
 static LOGGER: StderrLogger = StderrLogger;
 
 #[cfg(windows)]
+mod editor_owner;
+#[cfg(windows)]
 mod startup_fault;
 
 #[cfg(windows)]
@@ -28,17 +30,21 @@ mod app {
 
     #[component]
     pub fn Window() -> impl IntoElement {
-        view()
-            .flex_1()
-            .bg(white())
-            .child(text("texzi — TX-00 native window").text_color(black()))
+        nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#000000","background":"#ffffff"},"dark":{"foreground":"#000000","background":"#ffffff"}}}"##)).expect("fixed content palette"));
+        provide_context(crate::editor_owner::NativeView::initial());
+        view().flex_1().bg(white()).child(
+            nsh_base::editor::editor()
+                .auto_focus(true)
+                .language("markdown")
+                .size_full(),
+        )
     }
 
     pub fn run() -> std::process::ExitCode {
         platform::run_app(
             platform::AppSource::Rust(platform::Root::of::<Window>()),
             platform::AppOptions {
-                title: "texzi — TX-00".to_owned(),
+                title: "texzi — 原生编辑".to_owned(),
                 app_id: "dev.texzi.tx00".to_owned(),
                 size: (960, 640),
                 ..Default::default()
