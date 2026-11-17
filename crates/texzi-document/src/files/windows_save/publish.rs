@@ -115,6 +115,10 @@ pub struct NewPublication {
     name: Vec<u16>,
     #[cfg(test)]
     before_rename: Option<Box<dyn Fn(&Path) -> io::Result<()> + Send>>,
+    #[cfg(test)]
+    post_rename_flush_handle: Option<Box<dyn Fn(&File) -> io::Result<File> + Send>>,
+    #[cfg(test)]
+    verification_format: Option<Format>,
 }
 #[must_use = "accept the verified result or explicitly record the uncertain outcome"]
 pub struct PublishedNew {
@@ -187,6 +191,10 @@ impl NewReady {
                 name: self.name,
                 #[cfg(test)]
                 before_rename: None,
+                #[cfg(test)]
+                post_rename_flush_handle: None,
+                #[cfg(test)]
+                verification_format: None,
             }),
             Err(e) => Err(PublishFailure {
                 issue: PublishIssue::Owner(e),
@@ -236,6 +244,17 @@ fn rename_new(file: &File, parent: &File, name: &[u16], attempted: &mut bool) ->
 }
 impl NewPublication {
     #[cfg(test)]
+    pub(super) fn set_post_rename_flush_handle(
+        &mut self,
+        hook: impl Fn(&File) -> io::Result<File> + Send + 'static,
+    ) {
+        self.post_rename_flush_handle = Some(Box::new(hook));
+    }
+    #[cfg(test)]
+    pub(super) fn set_verification_format(&mut self, format: Format) {
+        self.verification_format = Some(format);
+    }
+    #[cfg(test)]
     pub(super) fn set_before_rename(
         &mut self,
         hook: impl Fn(&Path) -> io::Result<()> + Send + 'static,
@@ -271,16 +290,29 @@ impl NewPublication {
             let mut file = self.resources.staged.staged.created_file()?;
             file.sync_all()?;
             rename_new(&file, &self.parent, &self.name, &mut attempted)?;
-            file.sync_all()?;
+            #[cfg(test)]
+            let flush_handle = self
+                .post_rename_flush_handle
+                .as_ref()
+                .map(|hook| hook(&file))
+                .transpose()?;
+            #[cfg(test)]
+            let flush_file = flush_handle.as_ref().unwrap_or(&*file);
+            #[cfg(not(test))]
+            let flush_file = &*file;
+            flush_file.sync_all()?;
             self.resources.staged.observed.recheck_parent()?;
             // Query the actual post-rename identity and bytes, never assign the
             // old reservation key or cached temporary ID as the final identity.
             let version = super::super::windows_identity::read_version_handle(&mut file)?;
+            let format = self.resources.format();
+            #[cfg(test)]
+            let format = self.verification_format.unwrap_or(format);
             if super::super::windows_identity::volume_path(&file)? != path
                 || version.identity != self.resources.staged.temporary_identity()
                 || version.bytes.as_ref() != self.resources.payload()
                 || &version.security != self.resources.temporary_security()
-                || self.capture().snapshot.body.profile.file_format != Some(self.resources.format())
+                || self.capture().snapshot.body.profile.file_format != Some(format)
             {
                 return Err(PublishIssue::VerificationMismatch);
             }

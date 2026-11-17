@@ -39,6 +39,27 @@ fn assert_separate_reader_denied(path: &Path) {
         Err(e) => assert_eq!(e.raw_os_error(), Some(32)),
     }
 }
+fn duplicate_read_control(file: &File) -> std::io::Result<File> {
+    let mut duplicate = std::ptr::null_mut();
+    // SAFETY: duplicate this fixture's live handle into the current process with
+    // fewer rights, no pathname reopen. File closes the new handle exactly once.
+    let process = unsafe { GetCurrentProcess() };
+    if unsafe {
+        DuplicateHandle(
+            process,
+            file.as_raw_handle(),
+            process,
+            &mut duplicate,
+            READ_CONTROL,
+            0,
+            0,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_handle(duplicate) })
+}
 
 fn security_boundary(case: SecurityCase) {
     let mismatch = case == SecurityCase::Mismatch;
@@ -104,28 +125,7 @@ fn security_boundary(case: SecurityCase) {
         Ok(())
     });
     if denied {
-        worker.work.set_copy_handle_hook(|new_file| {
-            let mut duplicate = std::ptr::null_mut();
-            // SAFETY: duplicate this fixture's live handle into the current
-            // process with READ_CONTROL only; no reopen or permission elevation.
-            let process = unsafe { GetCurrentProcess() };
-            if unsafe {
-                DuplicateHandle(
-                    process,
-                    new_file.as_raw_handle(),
-                    process,
-                    &mut duplicate,
-                    READ_CONTROL,
-                    0,
-                    0,
-                )
-            } == 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            // SAFETY: a newly owned duplicate, closed exactly once by File.
-            Ok(unsafe { File::from_raw_handle(duplicate) })
-        });
+        worker.work.set_copy_handle_hook(duplicate_read_control);
     }
     let calls = Arc::new(AtomicUsize::new(0));
     let hook_calls = calls.clone();
@@ -589,4 +589,174 @@ fn existing_target_has_no_owner_only_new_publication_path() {
         ObservedTarget::inspect(&target).unwrap().version().unwrap(),
         &original
     );
+}
+
+fn renamed_then_failed(flush_failure: bool) {
+    let (dir, target, mut store, n, ready) = new_ready_fixture();
+    let initial_paths: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(initial_paths.len(), 1);
+    let original_temp = initial_paths[0].clone();
+    assert_ne!(original_temp, target);
+    let capture = ready.capture().clone();
+    let mut job = ready.permit(&mut store).unwrap();
+    let flush_calls = Arc::new(AtomicUsize::new(0));
+    if flush_failure {
+        let calls = flush_calls.clone();
+        job.set_post_rename_flush_handle(move |file| {
+            // This callback is reachable only after native rename returned success.
+            let current_path = super::super::windows_identity::volume_path(file)
+                .map_err(|e| std::io::Error::other(format!("fixture path query: {e:?}")))?;
+            assert_eq!(
+                current_path.file_name(),
+                Some(std::ffi::OsStr::new("saved.txt"))
+            );
+            let duplicate = duplicate_read_control(file)?;
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(duplicate)
+        });
+    } else {
+        // Fault only the verifier's expected format, after real rename/flush/read.
+        // Physical N bytes stay intact; no fake IO result or alternate exit path.
+        job.set_verification_format(Format {
+            encoding: super::super::Encoding::Utf8,
+            bom: false,
+        });
+    }
+    let current = store
+        .submit(Transaction {
+            doc: n.doc,
+            base: n.revision,
+            edits: vec![Edit::input(&n, 0..0, "B")],
+            boundary: BoundaryPolicy::Grapheme,
+            cancelled: false,
+        })
+        .unwrap()
+        .snapshot;
+    let depth = store.history_depth(n.doc).unwrap();
+    let (before, subscription) = store
+        .observe_and_subscribe(n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    let failure = match job.run() {
+        Ok(_) => panic!("post-rename fault was accepted"),
+        Err(e) => e,
+    };
+    if flush_failure {
+        assert_eq!(flush_calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(&failure.issue, PublishIssue::Io(e) if e.raw_os_error() == Some(5)));
+    } else {
+        assert!(matches!(&failure.issue, PublishIssue::VerificationMismatch));
+    }
+    let actual_path = failure.current_path().unwrap();
+    assert_eq!(actual_path.file_name(), target.file_name());
+    assert!(!original_temp.exists());
+    assert_separate_reader_denied(&target);
+    let raw = [0xff, 0xfe, 65, 0, 13, 0, 10, 0];
+    assert_eq!(failure.read_retained_bytes().unwrap(), raw);
+    assert_eq!(failure.current_version().unwrap().bytes.as_ref(), raw);
+    assert_eq!(failure.capture().operation, capture.operation);
+    assert_eq!(failure.capture().snapshot.token, n.token);
+    failure.record_failure(&mut store).unwrap();
+    assert!(matches!(
+        store.poll_observer(&subscription).unwrap(),
+        crate::ObserverPoll::Batch(_)
+    ));
+    assert!(matches!(
+        store.poll_observer(&subscription).unwrap(),
+        crate::ObserverPoll::Pending
+    ));
+    let (after, _) = store
+        .observe_and_subscribe(n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    assert_eq!(
+        after.state.global.metadata.baseline,
+        before.state.global.metadata.baseline
+    );
+    assert_eq!(
+        after.state.global.metadata.attention.target,
+        before.state.global.metadata.attention.target
+    );
+    assert_eq!(
+        after.state.global.metadata.attention.binding_epoch,
+        before.state.global.metadata.attention.binding_epoch
+    );
+    assert_eq!(after.state.global.document.token, current.token);
+    assert_eq!(
+        after.state.global.document.body.to_utf8(),
+        current.body.to_utf8()
+    );
+    assert_eq!(store.history_depth(n.doc).unwrap(), depth);
+    assert!(store.dirty(n.doc).unwrap());
+    assert!(after.state.global.metadata.save.active.is_none());
+    let terminal = after
+        .state
+        .global
+        .metadata
+        .save
+        .last_terminal
+        .as_ref()
+        .unwrap();
+    assert_eq!(terminal.operation, capture.operation);
+    assert_eq!(terminal.result, crate::SaveResult::OutcomeUnknown);
+    let record = after
+        .state
+        .global
+        .metadata
+        .attention
+        .recoveries
+        .last()
+        .unwrap();
+    assert!(record.detail.recovery_paths.contains(&actual_path));
+    assert_eq!(
+        store
+            .recovery_snapshot(n.doc, capture.operation)
+            .unwrap()
+            .token,
+        n.token
+    );
+    // A distinct existing file key proves the retained parent scope is held,
+    // rather than only testing the old new-in-directory reservation key.
+    let other_path = dir.join("other-existing.txt");
+    fs::write(&other_path, b"other").unwrap();
+    let (_, binding) = super::super::LoadedBytes::decode(
+        Arc::from(&b"other"[..]),
+        Some(super::super::Encoding::Utf8),
+    )
+    .unwrap()
+    .attach(&mut store)
+    .unwrap();
+    let other = ObservedTarget::inspect(&other_path).unwrap();
+    assert_ne!(other.reservation_key(), capture.target);
+    assert!(matches!(
+        other.prepare_bound(&binding, &mut store),
+        Err(BoundFailure {
+            issue: BoundIssue::File(FileError::Document(Error::UnresolvedConflict)),
+            ..
+        })
+    ));
+    assert_eq!(failure.record_failure(&mut store), Err(Error::InvalidSave));
+    assert_eq!(failure.read_retained_bytes().unwrap(), raw);
+    drop(failure); // Explicit end of the retained handle; no delete or rollback.
+    assert_eq!(fs::read(&target).unwrap(), raw);
+    assert!(!original_temp.exists());
+    assert!(matches!(
+        ObservedTarget::inspect(&other_path)
+            .unwrap()
+            .prepare_bound(&binding, &mut store),
+        Err(BoundFailure {
+            issue: BoundIssue::File(FileError::Document(Error::UnresolvedConflict)),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn post_rename_flush_failure_keeps_resources_baseline_and_held_scope() {
+    renamed_then_failed(true);
+}
+#[test]
+fn post_rename_verification_failure_keeps_resources_baseline_and_held_scope() {
+    renamed_then_failed(false);
 }
