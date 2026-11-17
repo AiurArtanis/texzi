@@ -217,6 +217,10 @@ fn locked_temporary_observes_security_and_denies_ordinary_write_delete_and_renam
     assert_eq!(locked.temporary_security(), &observed_security);
     assert!(!locked.temporary_security().as_bytes().is_empty());
     assert!(!locked.original_security().unwrap().as_bytes().is_empty());
+    assert_eq!(
+        locked.original_security().unwrap(),
+        locked.temporary_security()
+    );
     // Stop at the first unexpected success; do not erase its fixture evidence.
     assert_eq!(
         fs::write(&temporary, b"must not truncate")

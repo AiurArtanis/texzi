@@ -157,7 +157,7 @@ impl BoundWork {
         })?;
         if temporary.parent_identity() != self.observed.parent_identity()
             || temp.identity != staged.created_identity()
-            || &temp.security != staged.created_security()
+            || &temp.security != staged.payload_security()
             || temp.identity.volume != self.observed.parent_identity().volume
             || temp.bytes.as_ref() != staged.expected_bytes()
             || self
@@ -185,7 +185,7 @@ impl BoundStaged {
                 super::windows_identity::read_version_handle(self.staged.created_file_mut())?;
             if Some(&current) != self.temporary.version()
                 || current.identity != self.staged.created_identity()
-                || &current.security != self.staged.created_security()
+                || &current.security != self.staged.payload_security()
             {
                 return Err(IdentityError::Changed);
             }
@@ -224,6 +224,9 @@ impl BoundStaged {
     pub fn temporary_identity(&self) -> FileIdentity {
         self.staged.created_identity()
     }
+    pub fn creation_security(&self) -> &SecurityDescriptor {
+        self.staged.created_security()
+    }
     pub fn original_identity(&self) -> Option<FileIdentity> {
         self.observed.version().map(|v| v.identity)
     }
@@ -256,6 +259,9 @@ impl LockedStaged {
     }
     pub fn temporary_security(&self) -> &SecurityDescriptor {
         &self.security
+    }
+    pub fn creation_security(&self) -> &SecurityDescriptor {
+        self.staged.creation_security()
     }
     pub fn original_security(&self) -> Option<&SecurityDescriptor> {
         self.staged.observed.version().map(|v| &v.security)

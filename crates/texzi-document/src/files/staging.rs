@@ -36,6 +36,8 @@ pub struct StagedSave {
     created_identity: super::windows_identity::FileIdentity,
     #[cfg(windows)]
     created_security: super::windows_security::SecurityDescriptor,
+    #[cfg(windows)]
+    payload_security: super::windows_security::SecurityDescriptor,
     temp: PathBuf,
     target: PathBuf,
     capture: crate::SaveCapture,
@@ -53,6 +55,10 @@ impl StagedSave {
     #[cfg(windows)]
     pub fn created_security(&self) -> &super::windows_security::SecurityDescriptor {
         &self.created_security
+    }
+    #[cfg(windows)]
+    pub fn payload_security(&self) -> &super::windows_security::SecurityDescriptor {
+        &self.payload_security
     }
     #[cfg(windows)]
     pub(super) fn created_file_mut(&mut self) -> &mut File {
@@ -185,9 +191,13 @@ impl StagingWork {
             {
                 use std::os::windows::fs::OpenOptionsExt;
                 use windows_sys::Win32::Storage::FileSystem::{
-                    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+                    DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+                    FILE_SHARE_READ, WRITE_DAC, WRITE_OWNER,
                 };
                 options
+                    .access_mode(
+                        FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER,
+                    )
                     .share_mode(FILE_SHARE_READ)
                     .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
             }
@@ -216,7 +226,22 @@ impl StagingWork {
                 recovery_temp: Some(temp.clone()),
             })?;
         #[cfg(windows)]
-        if required_security.is_some_and(|required| required != &created_security) {
+        if let Some(required) = required_security {
+            required
+                .apply_to_new_file(&file)
+                .map_err(|e| StageFailure {
+                    issue: StageIssue::Io(e),
+                    recovery_temp: Some(temp.clone()),
+                })?;
+        }
+        #[cfg(windows)]
+        let payload_security =
+            super::windows_security::SecurityDescriptor::read(&file).map_err(|e| StageFailure {
+                issue: StageIssue::Io(e),
+                recovery_temp: Some(temp.clone()),
+            })?;
+        #[cfg(windows)]
+        if required_security.is_some_and(|required| required != &payload_security) {
             return Err(StageFailure {
                 issue: StageIssue::SecurityMismatch,
                 recovery_temp: Some(temp),
@@ -238,7 +263,7 @@ impl StagingWork {
                     != created_identity
                     || super::windows_security::SecurityDescriptor::read(&file)
                         .map_err(StageIssue::Io)?
-                        != created_security
+                        != payload_security
                 {
                     return Err(StageIssue::Conflict);
                 }
@@ -257,6 +282,8 @@ impl StagingWork {
             created_identity,
             #[cfg(windows)]
             created_security,
+            #[cfg(windows)]
+            payload_security,
             temp,
             target: target.to_owned(),
             capture: self.capture,

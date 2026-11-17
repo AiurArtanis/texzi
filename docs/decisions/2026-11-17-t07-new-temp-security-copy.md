@@ -1,0 +1,9 @@
+# T07 新临时文件 owner/group/DACL 复制及访问位
+
+在a416创建句柄连续性上继续原本地实现。Windows create_new明确请求FILE_GENERIC_READ/WRITE、DELETE、WRITE_DAC、WRITE_OWNER，仅FILE_SHARE_READ。访问不足时OS拒绝，绝不启用SeRestore/SeTakeOwnership等特权、修改全局策略或改用较宽共享重开。保留原创建File和ID，DELETE能力仅供后续真正基于句柄方案考虑，本次无rename/replace/发布入口，不能因有访问位就称安全发布完成。
+
+受绑定链对已有目标，在任何payload前对新temp调用SetKernelObjectSecurity，复制观察到的owner/group/DACL及DACL protected/unprotected选择；数据来自本机GetKernelObjectSecurity产生的描述符。仅内部create_new调用链可调用，不接受现有用户文件路径，不对原目标写ACL。原继承security保留为creation_security，复制后读回另存payload_security，不混淆创建权限与实际写入时权限。无已有目标时沿新目录继承，同时核parent描述符。
+
+API失败或读回与目标描述符原字节不匹配，保空temp/operation恢复线索并失败，不能写敏感payload后才检查。再次核payload_security、创建ID和原目标后才返回暂存对象；仍停WritingTemp。ACL字节严格比对可能保守拒绝语义等价布局；自定义ACE/owner/group/继承、不同owner权限、SACL/完整性标签/EFS/ADS和最终ReplaceFile权限合并均未得到运行证明。此实际API实现不等价完整文件metadata保留支持。
+
+原Windows Store→bound→locked用例增加原目标与temp描述符相等断言，合法可构建包后才运行；当前26命名用例全部NOT_RUN。未新增伪造描述符/绕开真实API的PASS。未改变source文件ACL或当前系统权限；代码中的新文件ACL调用未执行。原30c/998/a416固定报告按各版本保留，创建身份补正是a416之后的源码，不倒填998已具创建证明。

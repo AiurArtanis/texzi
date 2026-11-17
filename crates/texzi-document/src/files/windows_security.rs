@@ -1,4 +1,5 @@
-//! Read-only owner/group/DACL observation. No SACL access or privilege changes.
+//! Owner/group/DACL observation and copying onto a new temporary file only.
+//! No SACL access or privilege changes.
 use std::{fs::File, io, os::windows::io::AsRawHandle};
 use windows_sys::Win32::{Foundation::ERROR_INSUFFICIENT_BUFFER, Security::*};
 
@@ -16,6 +17,33 @@ impl std::fmt::Debug for SecurityDescriptor {
     }
 }
 impl SecurityDescriptor {
+    /// Internal caller must supply only its own create_new temporary handle,
+    /// before writing payload. Never applies to an existing document path.
+    pub(super) fn apply_to_new_file(&self, file: &File) -> io::Result<()> {
+        let descriptor = self.storage.as_ptr().cast_mut().cast();
+        let mut control = 0;
+        let mut revision = 0;
+        // SAFETY: descriptor came from GetKernelObjectSecurity and remains live;
+        // these APIs read the input descriptor and do not modify its buffer.
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let inheritance = if control & SE_DACL_PROTECTED != 0 {
+            PROTECTED_DACL_SECURITY_INFORMATION
+        } else {
+            UNPROTECTED_DACL_SECURITY_INFORMATION
+        };
+        let flags = OWNER_SECURITY_INFORMATION
+            | GROUP_SECURITY_INFORMATION
+            | DACL_SECURITY_INFORMATION
+            | inheritance;
+        // SAFETY: live create_new handle, validated OS-produced descriptor. The
+        // OS enforces WRITE_OWNER/WRITE_DAC; no privileges are enabled on error.
+        if unsafe { SetKernelObjectSecurity(file.as_raw_handle(), flags, descriptor) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
     pub fn as_bytes(&self) -> &[u8] {
         // SAFETY: length was checked against initialized aligned storage below.
         unsafe { std::slice::from_raw_parts(self.storage.as_ptr().cast(), self.length) }
