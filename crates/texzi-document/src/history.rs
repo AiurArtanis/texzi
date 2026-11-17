@@ -121,6 +121,8 @@ impl Default for HistoryBudget {
 
 /// All mutating APIs require &mut Store: one serial owner, no callback reentrancy.
 pub struct Store {
+    #[cfg(windows)]
+    pub(crate) publication_recovery: Arc<crate::files::windows_save::recovery::Registry>,
     scope_parents: HashMap<TargetKey, ScopeLease>,
     scope_objects: HashMap<TargetKey, ScopeLease>,
     bound_targets: HashMap<TargetKey, DocId>,
@@ -366,6 +368,8 @@ impl Store {
             error: None,
         });
         self.release_save(c, false);
+        #[cfg(windows)]
+        self.publication_recovery.recorded(c.operation);
         Ok(())
     }
     fn release_save(&mut self, c: &SaveCapture, hold_scope: bool) {
@@ -439,6 +443,8 @@ impl Store {
                 .insert(c.target.clone(), c.snapshot.doc);
         }
         self.release_save(c, held);
+        #[cfg(windows)]
+        self.publication_recovery.recorded(c.operation);
         Ok(())
     }
     pub fn recovery_snapshot(&self, doc: DocId, operation: u64) -> Result<Snapshot, Error> {
@@ -519,10 +525,14 @@ impl Store {
         }
         self.bound_targets.insert(final_target, c.snapshot.doc);
         self.release_save(c, false);
+        #[cfg(windows)]
+        self.publication_recovery.complete(c.operation);
         Ok(next_epoch)
     }
     pub fn new(budget: HistoryBudget) -> Self {
         Self {
+            #[cfg(windows)]
+            publication_recovery: Arc::default(),
             scope_parents: HashMap::new(),
             scope_objects: HashMap::new(),
             bound_targets: HashMap::new(),

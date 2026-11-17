@@ -71,6 +71,11 @@ impl StagedSave {
             .lock()
             .map_err(|_| std::io::Error::other("temporary handle lock poisoned"))
     }
+    /// Recovery inspection only; poisoning never grants a publication capability.
+    #[cfg(windows)]
+    pub(super) fn created_file_recovery(&self) -> MutexGuard<'_, File> {
+        self.created.lock().unwrap_or_else(|e| e.into_inner())
+    }
     /// Owner capability read: never reopens the temporary pathname.
     pub fn read_created_bytes(&self) -> std::io::Result<Vec<u8>> {
         let mut file = self.created_file()?;

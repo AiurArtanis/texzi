@@ -1,6 +1,8 @@
 //! New targets only, owner/SYSTEM-only policy. Existing replacement is excluded.
+use super::recovery::Guard;
 use super::*;
 use crate::{SaveFailure, SaveFailureOutcome, Snapshot};
+use std::sync::Arc;
 use std::{
     fs::File,
     io,
@@ -38,8 +40,9 @@ enum Phase {
 #[must_use = "record the terminal result and retain or explicitly resolve recovery resources"]
 pub struct PublishFailure {
     pub issue: PublishIssue,
-    resources: LockedStaged,
+    resources: Arc<LockedStaged>,
     phase: Phase,
+    _guard: Option<Guard>,
 }
 impl std::fmt::Debug for PublishFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -99,18 +102,20 @@ impl PublishFailure {
                 ),
                 recovery_paths: paths,
             },
-        )
+        )?;
+        Ok(())
     }
 }
 #[must_use = "obtain the owner permit or explicitly handle the still-active save"]
 pub struct NewReady {
-    resources: LockedStaged,
+    resources: Arc<LockedStaged>,
     parent: File,
     name: Vec<u16>,
 }
 #[must_use = "a granted permit requires publication or an explicit failed outcome"]
 pub struct NewPublication {
-    resources: LockedStaged,
+    guard: Option<Guard>,
+    resources: Arc<LockedStaged>,
     parent: File,
     name: Vec<u16>,
     #[cfg(test)]
@@ -122,7 +127,8 @@ pub struct NewPublication {
 }
 #[must_use = "accept the verified result or explicitly record the uncertain outcome"]
 pub struct PublishedNew {
-    resources: LockedStaged,
+    guard: Option<Guard>,
+    resources: Arc<LockedStaged>,
     version: FileVersion,
     path: PathBuf,
 }
@@ -166,14 +172,15 @@ impl LockedStaged {
         })();
         match attempt {
             Ok((parent, name)) => Ok(NewReady {
-                resources: self,
+                resources: Arc::new(self),
                 parent,
                 name,
             }),
             Err(issue) => Err(PublishFailure {
                 issue,
-                resources: self,
+                resources: Arc::new(self),
                 phase: Phase::BeforePermit,
+                _guard: None,
             }),
         }
     }
@@ -184,8 +191,19 @@ impl NewReady {
     }
     pub fn permit(self, store: &mut Store) -> Result<NewPublication, PublishFailure> {
         let scope = self.resources.staged.observed.save_scope();
+        if store.captured_save_stage(self.capture()) != Ok(SaveStage::WritingTemp) {
+            return Err(PublishFailure {
+                issue: PublishIssue::Owner(Error::InvalidSave),
+                resources: self.resources,
+                phase: Phase::BeforePermit,
+                _guard: None,
+            });
+        }
+        // Retain the original handles before the owner transitions to Replacing.
+        let guard = store.publication_recovery.register(self.resources.clone());
         match store.permit_bound_new(self.capture(), &scope) {
             Ok(()) => Ok(NewPublication {
+                guard: Some(guard),
                 resources: self.resources,
                 parent: self.parent,
                 name: self.name,
@@ -200,6 +218,7 @@ impl NewReady {
                 issue: PublishIssue::Owner(e),
                 resources: self.resources,
                 phase: Phase::BeforePermit,
+                _guard: None,
             }),
         }
     }
@@ -272,6 +291,7 @@ impl NewPublication {
                 issue: PublishIssue::Identity(e),
                 resources: self.resources,
                 phase: Phase::Permitted,
+                _guard: self.guard,
             });
         }
         #[cfg(test)]
@@ -281,6 +301,7 @@ impl NewPublication {
                     issue: PublishIssue::Io(e),
                     resources: self.resources,
                     phase: Phase::Permitted,
+                    _guard: self.guard,
                 });
             }
         }
@@ -320,6 +341,7 @@ impl NewPublication {
         })();
         match result {
             Ok(version) => Ok(PublishedNew {
+                guard: self.guard,
                 resources: self.resources,
                 version,
                 path,
@@ -327,6 +349,7 @@ impl NewPublication {
             Err(issue) => Err(PublishFailure {
                 issue,
                 resources: self.resources,
+                _guard: self.guard,
                 phase: if attempted {
                     Phase::Attempted
                 } else {
@@ -366,6 +389,7 @@ impl PublishedNew {
                 issue: PublishIssue::Owner(e),
                 resources: self.resources,
                 phase: Phase::Attempted,
+                _guard: self.guard,
             }),
         }
     }

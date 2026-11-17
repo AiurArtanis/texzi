@@ -1,5 +1,6 @@
 //! Bound Windows staging and limited new-target publication; replacement pending.
 mod publish;
+pub mod recovery;
 #[cfg(test)]
 mod tests;
 use super::{

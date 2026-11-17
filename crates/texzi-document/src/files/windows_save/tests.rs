@@ -373,6 +373,7 @@ fn new_handle_publication_verifies_final_identity_and_keeps_n_plus_one_dirty() {
     let actual_id = published.identity();
     assert_separate_reader_denied(&target); // Same creation handle is still exclusive.
     let committed = published.accept(&mut store).unwrap();
+    assert_eq!(store.publication_recovery.len(), 0);
     let raw = [0xff, 0xfe, 65, 0, 13, 0, 10, 0];
     assert_eq!(fs::read(&target).unwrap(), raw);
     assert_eq!(committed.version.identity, actual_id);
@@ -738,7 +739,16 @@ fn renamed_then_failed(flush_failure: bool) {
     ));
     assert_eq!(failure.record_failure(&mut store), Err(Error::InvalidSave));
     assert_eq!(failure.read_retained_bytes().unwrap(), raw);
-    drop(failure); // Explicit end of the retained handle; no delete or rollback.
+    drop(failure); // Registry retains the original handle until owner acknowledgement.
+    assert_separate_reader_denied(&target);
+    let notices = store.drain_dropped_publications();
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].terminal_recorded);
+    assert!(notices[0].owner_error.is_none());
+    store
+        .acknowledge_publication_recovery(capture.operation)
+        .unwrap();
+    drop(notices);
     assert_eq!(fs::read(&target).unwrap(), raw);
     assert!(!original_temp.exists());
     assert!(matches!(
@@ -759,4 +769,151 @@ fn post_rename_flush_failure_keeps_resources_baseline_and_held_scope() {
 #[test]
 fn post_rename_verification_failure_keeps_resources_baseline_and_held_scope() {
     renamed_then_failed(false);
+}
+
+fn dropped_publication(after_rename: bool) {
+    let (_dir, target, mut store, n, ready) = new_ready_fixture();
+    let capture = ready.capture().clone();
+    let job = ready.permit(&mut store).unwrap();
+    let current = store
+        .submit(Transaction {
+            doc: n.doc,
+            base: n.revision,
+            edits: vec![Edit::input(&n, 0..0, "B")],
+            boundary: BoundaryPolicy::Grapheme,
+            cancelled: false,
+        })
+        .unwrap()
+        .snapshot;
+    let depth = store.history_depth(n.doc).unwrap();
+    let (before, subscription) = store
+        .observe_and_subscribe(n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    if after_rename {
+        drop(job.run().unwrap());
+        assert!(target.exists());
+        assert_separate_reader_denied(&target);
+    } else {
+        drop(job);
+        assert!(!target.exists());
+    }
+    assert_eq!(
+        store.acknowledge_publication_recovery(capture.operation),
+        Err(Error::InvalidSave)
+    );
+    let notices = store.drain_dropped_publications();
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].terminal_recorded);
+    assert!(notices[0].owner_error.is_none());
+    assert_eq!(notices[0].capture().snapshot.token, n.token);
+    assert_eq!(
+        notices[0].read_retained_bytes().unwrap(),
+        [255, 254, 65, 0, 13, 0, 10, 0]
+    );
+    let path = notices[0].current_path().unwrap();
+    assert_eq!(path.file_name() == target.file_name(), after_rename);
+    assert_separate_reader_denied(&path);
+    let (after, _) = store
+        .observe_and_subscribe(n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    assert_eq!(
+        after.state.global.metadata.baseline,
+        before.state.global.metadata.baseline
+    );
+    assert_eq!(
+        after.state.global.metadata.attention.target,
+        before.state.global.metadata.attention.target
+    );
+    assert_eq!(
+        after.state.global.metadata.attention.binding_epoch,
+        before.state.global.metadata.attention.binding_epoch
+    );
+    assert_eq!(store.snapshot(n.doc).unwrap().token, current.token);
+    assert_eq!(store.history_depth(n.doc).unwrap(), depth);
+    assert!(store.dirty(n.doc).unwrap());
+    assert_eq!(
+        after
+            .state
+            .global
+            .metadata
+            .save
+            .last_terminal
+            .as_ref()
+            .unwrap()
+            .result,
+        crate::SaveResult::OutcomeUnknown
+    );
+    assert!(matches!(
+        store.poll_observer(&subscription).unwrap(),
+        crate::ObserverPoll::Batch(_)
+    ));
+    drop(notices); // Lost receipt must not close the original file or lose discovery.
+    assert_separate_reader_denied(&path);
+    let again = store.drain_dropped_publications();
+    assert_eq!(again.len(), 1);
+    assert!(again[0].owner_error.is_none());
+    assert!(matches!(
+        store.poll_observer(&subscription).unwrap(),
+        crate::ObserverPoll::Pending
+    ));
+    store
+        .acknowledge_publication_recovery(capture.operation)
+        .unwrap();
+    assert_separate_reader_denied(&path); // Receipt itself also owns the original handle.
+    drop(again);
+    assert!(store.retained_publication_recoveries().is_empty());
+    assert_eq!(fs::read(&path).unwrap(), [255, 254, 65, 0, 13, 0, 10, 0]);
+    // Acknowledgement releases handles only, never the unresolved logical save scope.
+    let (_, binding) = super::super::LoadedBytes::decode(
+        Arc::from(&b"other"[..]),
+        Some(super::super::Encoding::Utf8),
+    )
+    .unwrap()
+    .attach(&mut store)
+    .unwrap();
+    let other = path.parent().unwrap().join("other.txt");
+    fs::write(&other, b"other").unwrap();
+    assert!(matches!(
+        ObservedTarget::inspect(&other)
+            .unwrap()
+            .prepare_bound(&binding, &mut store),
+        Err(BoundFailure {
+            issue: BoundIssue::File(FileError::Document(Error::UnresolvedConflict)),
+            ..
+        })
+    ));
+}
+#[test]
+fn dropped_permitted_job_is_retained_and_reconciled_once() {
+    dropped_publication(false);
+}
+#[test]
+fn dropped_verified_result_keeps_actual_renamed_file_until_owner_ack() {
+    dropped_publication(true);
+}
+
+#[test]
+#[cfg(panic = "unwind")]
+fn panicked_after_rename_keeps_poisoned_original_handle_for_inspection_only() {
+    let (_dir, target, mut store, _n, ready) = new_ready_fixture();
+    let capture = ready.capture().clone();
+    let mut job = ready.permit(&mut store).unwrap();
+    job.set_post_rename_flush_handle(|_| panic!("controlled post-rename worker unwind"));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run()));
+    assert!(result.is_err());
+    assert!(target.exists());
+    assert_separate_reader_denied(&target);
+    let notices = store.drain_dropped_publications();
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].terminal_recorded);
+    assert!(notices[0].owner_error.is_none());
+    assert_eq!(
+        notices[0].read_retained_bytes().unwrap(),
+        [255, 254, 65, 0, 13, 0, 10, 0]
+    );
+    store
+        .acknowledge_publication_recovery(capture.operation)
+        .unwrap();
+    drop(notices);
+    assert_eq!(fs::read(&target).unwrap(), [255, 254, 65, 0, 13, 0, 10, 0]);
 }
