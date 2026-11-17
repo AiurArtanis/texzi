@@ -5,6 +5,8 @@ mod native_plans;
 mod observers;
 mod save_failures;
 mod views;
+#[cfg(windows)]
+mod windows_identity;
 
 fn store(raw: &str) -> (Store, Snapshot) {
     let mut store = Store::new(HistoryBudget::default());

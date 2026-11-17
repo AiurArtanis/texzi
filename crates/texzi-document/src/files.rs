@@ -2,6 +2,8 @@
 use crate::{DocId, SaveCapture, Snapshot, Store, TargetKey};
 use std::{path::Path, sync::Arc};
 pub mod staging;
+#[cfg(windows)]
+pub mod windows_identity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {

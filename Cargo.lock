@@ -2428,6 +2428,7 @@ dependencies = [
  "ropey",
  "serde_json",
  "unicode-segmentation",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

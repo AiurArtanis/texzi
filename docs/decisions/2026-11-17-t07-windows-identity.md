@@ -1,0 +1,11 @@
+# T07 Windows 文件身份观察边界
+
+在已实现格式history/失败保全基础上继续实际适配；不改变已有唯一Store/历史契约。新增windows_identity观察器，句柄GetFileInformationByHandleEx(FileIdInfo)记录volume serial及128位ID，解析parent句柄到volume-GUID路径；保持父目录句柄、不共享delete。最终parent/leaf为reparse时拒绝，祖先别名经实际parent句柄解析，不以字符串大小写推断身份。只接受本地支持GUID路径/文件ID的文件系统，网络或不支持情况明确报错。
+
+已有文件以真实fileID预约，硬链接同key；不存在的新目标保守预约整个父目录，避免短文件名、大小写敏感目录和Unicode大小写映射歧义。此保守选择暂不支持同目录多个新文件并行保存；不宣称通用路径规范化完成。ID只在此观察器内，尚未将已有Store/GUI保存接线改为真实磁盘绑定，也未将读入标为backed。
+
+目标数据从同一handle读取并核ID/mtime/长度，recheck再打开完整比较原字节及身份。该比较不是CAS，不能防止下一瞬间外部写入。后续replace必须保留竞态外部版并事后验证，不能以本模块成功替代安全保存。未调用ReplaceFile/MoveFile、没有删除或覆盖目标、没有更改ACL/系统设置。
+
+新增直接依赖windows-sys精确0.61.2，仅Windows启用Win32_Foundation/Win32_Storage_FileSystem；版本已在原lock内，不安装或升级。API签名/结构来自本机已缓存该版本源码。windows-sys为MIT OR Apache-2.0，正式新包仍需重新记录实际feature图和依赖/许可清单，不套旧CI包身份。网络文档与新SDK安装不是本步骤条件。
+
+两个Windows fixture只在生成隔离目录创建测试文件/硬链接并保留；没有读取真实用户文档、运行GUI或碰剪贴板。实际执行仍NOT_RUN，fmt/metadata只证明相应静态结果，不证明Windows调用成功；父目录锁/文件系统支持/重解析拒绝及竞态需后续真实Windows测试。
