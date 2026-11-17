@@ -72,7 +72,7 @@ fn handle_info<T: Default>(
     }
     Ok(value)
 }
-fn identity(file: &File) -> Result<FileIdentity, IdentityError> {
+pub(super) fn identity(file: &File) -> Result<FileIdentity, IdentityError> {
     let i: FILE_ID_INFO = handle_info(file, FileIdInfo)?;
     Ok(FileIdentity {
         volume: i.VolumeSerialNumber,

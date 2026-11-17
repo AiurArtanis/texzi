@@ -125,7 +125,7 @@ fn bound_worker_detects_changed_target_before_creating_temp_and_returns_capture(
     assert_eq!(fs::read(&target).unwrap(), b"external");
 }
 #[test]
-fn bound_staged_temp_tampering_is_detected_without_ready_or_target_mutation() {
+fn bound_creation_handle_blocks_same_byte_substitution_before_lock_validation() {
     let dir = fixture();
     let target = dir.join("original.txt");
     fs::write(&target, b"A").unwrap();
@@ -139,21 +139,54 @@ fn bound_staged_temp_tampering_is_detected_without_ready_or_target_mutation() {
         .unwrap()
         .write()
         .unwrap();
-    fs::write(staged.recovery_temp(), b"external temporary bytes").unwrap();
-    assert!(matches!(
-        staged.recheck_files(),
-        Err(IdentityError::Changed)
-    ));
+    let temp = staged.recovery_temp().to_owned();
+    let creation_id = staged.temporary_identity();
+    let substitute = dir.join("same-bytes-different-file.txt");
+    fs::write(&substitute, staged.payload()).unwrap();
+    assert_ne!(
+        ObservedTarget::inspect(&substitute)
+            .unwrap()
+            .version()
+            .unwrap()
+            .identity,
+        creation_id
+    );
+    assert_eq!(
+        fs::write(&temp, b"external temporary bytes")
+            .unwrap_err()
+            .raw_os_error(),
+        Some(32)
+    );
+    assert_eq!(
+        fs::rename(&temp, dir.join("moved-temp.txt"))
+            .unwrap_err()
+            .raw_os_error(),
+        Some(32)
+    );
+    assert_eq!(
+        fs::rename(&substitute, &temp).unwrap_err().raw_os_error(),
+        Some(32)
+    );
+    assert_eq!(
+        ObservedTarget::inspect(&temp)
+            .unwrap()
+            .version()
+            .unwrap()
+            .identity,
+        creation_id
+    );
+    staged.recheck_files().unwrap();
     assert_eq!(
         store.commit_permit(staged.capture()),
         Err(Error::InvalidSave)
     );
     store.cancel_save(staged.capture()).unwrap();
     assert_eq!(fs::read(&target).unwrap(), b"A");
-    assert_eq!(
-        fs::read(staged.recovery_temp()).unwrap(),
-        b"external temporary bytes"
-    );
+    assert_eq!(fs::read(&temp).unwrap(), b"A");
+    assert_eq!(fs::read(&substitute).unwrap(), b"A");
+    drop(staged);
+    fs::write(&temp, b"fixture after creation handle closes").unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"A");
 }
 
 #[test]

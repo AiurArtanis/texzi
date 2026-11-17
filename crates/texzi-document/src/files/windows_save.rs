@@ -7,11 +7,6 @@ use super::{
 };
 use crate::{Error, SaveCapture, SaveStage, Store};
 use std::path::{Path, PathBuf};
-use std::{
-    fs::{File, OpenOptions},
-    os::windows::fs::OpenOptionsExt,
-};
-use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
 
 #[derive(Debug)]
 pub enum BoundIssue {
@@ -52,7 +47,6 @@ pub struct BoundStaged {
 }
 pub struct LockedStaged {
     staged: BoundStaged,
-    _file: File,
     security: SecurityDescriptor,
 }
 pub struct LockFailure {
@@ -143,7 +137,11 @@ impl BoundWork {
         };
         let staged = self
             .work
-            .write_temp(&self.observed.resolved_path(), &guard)
+            .write_temp_protected(
+                &self.observed.resolved_path(),
+                &guard,
+                self.observed.version().map(|v| &v.security),
+            )
             .map_err(|e| fail(BoundIssue::Stage(e.issue), e.recovery_temp))?;
         let recovery = Some(staged.recovery_temp().to_owned());
         self.observed
@@ -158,6 +156,8 @@ impl BoundWork {
             )
         })?;
         if temporary.parent_identity() != self.observed.parent_identity()
+            || temp.identity != staged.created_identity()
+            || &temp.security != staged.created_security()
             || temp.identity.volume != self.observed.parent_identity().volume
             || temp.bytes.as_ref() != staged.expected_bytes()
             || self
@@ -176,28 +176,25 @@ impl BoundWork {
     }
 }
 impl BoundStaged {
-    /// Read handle excludes ordinary competing write/delete handles. It cannot
-    /// authorize publication and is deliberately not unlocked for a path rename.
-    pub fn lock_temporary(self) -> Result<LockedStaged, LockFailure> {
-        let attempt = (|| -> Result<(File, SecurityDescriptor), IdentityError> {
+    /// Validates the original create_new handle, already held without write or
+    /// delete sharing. Never close/reopen to establish creation identity.
+    pub fn lock_temporary(mut self) -> Result<LockedStaged, LockFailure> {
+        let attempt = (|| -> Result<SecurityDescriptor, IdentityError> {
             self.recheck_files()?;
-            let mut file = OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(self.recovery_temp())?;
-            super::windows_identity::check_kind(&file, false)?;
-            let current = super::windows_identity::read_version_handle(&mut file)?;
-            if Some(&current) != self.temporary.version() {
+            let current =
+                super::windows_identity::read_version_handle(self.staged.created_file_mut())?;
+            if Some(&current) != self.temporary.version()
+                || current.identity != self.staged.created_identity()
+                || &current.security != self.staged.created_security()
+            {
                 return Err(IdentityError::Changed);
             }
             self.observed.recheck()?;
-            Ok((file, current.security))
+            Ok(current.security)
         })();
         match attempt {
-            Ok((file, security)) => Ok(LockedStaged {
+            Ok(security) => Ok(LockedStaged {
                 staged: self,
-                _file: file,
                 security,
             }),
             Err(issue) => Err(LockFailure {
@@ -225,7 +222,7 @@ impl BoundStaged {
         self.observed.parent_identity()
     }
     pub fn temporary_identity(&self) -> FileIdentity {
-        self.temporary.version().unwrap().identity
+        self.staged.created_identity()
     }
     pub fn original_identity(&self) -> Option<FileIdentity> {
         self.observed.version().map(|v| v.identity)
