@@ -1,0 +1,11 @@
+# T07 唯一Store绑定代次及目标占用
+
+承接原Rusty允许继续binding/epoch接口实现。本步填充此前恒为0的binding_epoch语义，不更改正文/格式唯一history。新导入epoch0；begin_save捕获当前值；active_save同时核活动capture与当前文档值。只有原accept_verified_save可信调用者回执在Verifying状态、全部检查通过后才epoch+1，重复/过期/失败/取消不递增。该接口仍只是内存信任边界，不自行证明文件写入或身份。
+
+成功回执单次observed_write原子更新捕获token baseline、bound target、epoch及终态；N+1当前body/token/history不回滚，dirty仍由当前与保存token比较。SaveAs在接受之前一直保留原绑定，失败不抢新绑定；成功后才释放旧绑定，其他DocId无法在begin_save时占已绑定同TargetKey。关闭无恢复记录的文档才释放其绑定；已有恢复记录阻close的限制不变，尚无核实处理/解锁接口。
+
+原capture形状/API保持，观察与probe的binding_epoch从占位0变为真实代次，这是有意的可观测语义填充。所有可失败校验（活动capture、阶段、目标占用、epoch溢出）在改baseline/绑定前执行。示例是模拟调用者可信回执的组件行为，不是磁盘保存、SaveAs或外部冲突运行证据。
+
+新增两个真实Store链内存fixture：N保存后N+1仍dirty、epoch0→1；旧epoch拒绝、另存前绑定不变/成功epoch2、新旧目标跨Doc占用与close释放；取消/失败SaveAs保原epoch/绑定/baseline与N+1，失败新目标释放，Undo回保存token不dirty。均NOT_RUN，不重试缺linker构建。
+
+TargetKey仍为调用者供应的逻辑标识。windows_identity已有file-ID及new-in-directory不同域；本步没有声称key equality构成目录层级锁，也未将已有file转换/absent出现交错判为安全。接实际IO仍需显式父目录与文件双域协调、同capture/epoch/parent/temp身份绑定、成功后最终file-ID绑定更新及竞态版恢复保护；不能把当前逻辑占用表用作最终发布许可，不调用Ready或替换文件。

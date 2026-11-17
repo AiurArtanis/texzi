@@ -1,4 +1,5 @@
 use texzi_document::*;
+mod binding_epochs;
 mod file_codecs;
 mod file_staging;
 mod native_plans;

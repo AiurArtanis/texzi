@@ -91,6 +91,7 @@ pub(crate) struct Document {
     pub(crate) closed_views: std::collections::BTreeMap<ViewId, crate::ClosedView>,
     baseline_kind: BaselineKind,
     bound_target: Option<TargetKey>,
+    binding_epoch: u64,
     save_terminal: Option<SaveTerminal>,
     pub(crate) views: HashMap<ViewId, ViewState>,
     pub(crate) merge: Option<MergeState>,
@@ -120,6 +121,7 @@ impl Default for HistoryBudget {
 
 /// All mutating APIs require &mut Store: one serial owner, no callback reentrancy.
 pub struct Store {
+    bound_targets: HashMap<TargetKey, DocId>,
     unresolved_targets: HashMap<TargetKey, DocId>,
     pub(crate) observer: crate::observe::ObserverHub,
     pub(crate) docs: HashMap<DocId, Document>,
@@ -196,12 +198,19 @@ impl Store {
         if self.saves.contains_key(&doc) || self.targets.contains_key(&target) {
             return Err(Error::Busy);
         }
+        if self
+            .bound_targets
+            .get(&target)
+            .is_some_and(|owner| *owner != doc)
+        {
+            return Err(Error::Busy);
+        }
         let operation = self.next_save;
         let next = operation.checked_add(1).ok_or(Error::CounterExhausted)?;
         let capture = SaveCapture {
             operation,
             snapshot: s,
-            binding_epoch: 0,
+            binding_epoch: self.docs[&doc].binding_epoch,
             target: target.clone(),
             guard,
         };
@@ -221,6 +230,7 @@ impl Store {
         let a = self.saves.get(&c.snapshot.doc).ok_or(Error::InvalidSave)?;
         if a.capture.operation != c.operation
             || a.capture.binding_epoch != c.binding_epoch
+            || self.docs[&c.snapshot.doc].binding_epoch != c.binding_epoch
             || a.capture.target != c.target
             || a.capture.guard != c.guard
             || a.capture.snapshot.revision != c.snapshot.revision
@@ -340,6 +350,18 @@ impl Store {
         if self.active_save(c)?.stage != SaveStage::Verifying {
             return Err(Error::InvalidSave);
         }
+        if self
+            .bound_targets
+            .get(&c.target)
+            .is_some_and(|owner| *owner != c.snapshot.doc)
+        {
+            return Err(Error::Busy);
+        }
+        // Check every fallible precondition before changing baseline or binding.
+        let next_epoch = self.docs[&c.snapshot.doc]
+            .binding_epoch
+            .checked_add(1)
+            .ok_or(Error::CounterExhausted)?;
         let d = self
             .docs
             .get_mut(&c.snapshot.doc)
@@ -347,17 +369,24 @@ impl Store {
         d.baseline = c.snapshot.token;
         d.backed = true;
         d.baseline_kind = BaselineKind::SavedByCaller;
+        let previous = d.bound_target.clone();
         d.bound_target = Some(c.target.clone());
+        d.binding_epoch = next_epoch;
         d.save_terminal = Some(SaveTerminal {
             operation: c.operation,
             result: SaveResult::SucceededByCaller,
             error: None,
         });
+        if let Some(previous) = previous {
+            self.bound_targets.remove(&previous);
+        }
+        self.bound_targets.insert(c.target.clone(), c.snapshot.doc);
         self.release_save(c);
         Ok(())
     }
     pub fn new(budget: HistoryBudget) -> Self {
         Self {
+            bound_targets: HashMap::new(),
             unresolved_targets: HashMap::new(),
             observer: crate::observe::ObserverHub::new(),
             docs: HashMap::new(),
@@ -436,6 +465,7 @@ impl Store {
                     BaselineKind::MemoryImport
                 },
                 bound_target: None,
+                binding_epoch: 0,
                 save_terminal: None,
                 current: current.clone(),
                 views: HashMap::new(),
@@ -907,7 +937,7 @@ impl Store {
             attention: FileAttention {
                 recoveries: d.failures.clone(),
                 needs_target: d.bound_target.is_none(),
-                binding_epoch: 0,
+                binding_epoch: d.binding_epoch,
                 target: d.bound_target.clone(),
                 known_fingerprint: None,
                 conflict: if d.save_blocked {
@@ -963,6 +993,9 @@ impl Store {
             return Err(Error::UnresolvedConflict);
         }
         let d = self.docs.remove(&doc).ok_or(Error::InvalidDoc)?;
+        if let Some(target) = &d.bound_target {
+            self.bound_targets.remove(target);
+        }
         for id in d.views.keys() {
             self.view_docs.remove(id);
         }
