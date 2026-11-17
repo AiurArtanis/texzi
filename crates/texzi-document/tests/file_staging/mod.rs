@@ -42,6 +42,17 @@ fn staged_payload_is_captured_and_never_replaces_original() {
     fs::write(&target, b"old\r\n").unwrap();
     let mut store = Store::new(HistoryBudget::default());
     let (s, p) = prepared(&mut store, b"new\r\n", &target);
+    let work = p.begin_staging(&mut store).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let worker_barrier = barrier.clone();
+    let worker_target = target.clone();
+    let worker = std::thread::spawn(move || {
+        worker_barrier.wait();
+        work.write_temp(
+            &worker_target,
+            &ContentGuard::Exact(Arc::from(&b"old\r\n"[..])),
+        )
+    });
     store
         .submit(Transaction {
             doc: s.doc,
@@ -51,13 +62,10 @@ fn staged_payload_is_captured_and_never_replaces_original() {
             cancelled: false,
         })
         .unwrap();
-    let staged = p
-        .stage_temp(
-            &mut store,
-            &target,
-            &ContentGuard::Exact(Arc::from(&b"old\r\n"[..])),
-        )
-        .unwrap();
+    barrier.wait();
+    let staged = worker.join().unwrap().unwrap();
+    assert_eq!(staged.capture().snapshot.token, s.token);
+    assert_eq!(staged.expected_bytes(), b"new\r\n");
     assert_eq!(staged.recovery_temp().parent(), target.parent());
     assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"new\r\n");
     assert_eq!(fs::read(&target).unwrap(), b"old\r\n");
@@ -67,14 +75,7 @@ fn staged_payload_is_captured_and_never_replaces_original() {
         store.accept_verified_save(p.capture()),
         Err(Error::InvalidSave)
     );
-    assert!(
-        p.stage_temp(
-            &mut store,
-            &target,
-            &ContentGuard::Exact(Arc::from(&b"old\r\n"[..]))
-        )
-        .is_err()
-    );
+    assert!(p.begin_staging(&mut store).is_err());
     store.cancel_save(p.capture()).unwrap();
     assert_eq!(fs::read(&target).unwrap(), b"old\r\n");
 }
@@ -86,7 +87,9 @@ fn conflict_and_save_as_staging_do_not_overwrite_a_target() {
     let (s, p) = prepared(&mut store, b"payload", &target);
     fs::write(&target, b"external").unwrap();
     assert!(matches!(
-        p.stage_temp(&mut store, &target, &ContentGuard::Absent),
+        p.begin_staging(&mut store)
+            .unwrap()
+            .write_temp(&target, &ContentGuard::Absent),
         Err(StageFailure {
             issue: StageIssue::Conflict,
             ..
@@ -101,7 +104,9 @@ fn conflict_and_save_as_staging_do_not_overwrite_a_target() {
     let new_target = dir.join("absent.txt");
     let (_, p) = prepared(&mut store, b"payload", &new_target);
     let staged = p
-        .stage_temp(&mut store, &new_target, &ContentGuard::Absent)
+        .begin_staging(&mut store)
+        .unwrap()
+        .write_temp(&new_target, &ContentGuard::Absent)
         .unwrap();
     assert!(!new_target.exists());
     assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"payload");
@@ -125,4 +130,32 @@ fn read_only_uses_original_bytes_and_preserves_generated_file() {
     let after = fs::metadata(&path).unwrap();
     assert_eq!(before.len(), after.len());
     assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+}
+#[test]
+fn late_cancelled_worker_cannot_advance_a_new_save() {
+    let dir = fixture();
+    let target = dir.join("late.txt");
+    let mut store = Store::new(HistoryBudget::default());
+    let (s, p) = prepared(&mut store, b"captured", &target);
+    let work = p.begin_staging(&mut store).unwrap();
+    store.cancel_save(p.capture()).unwrap();
+    let current = store
+        .begin_save(
+            s.doc,
+            TargetKey(target.to_string_lossy().into_owned()),
+            "new-guard".into(),
+        )
+        .unwrap();
+    let late = work.write_temp(&target, &ContentGuard::Absent).unwrap();
+    assert_eq!(
+        store.advance_save(late.capture(), SaveStage::ReadyToReplace),
+        Err(Error::InvalidSave)
+    );
+    assert!(matches!(
+        store.begin_save(s.doc, TargetKey("still-busy".into()), String::new()),
+        Err(Error::Busy)
+    ));
+    assert!(!target.exists());
+    assert_eq!(std::fs::read(late.recovery_temp()).unwrap(), b"captured");
+    store.cancel_save(&current).unwrap();
 }

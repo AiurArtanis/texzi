@@ -29,8 +29,20 @@ pub struct StageFailure {
 pub struct StagedSave {
     temp: PathBuf,
     target: PathBuf,
+    capture: crate::SaveCapture,
+    expected: Arc<[u8]>,
+}
+pub struct StagingWork {
+    capture: crate::SaveCapture,
+    bytes: Arc<[u8]>,
 }
 impl StagedSave {
+    pub fn capture(&self) -> &crate::SaveCapture {
+        &self.capture
+    }
+    pub fn expected_bytes(&self) -> &[u8] {
+        &self.expected
+    }
     pub fn recovery_temp(&self) -> &Path {
         &self.temp
     }
@@ -61,13 +73,27 @@ impl ContentGuard {
     }
 }
 impl PreparedSave {
+    /// The UI owner holds Store only for the quick stage transition.
+    pub fn begin_staging(&self, store: &mut Store) -> Result<StagingWork, StageFailure> {
+        store
+            .advance_save(&self.capture, SaveStage::WritingTemp)
+            .map_err(|e| StageFailure {
+                issue: StageIssue::Document(e),
+                recovery_temp: None,
+            })?;
+        Ok(StagingWork {
+            capture: self.capture.clone(),
+            bytes: self.bytes.clone(),
+        })
+    }
+}
+impl StagingWork {
     /// Reserves an exclusive sibling, writes the captured payload, flushes and
     /// rereads it, then rechecks the target. Errors keep reservation and temp.
     /// There is deliberately no publish/commit/success function before identity
     /// coordination and the post-permit failure API have been reviewed.
-    pub fn stage_temp(
-        &self,
-        store: &mut Store,
+    pub fn write_temp(
+        self,
         target: &Path,
         guard: &ContentGuard,
     ) -> Result<StagedSave, StageFailure> {
@@ -82,9 +108,6 @@ impl PreparedSave {
             .parent()
             .ok_or_else(|| fail(StageIssue::InvalidTarget))?;
         guard.verify(target).map_err(fail)?;
-        store
-            .advance_save(&self.capture, SaveStage::WritingTemp)
-            .map_err(|e| fail(StageIssue::Document(e)))?;
         let mut chosen = None;
         for attempt in 0..64 {
             let path = parent.join(format!(
@@ -121,6 +144,8 @@ impl PreparedSave {
         Ok(StagedSave {
             temp,
             target: target.to_owned(),
+            capture: self.capture,
+            expected: self.bytes,
         })
     }
 }
