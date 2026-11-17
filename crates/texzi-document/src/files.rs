@@ -2,6 +2,8 @@
 use crate::{DocId, SaveCapture, Snapshot, Store, TargetKey};
 use std::{path::Path, sync::Arc};
 #[forbid(unsafe_code)]
+mod legacy_spans;
+#[forbid(unsafe_code)]
 pub mod staging;
 #[cfg(windows)]
 // Raw Windows calls stay in these three explicit adapters and their fixtures.
@@ -237,18 +239,15 @@ impl FileBinding {
             return Ok(self.original.clone());
         }
         if format == self.format
-            && !matches!(
+            && matches!(
                 format.encoding,
-                Encoding::Utf8 | Encoding::Utf16Le | Encoding::Utf16Be
+                Encoding::GbkWebEncodingRs0844 | Encoding::Gb18030WebEncodingRs0844
             )
         {
-            let imported = self.imported.body.to_utf8();
-            let text = std::str::from_utf8(&imported).map_err(|_| FileError::InvalidBytes)?;
-            if encode(text, self.format)?.as_slice() != self.original.as_ref() {
-                // Without an exact legacy byte map, reencoding could rewrite
-                // untouched aliases. Preserve the original and reject the save.
-                return Err(FileError::NeedsLegacyByteMap);
-            }
+            // Same-format Web output must prove source coverage even where
+            // the latest disk baseline happened to be canonical. Undo may bring
+            // back an older origin for which this binding has no encoded bytes.
+            return legacy_spans::encode_preserving(self, s, format).map(Arc::from);
         }
         let utf8 = s.body.to_utf8();
         let text = std::str::from_utf8(&utf8).map_err(|_| FileError::InvalidBytes)?;

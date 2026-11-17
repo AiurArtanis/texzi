@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use texzi_document::{files::*, *};
+mod legacy_spans;
 fn format(encoding: Encoding, bom: bool) -> Format {
     Format { encoding, bom }
 }
@@ -213,7 +214,7 @@ fn unencodable_format_is_undoable_and_does_not_reserve_save_target() {
     assert!(!store.dirty(s.doc).unwrap());
 }
 #[test]
-fn noncanonical_legacy_bytes_passthrough_but_modified_save_requires_byte_map() {
+fn noncanonical_legacy_bytes_preserve_untouched_alias_after_edit_and_undo() {
     let f = format(Encoding::Gb18030WebEncodingRs0844, false);
     let raw = vec![0xa3, 0xa0, 65];
     let loaded = LoadedBytes::decode_exact(raw.clone().into(), f).unwrap();
@@ -231,12 +232,11 @@ fn noncanonical_legacy_bytes_passthrough_but_modified_save_requires_byte_map() {
         })
         .unwrap()
         .snapshot;
-    assert!(matches!(
-        b.encode_snapshot(&changed, f),
-        Err(FileError::NeedsLegacyByteMap)
-    ));
+    assert_eq!(&*b.encode_snapshot(&changed, f).unwrap(), &[0xa3, 0xa0, 66]);
     let restored = store.undo(s.doc).unwrap().snapshot;
     assert_eq!(&*b.encode_snapshot(&restored, f).unwrap(), raw);
+    let redone = store.redo(s.doc).unwrap().snapshot;
+    assert_eq!(&*b.encode_snapshot(&redone, f).unwrap(), &[0xa3, 0xa0, 66]);
 }
 #[test]
 fn legacy_choices_are_explicit_and_lossy_output_is_rejected() {
