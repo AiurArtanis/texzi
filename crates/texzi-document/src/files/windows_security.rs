@@ -349,3 +349,123 @@ impl SecurityDescriptor {
         })
     }
 }
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TestCreationDacl {
+    Absent,
+    Null,
+    Empty,
+}
+
+#[cfg(test)]
+impl SecurityDescriptor {
+    /// Isolated representation fixture; never applies a descriptor to a file.
+    pub(super) fn for_test_creation_dacl(case: TestCreationDacl) -> io::Result<Self> {
+        let header_length = std::mem::size_of::<SECURITY_DESCRIPTOR_RELATIVE>();
+        let dacl_offset = header_length.next_multiple_of(std::mem::align_of::<ACL>());
+        let has_acl = case == TestCreationDacl::Empty;
+        let length = if has_acl {
+            dacl_offset + std::mem::size_of::<ACL>()
+        } else {
+            header_length
+        };
+        let mut storage = vec![0u64; length.div_ceil(std::mem::size_of::<u64>())];
+        let header = SECURITY_DESCRIPTOR_RELATIVE {
+            // The Windows SECURITY_DESCRIPTOR revision is 1. Its constant is
+            // in SystemServices, which this adapter does not otherwise need.
+            Revision: 1,
+            Control: SE_SELF_RELATIVE
+                | if case == TestCreationDacl::Absent {
+                    0
+                } else {
+                    SE_DACL_PRESENT
+                },
+            Dacl: if has_acl { dacl_offset as u32 } else { 0 },
+            ..Default::default()
+        };
+        // SAFETY: the initialized u64 allocation is large and aligned enough
+        // for the cached Windows ABI's relative header (alignment 4) and ACL
+        // (alignment 2). The optional ACL starts after the header at its own
+        // alignment, and every self-relative offset stays inside this buffer.
+        unsafe {
+            storage
+                .as_mut_ptr()
+                .cast::<SECURITY_DESCRIPTOR_RELATIVE>()
+                .write(header);
+            if has_acl {
+                storage
+                    .as_mut_ptr()
+                    .cast::<u8>()
+                    .add(dacl_offset)
+                    .cast::<ACL>()
+                    .write(ACL {
+                        AclRevision: ACL_REVISION as u8,
+                        AclSize: std::mem::size_of::<ACL>() as u16,
+                        AceCount: 0,
+                        ..Default::default()
+                    });
+            }
+        }
+        let result = Self { storage, length };
+        // SAFETY: the descriptor and its optional ACL are initialized above in
+        // live, aligned owned storage. This API only validates that memory.
+        if unsafe { IsValidSecurityDescriptor(result.storage.as_ptr().cast_mut().cast()) } == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid test creation DACL descriptor",
+            ));
+        }
+        Ok(result)
+    }
+
+    /// Copy captured owner/group SID bytes for equality checks without logging.
+    pub(super) fn owner_group_for_test(&self) -> io::Result<(Vec<u8>, Vec<u8>)> {
+        let descriptor = self.storage.as_ptr().cast_mut().cast();
+        // SAFETY: every descriptor constructor retains a live, aligned owned
+        // allocation. Validation here precedes reading either SID pointer.
+        if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid descriptor for owner/group observation",
+            ));
+        }
+        let mut owner = std::ptr::null_mut();
+        let mut group = std::ptr::null_mut();
+        let mut defaulted = 0;
+        // SAFETY: both output SID pointers refer into the live, validated
+        // descriptor. Neither getter modifies the security descriptor.
+        if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted) } == 0
+            || unsafe { GetSecurityDescriptorGroup(descriptor, &mut group, &mut defaulted) } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let copy_sid = |sid: PSID| -> io::Result<Vec<u8>> {
+            if sid.is_null() {
+                return Ok(Vec::new());
+            }
+            // SAFETY: the getter returned this pointer from the validated,
+            // still-live descriptor; both APIs only inspect its SID bytes.
+            if unsafe { IsValidSid(sid) } == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid captured owner/group SID",
+                ));
+            }
+            let length = unsafe { GetLengthSid(sid) } as usize;
+            if length == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "empty captured owner/group SID",
+                ));
+            }
+            // SAFETY: a valid SID occupies the number of bytes returned by
+            // GetLengthSid and remains owned by self throughout this copy.
+            Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), length) }.to_vec())
+        };
+        Ok((copy_sid(owner)?, copy_sid(group)?))
+    }
+}
+
+#[cfg(test)]
+mod creation_policy_tests;

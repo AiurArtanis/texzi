@@ -101,6 +101,11 @@ impl PublicationRecovery {
     pub fn security_policy(&self) -> NewFileSecurity {
         self.security_policy
     }
+    /// Frozen intended final descriptor from the original policy/resources,
+    /// not evidence of current security or proof the DACL helper ran.
+    pub fn expected_security(&self) -> &SecurityDescriptor {
+        self.security_policy.expected(&self.resources)
+    }
     pub fn capture(&self) -> &SaveCapture {
         self.resources.capture()
     }
@@ -119,6 +124,13 @@ impl PublicationRecovery {
     pub fn current_path(&self) -> Result<PathBuf, IdentityError> {
         let file = self.resources.staged.staged.created_file_recovery();
         super::super::windows_identity::volume_path(&file)
+    }
+    /// Inspect actual current identity, bytes and security on the retained
+    /// original File, including after worker panic. Does not clear lock poison
+    /// or authorize publication or a recovery mutation.
+    pub fn current_version(&self) -> Result<FileVersion, IdentityError> {
+        let mut file = self.resources.staged.staged.created_file_recovery();
+        super::super::windows_identity::read_version_handle(&mut file)
     }
     /// Inspection only. A poisoned worker lock never authorizes publication again.
     pub fn read_retained_bytes(&self) -> io::Result<Vec<u8>> {

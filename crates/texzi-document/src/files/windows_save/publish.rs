@@ -30,7 +30,7 @@ pub enum NewFileSecurity {
     CreationDefault,
 }
 impl NewFileSecurity {
-    fn expected(self, resources: &LockedStaged) -> &SecurityDescriptor {
+    pub(super) fn expected(self, resources: &LockedStaged) -> &SecurityDescriptor {
         match self {
             Self::OwnerOnly => resources.temporary_security(),
             Self::CreationDefault => resources.creation_security(),
@@ -384,10 +384,14 @@ impl NewPublication {
                 // exclusive File has reached the intended final name first.
                 self.resources.staged.recheck_historical_source()?;
                 self.resources.staged.observed.recheck_parent()?;
+                let private_version =
+                    super::super::windows_identity::read_version_handle(&mut file)?;
                 if super::super::windows_identity::volume_path(&file)? != path
-                    || super::super::windows_identity::identity(&file)?
-                        != self.resources.staged.temporary_identity()
-                    || &SecurityDescriptor::read(&file)? != self.resources.temporary_security()
+                    || private_version.identity != self.resources.staged.temporary_identity()
+                    || private_version.bytes.as_ref() != self.resources.payload()
+                    || &private_version.security != self.resources.temporary_security()
+                    || self.capture().snapshot.body.profile.file_format
+                        != Some(self.resources.format())
                 {
                     return Err(PublishIssue::VerificationMismatch);
                 }
@@ -478,6 +482,7 @@ impl PublishedNew {
         let format = self.resources.format();
         let anchor = (|| -> Result<_, PublishIssue> {
             self.resources.staged.recheck_historical_source()?;
+            self.resources.staged.observed.recheck_parent()?;
             let mut file = self.resources.staged.staged.created_file()?;
             if &self.version.security != self.security_policy.expected(&self.resources)
                 || super::super::windows_identity::read_version_handle(&mut file)? != self.version

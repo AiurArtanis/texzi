@@ -66,6 +66,8 @@ pub struct BoundStaged {
 pub struct LockedStaged {
     staged: BoundStaged,
     security: SecurityDescriptor,
+    #[cfg(test)]
+    creation_security_override: Option<SecurityDescriptor>,
 }
 pub struct LockFailure {
     pub issue: IdentityError,
@@ -369,6 +371,8 @@ impl BoundStaged {
             Ok(security) => Ok(LockedStaged {
                 staged: self,
                 security,
+                #[cfg(test)]
+                creation_security_override: None,
             }),
             Err(issue) => Err(LockFailure {
                 issue,
@@ -456,7 +460,16 @@ impl LockedStaged {
         &self.security
     }
     pub fn creation_security(&self) -> &SecurityDescriptor {
+        #[cfg(test)]
+        if let Some(descriptor) = &self.creation_security_override {
+            return descriptor;
+        }
         self.staged.creation_security()
+    }
+    /// Test-only credential fault; never changes the original StagedSave or ACL.
+    #[cfg(test)]
+    pub(super) fn set_creation_security_for_test(&mut self, descriptor: SecurityDescriptor) {
+        self.creation_security_override = Some(descriptor);
     }
     pub fn original_security(&self) -> Option<&SecurityDescriptor> {
         self.staged.observed.version().map(|v| &v.security)

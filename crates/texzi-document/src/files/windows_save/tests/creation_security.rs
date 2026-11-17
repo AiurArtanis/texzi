@@ -1,4 +1,6 @@
 //! Generated-file CreationDefault fixtures. Source only; never use user documents.
+mod contracts;
+mod unsupported_creation;
 use super::*;
 use crate::files::{Encoding, LoadedBytes, windows_identity};
 use std::sync::Mutex;
