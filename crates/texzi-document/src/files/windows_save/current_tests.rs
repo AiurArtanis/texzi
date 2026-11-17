@@ -504,3 +504,135 @@ fn absent_unicode_sibling_requires_name_verification_but_distinct_parent_is_allo
     assert!(!destination.exists());
     assert_eq!(fs::read(unicode).unwrap(), b"A\r\n");
 }
+
+fn generated_directory_bytes(path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut entries: Vec<_> = fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+#[test]
+fn save_as_absent_source_is_not_recreated_or_reserved() {
+    let (path, mut store, n, binding) = fixture();
+    let retained = path.with_file_name("retained-before-delete.txt");
+    fs::rename(&path, &retained).unwrap();
+    let observed = ObservedTarget::inspect(&path).unwrap();
+    assert!(observed.version().is_none());
+    let bytes = generated_directory_bytes(&path);
+    let before = observe(&mut store, n.doc);
+    let error = failure(observed.prepare_save_as(&binding, &mut store));
+    assert!(matches!(
+        &error.issue,
+        BoundIssue::Identity(IdentityError::Changed)
+    ));
+    unchanged(&mut store, &before, &error);
+    assert!(!path.exists());
+    assert_eq!(generated_directory_bytes(&path), bytes);
+    assert_eq!(fs::read(retained).unwrap(), b"A\r\n");
+    let destination = path.with_file_name("genuine-after-missing.txt");
+    let prepared = ObservedTarget::inspect(&destination)
+        .unwrap()
+        .prepare_save_as(&binding, &mut store)
+        .unwrap();
+    assert_eq!(prepared.capture().operation, 1);
+    store.cancel_save(prepared.capture()).unwrap();
+    assert!(!path.exists());
+    assert!(!destination.exists());
+    assert_eq!(generated_directory_bytes(&path), bytes);
+}
+#[test]
+fn dirty_unbound_first_publication_uses_baseline_not_current_token_and_keeps_later_edit() {
+    let (path, mut store, _, _) = fixture();
+    let destination = path.with_file_name("dirty-first-publication.txt");
+    let (initial, memory) = LoadedBytes::decode(Arc::from(&b"A"[..]), Some(Encoding::Utf8))
+        .unwrap()
+        .attach(&mut store)
+        .unwrap();
+    let edited = store
+        .submit(Transaction {
+            doc: initial.doc,
+            base: initial.revision,
+            edits: vec![Edit::input(&initial, 0..0, "B")],
+            boundary: BoundaryPolicy::Grapheme,
+            cancelled: false,
+        })
+        .unwrap()
+        .snapshot;
+    let mut profile = edited.body.profile;
+    profile.file_format = Some(Format {
+        encoding: Encoding::Utf16Be,
+        bom: true,
+    });
+    let n = store
+        .set_serialization(edited.doc, edited.revision, profile, None)
+        .unwrap()
+        .snapshot;
+    assert_ne!(n.token, initial.token);
+    assert!(store.dirty(n.doc).unwrap());
+    assert!(memory.disk.is_none());
+    let before = observe(&mut store, n.doc);
+    assert_eq!(before.state.global.metadata.baseline.token, initial.token);
+    assert_eq!(before.state.global.metadata.attention.target, None);
+    assert_eq!(before.state.global.metadata.attention.binding_epoch, 0);
+    assert!(!before.state.global.metadata.baseline.backed_by_disk);
+    let prepared = ObservedTarget::inspect(&destination)
+        .unwrap()
+        .prepare_bound(&memory, &mut store)
+        .unwrap();
+    assert_eq!(prepared.capture().operation, 1);
+    assert_eq!(prepared.capture().snapshot.token, n.token);
+    assert_eq!(prepared.prepared.bytes(), [254, 255, 0, 66, 0, 65]);
+    let later = store
+        .submit(Transaction {
+            doc: n.doc,
+            base: n.revision,
+            edits: vec![Edit::input(&n, 2..2, "C")],
+            boundary: BoundaryPolicy::Grapheme,
+            cancelled: false,
+        })
+        .unwrap()
+        .snapshot;
+    let depth = store.history_depth(n.doc).unwrap();
+    // This is real native publication only when a future Windows harness runs it.
+    let result = prepared
+        .begin(&mut store)
+        .unwrap()
+        .write()
+        .unwrap()
+        .lock_temporary()
+        .unwrap()
+        .prepare_new_owner_only()
+        .unwrap()
+        .permit(&mut store)
+        .unwrap()
+        .run()
+        .unwrap()
+        .accept(&mut store)
+        .unwrap();
+    assert_eq!(fs::read(&destination).unwrap(), [254, 255, 0, 66, 0, 65]);
+    assert_eq!(result.binding_epoch, 1);
+    assert_eq!(result.saved_snapshot.token, n.token);
+    assert_eq!(result.binding.format(), profile.file_format.unwrap());
+    assert_eq!(result.binding.disk.as_ref().unwrap().epoch, 1);
+    assert_eq!(store.snapshot(n.doc).unwrap().token, later.token);
+    assert_eq!(store.history_depth(n.doc).unwrap(), depth);
+    assert!(store.dirty(n.doc).unwrap());
+    let after = observe(&mut store, n.doc);
+    assert_eq!(after.state.global.metadata.baseline.token, n.token);
+    let next = ObservedTarget::inspect(&destination)
+        .unwrap()
+        .prepare_current(&result.binding, &mut store)
+        .unwrap();
+    assert_eq!(next.capture().operation, 2);
+    assert_eq!(next.capture().snapshot.token, later.token);
+    assert_eq!(next.prepared.bytes(), [254, 255, 0, 66, 0, 65, 0, 67]);
+    store.cancel_save(next.capture()).unwrap();
+    assert!(store.dirty(n.doc).unwrap());
+    assert_eq!(fs::read(path).unwrap(), b"A\r\n");
+}
