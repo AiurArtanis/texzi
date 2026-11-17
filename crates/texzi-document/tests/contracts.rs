@@ -4,6 +4,7 @@ mod file_codecs;
 mod file_staging;
 mod native_plans;
 mod observers;
+mod save_failure_ack;
 mod save_failures;
 mod save_scopes;
 mod views;

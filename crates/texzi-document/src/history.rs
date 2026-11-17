@@ -2,12 +2,14 @@ use crate::{
     ActiveSaveState, BaselineKind, BaselineState, FileAttention, GlobalMetadata, HistoryGroupId,
     HistoryObservation, MergeObservation, SaveObservation, SaveResult, SaveTerminal, Unimplemented,
 };
+mod failure_ack;
 #[cfg(windows)]
 mod verified_open;
 use crate::{
     Body, DocId, Eol, Error, Profile, Revision, SourceByte, StateToken, coordinates::boundary,
 };
 use crate::{FenceReason, InputKind, SelectionSet, ViewId, ViewState, ViewTransaction};
+pub use failure_ack::PreReplaceAcknowledgement;
 use std::{
     collections::{HashMap, VecDeque},
     ops::Range,
@@ -197,6 +199,9 @@ pub struct SaveFailureRecord {
     pub token: StateToken,
     pub stage: SaveStage,
     pub detail: SaveFailure,
+    /// Explicit owner acknowledgement of an eligible pre-replace failure only.
+    /// This does not prove a disk save or release any filesystem protection.
+    pub acknowledged_before_replace: bool,
 }
 struct ActiveSave {
     scope: Option<SaveScope>,
@@ -429,6 +434,7 @@ impl Store {
             token: c.snapshot.token,
             stage,
             detail,
+            acknowledged_before_replace: false,
         };
         let d = self
             .docs
@@ -1161,7 +1167,13 @@ impl Store {
         self.saves.contains_key(&doc)
     }
     pub(crate) fn remove_memory_document(&mut self, doc: DocId) -> Result<(), Error> {
-        if self.docs.get(&doc).ok_or(Error::InvalidDoc)?.failures.len() > 0 {
+        let d = self.docs.get(&doc).ok_or(Error::InvalidDoc)?;
+        if d.save_blocked
+            || d.failures.iter().any(|failure| {
+                !failure.acknowledged_before_replace
+                    || !failure_ack::is_eligible_pre_replace_failure(failure)
+            })
+        {
             return Err(Error::UnresolvedConflict);
         }
         let d = self.docs.remove(&doc).ok_or(Error::InvalidDoc)?;

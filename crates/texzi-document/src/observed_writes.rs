@@ -38,6 +38,35 @@ impl Store {
             s.finish_save_failure_unpublished(c, detail)
         })
     }
+    /// Explicit owner acceptance of recovery responsibility for an ended,
+    /// non-conflicting failure before replacement. Do not call automatically
+    /// from a generic error handler or treat this as a worker result.
+    ///
+    /// The owner must retain the returned recovery data or explicitly decide
+    /// to discard it before closing the document. The Store retains its own
+    /// failure record and captured snapshot until normal document close.
+    /// This neither saves or cleans up files nor clears an unknown outcome,
+    /// releases publication resources, or changes any target/scope protection.
+    /// It does not replace the UI's save/discard decision for current dirty
+    /// content and does not close the document.
+    ///
+    /// Eligibility, snapshot consistency, conflict and active-save checks run
+    /// before any mutation. A repeat is read-only, including at the observer
+    /// counter boundary; a first acknowledgement must pass observed-write
+    /// counter preflight before its flag can change.
+    pub fn acknowledge_pre_replace_failure(
+        &mut self,
+        doc: DocId,
+        operation: u64,
+    ) -> Result<PreReplaceAcknowledgement, Error> {
+        let acknowledgement = self.pre_replace_acknowledgement(doc, operation)?;
+        if !acknowledgement.newly_acknowledged {
+            return Ok(acknowledgement);
+        }
+        self.observed_write(doc, |s| {
+            s.acknowledge_pre_replace_failure_unpublished(doc, operation)
+        })
+    }
     pub fn submit(&mut self, txn: Transaction) -> Result<Receipt, Error> {
         self.observed_write(txn.doc, |s| s.submit_unpublished(txn))
     }

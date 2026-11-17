@@ -66,7 +66,7 @@ fn cursor_from_json(
         seq: EventSeq(num(v, "seq")?),
     })
 }
-fn body_json(s: &Snapshot) -> Value {
+pub(super) fn body_json(s: &Snapshot) -> Value {
     let mut sources: Vec<std::sync::Arc<str>> = Vec::new();
     let spans=s.body.origins().iter().map(|(span,origin)|{
         let origin=origin.as_ref().map(|o|{let id=if let Some(i)=sources.iter().position(|p|std::sync::Arc::ptr_eq(p,&o.source)){i}else{sources.push(o.source.clone());sources.len()-1};json!({"source":id,"raw_start":o.raw.start,"raw_end":o.raw.end,"logical_len":o.logical_len})});
@@ -82,9 +82,12 @@ fn body_json(s: &Snapshot) -> Value {
 fn attention_json(a: &FileAttention) -> Value {
     let mut value = json!({"needs_target":a.needs_target,"binding_epoch":a.binding_epoch,"target":a.target.as_ref().map(|t|&t.0),"known_fingerprint":a.known_fingerprint,"conflict":format!("{:?}",a.conflict),"save_outcome_unknown":format!("{:?}",a.save_outcome_unknown),"display_error":a.display_error});
     if !a.recoveries.is_empty() {
-        value["recoveries"]=json!(a.recoveries.iter().map(|r|json!({"operation":r.operation,"target":r.target.0,"scope":r.scope.as_ref().map(|s|json!({"parent":s.parent.0,"object":s.object.as_ref().map(|k|&k.0)})),"binding_epoch":r.binding_epoch,"revision":r.revision.0,"token":format!("{:?}",r.token),"stage":format!("{:?}",r.stage),"outcome":format!("{:?}",r.detail.outcome),"conflict":r.detail.conflict,"os_error":r.detail.os_error,"message":r.detail.message,"paths":r.detail.recovery_paths.iter().map(|p|path_json(p)).collect::<Vec<_>>() })).collect::<Vec<_>>());
+        value["recoveries"] = json!(a.recoveries.iter().map(failure_json).collect::<Vec<_>>());
     }
     value
+}
+pub(super) fn failure_json(r: &SaveFailureRecord) -> Value {
+    json!({"operation":r.operation,"target":r.target.0,"scope":r.scope.as_ref().map(|s|json!({"parent":s.parent.0,"object":s.object.as_ref().map(|k|&k.0)})),"binding_epoch":r.binding_epoch,"revision":r.revision.0,"token":format!("{:?}",r.token),"stage":format!("{:?}",r.stage),"outcome":format!("{:?}",r.detail.outcome),"conflict":r.detail.conflict,"os_error":r.detail.os_error,"message":r.detail.message,"paths":r.detail.recovery_paths.iter().map(|p|path_json(p)).collect::<Vec<_>>(),"acknowledged_before_replace":r.acknowledged_before_replace})
 }
 fn path_json(path: &std::path::Path) -> Value {
     #[cfg(windows)]
