@@ -385,7 +385,7 @@ fn new_handle_publication_verifies_final_identity_and_keeps_n_plus_one_dirty() {
         actual_id
     );
     assert_eq!(committed.binding_epoch, 1);
-    assert_eq!(committed.snapshot.token, n.token);
+    assert_eq!(committed.saved_snapshot.token, n.token);
     assert_eq!(
         committed
             .binding

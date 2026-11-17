@@ -126,7 +126,7 @@ pub struct CommittedNew {
     pub binding: FileBinding,
     pub version: FileVersion,
     pub path: PathBuf,
-    pub snapshot: Snapshot,
+    pub saved_snapshot: Snapshot,
     pub binding_epoch: u64,
 }
 
@@ -327,7 +327,7 @@ impl PublishedNew {
                 binding,
                 version: self.version,
                 path: self.path,
-                snapshot,
+                saved_snapshot: snapshot,
                 binding_epoch,
             }),
             Err(e) => Err(PublishFailure {

@@ -12,6 +12,8 @@ worker在原File上flush→rename→flush，从同一handle重新查询最终Fil
 
 accept使用最终实际file-ID key迁移持续绑定，原预约capture.target只用于核旧操作与释放其双域；接受保存token N并刷新epoch及FileBinding的实际读回raw Arc/捕获Snapshot N。N+1正文/格式/history不回滚、不清dirty。新元数据在一个observed_write接受；内存旧public accept_verified_save语义保留，仍只代表调用者可信回执。
 
+CommittedNew.saved_snapshot明确是已保存的N，不是当前正文；UI必须继续从唯一Store读取当前N+1，不以保存回执覆盖当前视图。
+
 ## 失败与保留限制
 
 许可前失败按BeforeReplace；许可后尚未调用rename按ReplaceFailed；rename尝试后任何失败保守OutcomeUnknown。PublishFailure拥有原独占File，record_failure仅记录原capture终态、候选恢复路径，不消耗对象或自动删除/重试；可从原File读取当前版本/内容/路径。候选path不是恢复身份凭据，处理失败后close/生命周期、重启恢复及核实解锁仍待完整实现。Drop仍会关资源，must_use不是持久日志或自动收尾。
