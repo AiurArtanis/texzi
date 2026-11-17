@@ -289,8 +289,107 @@ fn occupied_import(cross_parent: bool, held: bool) {
     assert_eq!(fs::read(path).unwrap(), b"new file");
 }
 #[test]
-fn parent_active_import_is_atomic_busy() {
-    occupied_import(false, false);
+fn parent_only_active_then_held_blocks_distinct_file_import_without_partial_changes() {
+    let a_path = fixture(b"file A");
+    let b_path = a_path.parent().unwrap().join("distinct-B.txt");
+    let b_raw = b"file B preserved\r\n";
+    fs::write(&b_path, b_raw).unwrap();
+    let a = ObservedTarget::inspect(&a_path).unwrap();
+    let b = ObservedTarget::inspect(&b_path).unwrap();
+    let a_key = a.reservation_key();
+    let b_key = b.reservation_key();
+    let a_scope = a.save_scope();
+    let b_scope = b.save_scope();
+    assert_ne!(a.version().unwrap().identity, b.version().unwrap().identity);
+    assert_ne!(a_key, b_key);
+    assert_eq!(a_scope.parent, b_scope.parent);
+    assert_eq!(b_scope.object, Some(b_key.clone()));
+    // B is captured before the owner reserves the distinct file A.
+    let mut capture = b.open_existing(None).unwrap();
+    let mut store = Store::new(HistoryBudget::default());
+    let sentinel = store
+        .open_utf8("sentinel", Profile::default(), false)
+        .unwrap();
+    let save = store
+        .begin_scoped_save(sentinel.doc, a_key.clone(), String::new(), a_scope)
+        .unwrap();
+    for held in [false, true] {
+        if held {
+            store.advance_save(&save, SaveStage::WritingTemp).unwrap();
+            store
+                .advance_save(&save, SaveStage::ReadyToReplace)
+                .unwrap();
+            store.commit_permit(&save).unwrap();
+            store
+                .finish_save_failure(
+                    &save,
+                    SaveFailure {
+                        outcome: SaveFailureOutcome::OutcomeUnknown,
+                        conflict: true,
+                        os_error: None,
+                        message: "memory-only Unknown on distinct A; no disk publication".into(),
+                        recovery_paths: vec![],
+                    },
+                )
+                .unwrap();
+        }
+        // These exclusions make the parent domain the only possible blocker.
+        assert!(!store.scope_objects.contains_key(&b_key));
+        assert!(!store.targets.contains_key(&b_key));
+        assert!(!store.unresolved_targets.contains_key(&b_key));
+        assert!(!store.bound_targets.contains_key(&b_key));
+        let parent = store.scope_parents[&b_scope.parent];
+        assert_eq!(parent.operation, save.operation);
+        assert_eq!(parent.held, held);
+        let before = observe(&mut store, sentinel.doc);
+        let count = sizes(&store);
+        let token = store.next_token;
+        let next_save = store.next_save;
+        let targets = store.targets.clone();
+        let unresolved = store.unresolved_targets.clone();
+        let bindings = store.bound_targets.clone();
+        let leases = |map: &HashMap<TargetKey, ScopeLease>| {
+            let mut rows: Vec<_> = map
+                .iter()
+                .map(|(key, lease)| (key.0.clone(), lease.operation, lease.held))
+                .collect();
+            rows.sort();
+            rows
+        };
+        let parents = leases(&store.scope_parents);
+        let objects = leases(&store.scope_objects);
+        let failure = match capture.attach(&mut store) {
+            Ok(_) => panic!("parent-only reservation did not block distinct B"),
+            Err(failure) => failure,
+        };
+        let expected = if held {
+            Error::UnresolvedConflict
+        } else {
+            Error::Busy
+        };
+        assert!(matches!(&failure.issue, AttachIssue::Owner(error) if error == &expected));
+        let after = observe(&mut store, sentinel.doc);
+        assert_eq!(before.state, after.state);
+        assert_eq!(before.cursor, after.cursor);
+        assert_eq!(sizes(&store), count);
+        assert_eq!(store.next_token, token);
+        assert_eq!(store.next_save, next_save);
+        assert_eq!(store.targets, targets);
+        assert_eq!(store.unresolved_targets, unresolved);
+        assert_eq!(store.bound_targets, bindings);
+        assert_eq!(leases(&store.scope_parents), parents);
+        assert_eq!(leases(&store.scope_objects), objects);
+        assert!(!store.scope_objects.contains_key(&b_key));
+        assert!(!store.targets.contains_key(&b_key));
+        assert!(!store.unresolved_targets.contains_key(&b_key));
+        if !held {
+            assert_eq!(store.captured_save_stage(&save), Ok(SaveStage::Encoding));
+        }
+        assert_eq!(fs::read(&a_path).unwrap(), b"file A");
+        assert_eq!(fs::read(&b_path).unwrap(), b_raw);
+        // Same B capture remains owned; the next branch rechecks it at owner entry.
+        capture = failure.capture;
+    }
 }
 #[test]
 fn object_active_across_hardlink_parent_is_atomic_busy() {
