@@ -78,7 +78,7 @@ fn bound_worker_retains_target_format_payload_and_rejects_cancelled_late_result(
         .unwrap();
     assert_eq!(staged.check_owner(&store), Err(Error::InvalidSave));
     store.cancel_save(next.capture()).unwrap();
-    assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"AB");
+    assert_eq!(staged.read_created_bytes().unwrap(), b"AB");
     assert_eq!(fs::read(&target).unwrap(), b"A");
 }
 #[test]
@@ -167,14 +167,10 @@ fn bound_creation_handle_blocks_same_byte_substitution_before_lock_validation() 
         fs::rename(&substitute, &temp).unwrap_err().raw_os_error(),
         Some(32)
     );
-    assert_eq!(
-        ObservedTarget::inspect(&temp)
-            .unwrap()
-            .version()
-            .unwrap()
-            .identity,
-        creation_id
+    assert!(
+        matches!(ObservedTarget::inspect(&temp), Err(IdentityError::Io(e)) if e.raw_os_error() == Some(32))
     );
+    assert_eq!(staged.temporary_identity(), creation_id);
     staged.recheck_files().unwrap();
     assert_eq!(
         store.commit_permit(staged.capture()),
@@ -182,7 +178,7 @@ fn bound_creation_handle_blocks_same_byte_substitution_before_lock_validation() 
     );
     store.cancel_save(staged.capture()).unwrap();
     assert_eq!(fs::read(&target).unwrap(), b"A");
-    assert_eq!(fs::read(&temp).unwrap(), b"A");
+    assert_eq!(staged.read_created_bytes().unwrap(), b"A");
     assert_eq!(fs::read(&substitute).unwrap(), b"A");
     drop(staged);
     fs::write(&temp, b"fixture after creation handle closes").unwrap();
@@ -205,12 +201,7 @@ fn locked_temporary_observes_security_and_denies_ordinary_write_delete_and_renam
         .write()
         .unwrap();
     let temporary = staged.recovery_temp().to_owned();
-    let observed_security = ObservedTarget::inspect(&temporary)
-        .unwrap()
-        .version()
-        .unwrap()
-        .security
-        .clone();
+    let observed_security = staged.temporary_security().clone();
     let locked = staged.lock_temporary().unwrap();
     locked.check_owner(&store).unwrap();
     locked.recheck_files().unwrap();
@@ -238,7 +229,8 @@ fn locked_temporary_observes_security_and_denies_ordinary_write_delete_and_renam
             .raw_os_error(),
         Some(32)
     );
-    assert_eq!(fs::read(&temporary).unwrap(), b"A");
+    assert_eq!(fs::read(&temporary).unwrap_err().raw_os_error(), Some(32));
+    assert_eq!(locked.read_created_bytes().unwrap(), b"A");
     assert_eq!(fs::read(&target).unwrap(), b"A");
     assert_eq!(
         store.commit_permit(locked.capture()),

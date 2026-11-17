@@ -5,7 +5,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 #[derive(Clone)]
@@ -31,7 +31,7 @@ pub struct StageFailure {
     pub recovery_temp: Option<PathBuf>,
 }
 pub struct StagedSave {
-    created: File,
+    created: Mutex<File>,
     #[cfg(windows)]
     created_identity: super::windows_identity::FileIdentity,
     #[cfg(windows)]
@@ -48,6 +48,10 @@ pub struct StagingWork {
     bytes: Arc<[u8]>,
     #[cfg(all(test, windows))]
     security_hook: Option<Box<dyn Fn(&File) -> std::io::Result<()> + Send>>,
+    #[cfg(all(test, windows))]
+    creation_hook: Option<Box<dyn Fn(&File, &Path) -> std::io::Result<()> + Send>>,
+    #[cfg(all(test, windows))]
+    copy_handle_hook: Option<Box<dyn Fn(&File) -> std::io::Result<File> + Send>>,
 }
 impl StagedSave {
     #[cfg(windows)]
@@ -62,9 +66,18 @@ impl StagedSave {
     pub fn payload_security(&self) -> &super::windows_security::SecurityDescriptor {
         &self.payload_security
     }
-    #[cfg(windows)]
-    pub(super) fn created_file_mut(&mut self) -> &mut File {
-        &mut self.created
+    pub(super) fn created_file(&self) -> std::io::Result<MutexGuard<'_, File>> {
+        self.created
+            .lock()
+            .map_err(|_| std::io::Error::other("temporary handle lock poisoned"))
+    }
+    /// Owner capability read: never reopens the temporary pathname.
+    pub fn read_created_bytes(&self) -> std::io::Result<Vec<u8>> {
+        let mut file = self.created_file()?;
+        file.rewind()?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
     }
     pub fn capture(&self) -> &crate::SaveCapture {
         &self.capture
@@ -115,10 +128,28 @@ impl PreparedSave {
             bytes: self.bytes.clone(),
             #[cfg(all(test, windows))]
             security_hook: None,
+            #[cfg(all(test, windows))]
+            creation_hook: None,
+            #[cfg(all(test, windows))]
+            copy_handle_hook: None,
         })
     }
 }
 impl StagingWork {
+    #[cfg(all(test, windows))]
+    pub(super) fn set_copy_handle_hook(
+        &mut self,
+        hook: impl Fn(&File) -> std::io::Result<File> + Send + 'static,
+    ) {
+        self.copy_handle_hook = Some(Box::new(hook));
+    }
+    #[cfg(all(test, windows))]
+    pub(super) fn set_creation_hook(
+        &mut self,
+        hook: impl Fn(&File, &Path) -> std::io::Result<()> + Send + 'static,
+    ) {
+        self.creation_hook = Some(Box::new(hook));
+    }
     #[cfg(all(test, windows))]
     pub(super) fn set_security_hook(
         &mut self,
@@ -203,13 +234,13 @@ impl StagingWork {
                 use std::os::windows::fs::OpenOptionsExt;
                 use windows_sys::Win32::Storage::FileSystem::{
                     DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-                    FILE_SHARE_READ, WRITE_DAC, WRITE_OWNER,
+                    FILE_SHARE_NONE, WRITE_DAC, WRITE_OWNER,
                 };
                 options
                     .access_mode(
                         FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER,
                     )
-                    .share_mode(FILE_SHARE_READ)
+                    .share_mode(FILE_SHARE_NONE)
                     .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
             }
             match options.open(&path) {
@@ -222,6 +253,13 @@ impl StagingWork {
             }
         }
         let (temp, mut file) = chosen.ok_or_else(|| fail(StageIssue::TempNameExhausted))?;
+        #[cfg(all(test, windows))]
+        if let Some(hook) = &self.creation_hook {
+            hook(&file, &temp).map_err(|e| StageFailure {
+                issue: StageIssue::Io(e),
+                recovery_temp: Some(temp.clone()),
+            })?;
+        }
         // Record identity/security from the still-open create_new handle before
         // writing any payload, not from a later reopen of its pathname.
         #[cfg(windows)]
@@ -238,8 +276,22 @@ impl StagingWork {
             })?;
         #[cfg(windows)]
         if let Some(required) = required_security {
+            #[cfg(test)]
+            let duplicate = self
+                .copy_handle_hook
+                .as_ref()
+                .map(|hook| hook(&file))
+                .transpose()
+                .map_err(|e| StageFailure {
+                    issue: StageIssue::Io(e),
+                    recovery_temp: Some(temp.clone()),
+                })?;
+            #[cfg(test)]
+            let copy_file = duplicate.as_ref().unwrap_or(&file);
+            #[cfg(not(test))]
+            let copy_file = &file;
             required
-                .apply_to_new_file(&file)
+                .apply_to_new_file(copy_file)
                 .map_err(|e| StageFailure {
                     issue: StageIssue::Io(e),
                     recovery_temp: Some(temp.clone()),
@@ -297,7 +349,7 @@ impl StagingWork {
             recovery_temp: Some(temp.clone()),
         })?;
         Ok(StagedSave {
-            created: file,
+            created: Mutex::new(file),
             #[cfg(windows)]
             created_identity,
             #[cfg(windows)]

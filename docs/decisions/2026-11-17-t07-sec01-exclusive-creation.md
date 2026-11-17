@@ -1,0 +1,13 @@
+# T07-SEC-01 从创建开始持续排除独立读取
+
+Rusty对236的反例成立：FILE_SHARE_READ允许B在复制DACL前拿到读句柄，后改DACL不会撤销其已授予权限。旧报告、代码及源审核FAIL保留；不能把空temp或复制后相等当作已关闭窗口。
+
+现在Windows create_new直接FILE_SHARE_NONE，创建File从起点持续保留，原句柄写入/sync/读回/ID/描述符核验不变。StagedSave内Mutex只串行本进程拥有的File访问，不改变Win32共享设置；Bound/Locked持原对象，未关闭重开/复制到较宽共享File。内部读取原temp不再ObservedTarget::inspect(path)，改保留FileVersion从创建句柄读取，用GetFinalPathNameByHandleW核GUID父路径，核创建ID/原parent观察/卷/固定payload/security。无法核实即失败，不开共享读作fallback。
+
+公开read_created_bytes是拥有暂存对象的owner能力、使用原File，不重开路径；路径独立读按新的隐私边界应拒绝，既有fixture相应改用真实原句柄读回，未用expected payload冒充磁盘读取。Locked后取消/Drop仍分别由owner负责：cancel不自动停止worker/释放File，Drop仅关File、不删恢复路径或自动清Store。无Ready/最终发布或关锁后路径替换捷径。
+
+Windows lib unit时序用例扩展：在create_new后但SetSecurityInfo前，独立OpenOptions(read,share READ|WRITE|DELETE)应sharing32，复制后再试、成功payload后再试仍拒绝；原目录正常可读控制，表明探测的是share而非依赖恰好不可读DACL。测试在同进程另开真实File句柄，不创建B账号或修改用户ACL；不冒称实际多用户B-token运行。创建/复制后钩子仅cfg(test,windows)，release/probe均无开关或代码入口。
+
+新增第三个lib unit权限失败控制：测试专用DuplicateHandle把同一新temp handle仅复制READ_CONTROL能力，产品原SetSecurityInfo调用在此真实降权handle上应ACCESS_DENIED5，不返回预制错误或改权限/审批模型。失败在payload前，保空temp/原capture进入Failed终态，原fixture完整ID/security/bytes/mtime与baseline/N+1/history/dirty不变。仅测试dev依赖启用现有windows-sys0.61.2 System_Threading以取GetCurrentProcess，不安装或升级工具。
+
+共有26原组件/integration项及3Windows lib unit项，29全NOT_RUN；旧contracts.exe不含lib unit，合法可构建新包后原链单列harness执行才可运行关闭。普通读共享语义、B主体、权限失败和ACL复制策略均未运行证明。旧缺linker101不重试，无CI/GH/push/GUI/剪贴板/远端/安装/全局策略修改或发布。T07-SEC-01及完整T07待原审核，不自作PASS。

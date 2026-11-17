@@ -90,7 +90,7 @@ pub(super) fn check_kind(file: &File, directory: bool) -> Result<(), IdentityErr
     }
     Ok(())
 }
-fn volume_path(file: &File) -> Result<PathBuf, IdentityError> {
+pub(super) fn volume_path(file: &File) -> Result<PathBuf, IdentityError> {
     let mut buffer = vec![0u16; 512];
     loop {
         // SAFETY: a live handle and a writable buffer of the passed capacity.

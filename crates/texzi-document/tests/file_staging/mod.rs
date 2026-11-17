@@ -67,7 +67,7 @@ fn staged_payload_is_captured_and_never_replaces_original() {
     assert_eq!(staged.capture().snapshot.token, s.token);
     assert_eq!(staged.expected_bytes(), b"new\r\n");
     assert_eq!(staged.recovery_temp().parent(), target.parent());
-    assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"new\r\n");
+    assert_eq!(staged.read_created_bytes().unwrap(), b"new\r\n");
     assert_eq!(fs::read(&target).unwrap(), b"old\r\n");
     assert!(store.dirty(s.doc).unwrap());
     assert_eq!(store.commit_permit(p.capture()), Err(Error::InvalidSave));
@@ -109,7 +109,7 @@ fn conflict_and_save_as_staging_do_not_overwrite_a_target() {
         .write_temp(&new_target, &ContentGuard::Absent)
         .unwrap();
     assert!(!new_target.exists());
-    assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"payload");
+    assert_eq!(staged.read_created_bytes().unwrap(), b"payload");
     store.cancel_save(p.capture()).unwrap();
 }
 #[test]
@@ -162,7 +162,7 @@ fn late_cancelled_worker_cannot_advance_a_new_save() {
         Err(Error::Busy)
     ));
     assert!(!target.exists());
-    assert_eq!(std::fs::read(late.recovery_temp()).unwrap(), b"captured");
+    assert_eq!(late.read_created_bytes().unwrap(), b"captured");
     store.cancel_save(&current).unwrap();
 }
 
@@ -204,7 +204,7 @@ fn temp_target_collision_is_excluded_before_creation_and_preserves_save_state() 
         let staged = work.write_temp(&target, &ContentGuard::Absent).unwrap();
         assert_ne!(staged.recovery_temp(), target);
         assert!(!target.exists(), "no pre-permit publication in case {case}");
-        assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"captured");
+        assert_eq!(staged.read_created_bytes().unwrap(), b"captured");
         if case == 0 {
             assert_eq!(staged.recovery_temp(), dir.join(format!("{stem:08}.001")));
         }
@@ -230,7 +230,7 @@ fn temp_target_collision_is_excluded_before_creation_and_preserves_save_state() 
         ));
         store.cancel_save(p.capture()).unwrap();
         assert!(!target.exists());
-        assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"captured");
+        assert_eq!(staged.read_created_bytes().unwrap(), b"captured");
         let next = store
             .begin_save(
                 s.doc,

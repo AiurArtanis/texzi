@@ -4,7 +4,7 @@ mod tests;
 use super::{
     FileBinding, FileError, Format, PreparedSave,
     staging::{ContentGuard, StageIssue, StagedSave, StagingWork},
-    windows_identity::{FileIdentity, IdentityError, ObservedTarget},
+    windows_identity::{FileIdentity, FileVersion, IdentityError, ObservedTarget},
     windows_security::SecurityDescriptor,
 };
 use crate::{Error, SaveCapture, SaveStage, Store};
@@ -43,7 +43,7 @@ pub struct BoundWork {
 }
 pub struct BoundStaged {
     observed: ObservedTarget,
-    temporary: ObservedTarget,
+    temporary: FileVersion,
     staged: StagedSave,
     format: Format,
 }
@@ -149,15 +149,16 @@ impl BoundWork {
         self.observed
             .recheck()
             .map_err(|e| fail(BoundIssue::Identity(e), recovery.clone()))?;
-        let temporary = ObservedTarget::inspect(staged.recovery_temp())
-            .map_err(|e| fail(BoundIssue::Identity(e), recovery.clone()))?;
-        let temp = temporary.version().ok_or_else(|| {
-            fail(
-                BoundIssue::Identity(IdentityError::Changed),
-                recovery.clone(),
-            )
-        })?;
-        if temporary.parent_identity() != self.observed.parent_identity()
+        let (temp, current_path) = (|| -> Result<_, IdentityError> {
+            let mut file = staged.created_file()?;
+            Ok((
+                super::windows_identity::read_version_handle(&mut file)?,
+                super::windows_identity::volume_path(&file)?,
+            ))
+        })()
+        .map_err(|e| fail(BoundIssue::Identity(e), recovery.clone()))?;
+        if current_path != staged.recovery_temp()
+            || current_path.parent() != self.observed.resolved_path().parent()
             || temp.identity != staged.created_identity()
             || &temp.security != staged.payload_security()
             || temp.identity.volume != self.observed.parent_identity().volume
@@ -171,21 +172,23 @@ impl BoundWork {
         }
         Ok(BoundStaged {
             observed: self.observed,
-            temporary,
+            temporary: temp,
             staged,
             format: self.format,
         })
     }
 }
 impl BoundStaged {
-    /// Validates the original create_new handle, already held without write or
-    /// delete sharing. Never close/reopen to establish creation identity.
-    pub fn lock_temporary(mut self) -> Result<LockedStaged, LockFailure> {
+    /// Validates the original create_new handle, held with no read/write/delete
+    /// sharing since creation. Never close/reopen to establish identity.
+    pub fn lock_temporary(self) -> Result<LockedStaged, LockFailure> {
         let attempt = (|| -> Result<SecurityDescriptor, IdentityError> {
             self.recheck_files()?;
-            let current =
-                super::windows_identity::read_version_handle(self.staged.created_file_mut())?;
-            if Some(&current) != self.temporary.version()
+            let current = {
+                let mut file = self.staged.created_file()?;
+                super::windows_identity::read_version_handle(&mut file)?
+            };
+            if current != self.temporary
                 || current.identity != self.staged.created_identity()
                 || &current.security != self.staged.payload_security()
             {
@@ -213,6 +216,12 @@ impl BoundStaged {
     }
     pub fn payload(&self) -> &[u8] {
         self.staged.expected_bytes()
+    }
+    pub fn read_created_bytes(&self) -> std::io::Result<Vec<u8>> {
+        self.staged.read_created_bytes()
+    }
+    pub fn temporary_security(&self) -> &SecurityDescriptor {
+        &self.temporary.security
     }
     pub fn recovery_temp(&self) -> &Path {
         self.staged.recovery_temp()
@@ -243,7 +252,13 @@ impl BoundStaged {
     /// Not a CAS, ACL check, final identity, or authorization to replace anything.
     pub fn recheck_files(&self) -> Result<(), IdentityError> {
         self.observed.recheck()?;
-        self.temporary.recheck()
+        let mut file = self.staged.created_file()?;
+        if super::windows_identity::read_version_handle(&mut file)? != self.temporary
+            || super::windows_identity::volume_path(&file)? != self.staged.recovery_temp()
+        {
+            return Err(IdentityError::Changed);
+        }
+        Ok(())
     }
 }
 impl LockedStaged {
@@ -255,6 +270,9 @@ impl LockedStaged {
     }
     pub fn payload(&self) -> &[u8] {
         self.staged.payload()
+    }
+    pub fn read_created_bytes(&self) -> std::io::Result<Vec<u8>> {
+        self.staged.read_created_bytes()
     }
     pub fn format(&self) -> Format {
         self.staged.format()
