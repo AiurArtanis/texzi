@@ -1,4 +1,6 @@
 //! Bound Windows staging and limited new-target publication; replacement pending.
+#[cfg(test)]
+mod current_tests;
 mod publish;
 pub mod recovery;
 #[cfg(test)]
@@ -76,12 +78,66 @@ impl ObservedTarget {
         binding: &FileBinding,
         store: &mut Store,
     ) -> Result<BoundPrepared, BoundFailure> {
+        // Historical memory-only fixtures have no disk provenance. Verified
+        // bindings automatically get current-target protection at this entry.
+        let current = binding.disk.is_some();
+        self.prepare_destination(binding, store, current)
+    }
+    /// Ordinary current-file preflight requires a verified open/publication.
+    /// This does not enable existing-target publication or grant a CAS.
+    pub fn prepare_current(
+        self,
+        binding: &FileBinding,
+        store: &mut Store,
+    ) -> Result<BoundPrepared, BoundFailure> {
+        self.prepare_destination(binding, store, true)
+    }
+    /// Explicit destination change. Old generation is still checked, but source
+    /// fingerprint/path is not asserted to describe the new destination.
+    pub fn prepare_save_as(
+        self,
+        binding: &FileBinding,
+        store: &mut Store,
+    ) -> Result<BoundPrepared, BoundFailure> {
+        self.prepare_destination(binding, store, false)
+    }
+    fn prepare_destination(
+        self,
+        binding: &FileBinding,
+        store: &mut Store,
+        current: bool,
+    ) -> Result<BoundPrepared, BoundFailure> {
         let fail = |issue| BoundFailure {
             issue,
             capture: None,
             recovery_temp: None,
         };
+        let disk = if current || binding.disk.is_some() {
+            Some(
+                binding
+                    .checked_disk_binding(store)
+                    .map_err(|e| fail(BoundIssue::File(e)))?,
+            )
+        } else {
+            None
+        };
+        if let Some(disk) = disk {
+            if !disk
+                .anchor
+                .retains(disk.version.identity)
+                .map_err(|e| fail(BoundIssue::Identity(e)))?
+            {
+                return Err(fail(BoundIssue::Identity(IdentityError::Changed)));
+            }
+        }
         self.recheck().map_err(|e| fail(BoundIssue::Identity(e)))?;
+        if current
+            && disk.is_some_and(|disk| {
+                self.version() != Some(&disk.version) || self.resolved_path() != disk.path
+            })
+        {
+            return Err(fail(BoundIssue::Identity(IdentityError::Changed)));
+        }
         let snapshot = store
             .snapshot(binding.doc())
             .map_err(|e| fail(BoundIssue::Document(e)))?;

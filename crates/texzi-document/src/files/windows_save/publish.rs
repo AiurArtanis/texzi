@@ -367,6 +367,10 @@ impl NewPublication {
     }
 }
 impl PublishedNew {
+    #[cfg(test)]
+    pub(super) fn set_handoff_path_for_test(&mut self, path: PathBuf) {
+        self.path = path;
+    }
     pub fn capture(&self) -> &SaveCapture {
         self.resources.capture()
     }
@@ -379,14 +383,39 @@ impl PublishedNew {
     pub fn accept(self, store: &mut Store) -> Result<CommittedNew, PublishFailure> {
         let snapshot = self.capture().snapshot.clone();
         let format = self.resources.format();
-        let binding = FileBinding {
-            imported: snapshot.clone(),
-            original: self.version.bytes.clone(),
-            format,
+        let anchor = (|| -> Result<_, PublishIssue> {
+            let mut file = self.resources.staged.staged.created_file()?;
+            if super::super::windows_identity::read_version_handle(&mut file)? != self.version {
+                return Err(PublishIssue::VerificationMismatch);
+            }
+            Ok(super::super::windows_identity::OpenAnchor::from_retained(
+                &file, &self.path,
+            )?)
+        })();
+        let anchor = match anchor {
+            Ok(anchor) => anchor,
+            Err(issue) => {
+                return Err(PublishFailure {
+                    issue,
+                    resources: self.resources,
+                    phase: Phase::Attempted,
+                    _guard: self.guard,
+                });
+            }
         };
         match store.accept_published_new(self.capture(), self.version.identity.target_key()) {
             Ok(binding_epoch) => Ok(CommittedNew {
-                binding,
+                binding: FileBinding {
+                    imported: snapshot.clone(),
+                    original: self.version.bytes.clone(),
+                    format,
+                    disk: Some(crate::files::DiskBinding {
+                        anchor,
+                        version: self.version.clone(),
+                        path: self.path.clone(),
+                        epoch: binding_epoch,
+                    }),
+                },
                 version: self.version,
                 path: self.path,
                 saved_snapshot: snapshot,

@@ -373,6 +373,11 @@ fn new_handle_publication_verifies_final_identity_and_keeps_n_plus_one_dirty() {
     let actual_id = published.identity();
     assert_separate_reader_denied(&target); // Same creation handle is still exclusive.
     let committed = published.accept(&mut store).unwrap();
+    let disk = committed.binding.disk.as_ref().unwrap();
+    assert_eq!(disk.version, committed.version);
+    assert_eq!(disk.path, committed.path);
+    assert_eq!(disk.epoch, committed.binding_epoch);
+    assert!(disk.anchor.retains(committed.version.identity).unwrap());
     assert_eq!(store.publication_recovery.len(), 0);
     let raw = [0xff, 0xfe, 65, 0, 13, 0, 10, 0];
     assert_eq!(fs::read(&target).unwrap(), raw);
@@ -1021,4 +1026,95 @@ fn permit_counter_failure_unregisters_only_its_operation_and_keeps_failure_owner
         fs::read(other_target).unwrap(),
         [255, 254, 65, 0, 13, 0, 10, 0]
     );
+}
+
+#[test]
+fn published_anchor_handoff_failure_keeps_n_plus_one_baseline_and_recovery_resources() {
+    let (_dir, target, mut store, n, ready) = new_ready_fixture();
+    let capture = ready.capture().clone();
+    let job = ready.permit(&mut store).unwrap();
+    let current = store
+        .submit(Transaction {
+            doc: n.doc,
+            base: n.revision,
+            edits: vec![Edit::input(&n, 0..0, "B")],
+            boundary: BoundaryPolicy::Grapheme,
+            cancelled: false,
+        })
+        .unwrap()
+        .snapshot;
+    let (before, _) = store
+        .observe_and_subscribe(n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    let mut published = job.run().unwrap(); // Real native rename/flush/verification in future execution.
+    published.set_handoff_path_for_test(target.with_file_name("absent-handoff.txt"));
+    let failure = match published.accept(&mut store) {
+        Ok(_) => panic!("missing attribute-handoff path accepted"),
+        Err(failure) => failure,
+    };
+    assert!(
+        matches!(&failure.issue,PublishIssue::Identity(IdentityError::Io(error)) if error.kind()==std::io::ErrorKind::NotFound)
+    );
+    assert_eq!(failure.capture().operation, capture.operation);
+    let (rejected, _) = store
+        .observe_and_subscribe(n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    assert_eq!(before.state, rejected.state);
+    assert_eq!(before.cursor, rejected.cursor);
+    assert_eq!(
+        store.captured_save_stage(&capture),
+        Ok(SaveStage::Replacing)
+    );
+    assert_separate_reader_denied(&target);
+    assert_eq!(
+        failure.read_retained_bytes().unwrap(),
+        [255, 254, 65, 0, 13, 0, 10, 0]
+    );
+    failure.record_failure(&mut store).unwrap();
+    let (after, _) = store
+        .observe_and_subscribe(n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    assert_eq!(
+        after.state.global.metadata.baseline,
+        before.state.global.metadata.baseline
+    );
+    assert_eq!(
+        after.state.global.metadata.attention.target,
+        before.state.global.metadata.attention.target
+    );
+    assert_eq!(
+        after.state.global.metadata.attention.binding_epoch,
+        before.state.global.metadata.attention.binding_epoch
+    );
+    assert_eq!(store.snapshot(n.doc).unwrap().token, current.token);
+    assert_eq!(
+        after.state.global.metadata.history,
+        before.state.global.metadata.history
+    );
+    assert_eq!(
+        after
+            .state
+            .global
+            .metadata
+            .save
+            .last_terminal
+            .as_ref()
+            .unwrap()
+            .result,
+        crate::SaveResult::OutcomeUnknown
+    );
+    drop(failure);
+    let notices = store.drain_dropped_publications();
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].terminal_recorded);
+    assert!(notices[0].owner_error.is_none());
+    assert_eq!(
+        notices[0].read_retained_bytes().unwrap(),
+        [255, 254, 65, 0, 13, 0, 10, 0]
+    );
+    store
+        .acknowledge_publication_recovery(capture.operation)
+        .unwrap();
+    drop(notices);
+    assert_eq!(fs::read(target).unwrap(), [255, 254, 65, 0, 13, 0, 10, 0]);
 }

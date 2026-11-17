@@ -34,6 +34,29 @@ pub(crate) struct OpenAnchor {
     id: FileIdentity,
 }
 impl OpenAnchor {
+    pub(crate) fn try_clone(&self) -> Result<Self, IdentityError> {
+        Ok(Self {
+            file: self.file.try_clone()?,
+            id: self.id,
+        })
+    }
+    pub(crate) fn retains(&self, id: FileIdentity) -> Result<bool, IdentityError> {
+        Ok(self.id == id && identity(&self.file)? == id)
+    }
+    /// Caller retains the source file's restrictive sharing during this handoff.
+    pub(crate) fn from_retained(file: &File, path: &Path) -> Result<Self, IdentityError> {
+        let id = identity(file)?;
+        let anchor = OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        check_kind(&anchor, false)?;
+        if identity(&anchor)? != id || volume_path(file)? != path || volume_path(&anchor)? != path {
+            return Err(IdentityError::Changed);
+        }
+        Ok(Self { file: anchor, id })
+    }
     pub(crate) fn key(&self) -> crate::TargetKey {
         self.id.target_key()
     }
@@ -150,21 +173,27 @@ impl OpenedExisting {
                 return Err(AttachIssue::Identity(IdentityError::Changed));
             }
             self.recheck().map_err(AttachIssue::Identity)?;
-            store.import_verified_open(
-                &self.loaded,
-                OpenAnchor { file, id },
-                self.observed.save_scope(),
-            )
+            let anchor = OpenAnchor { file, id };
+            let binding_anchor = anchor.try_clone().map_err(AttachIssue::Identity)?;
+            let outcome =
+                store.import_verified_open(&self.loaded, anchor, self.observed.save_scope())?;
+            Ok((outcome, binding_anchor))
         })();
         match result {
-            Ok(crate::history::OpenDocument::Existing(snapshot)) => {
+            Ok((crate::history::OpenDocument::Existing(snapshot), _)) => {
                 Ok(OpenOutcome::Existing { snapshot })
             }
-            Ok(crate::history::OpenDocument::Imported(snapshot)) => {
+            Ok((crate::history::OpenDocument::Imported(snapshot), anchor)) => {
                 let binding = FileBinding {
                     imported: snapshot.clone(),
                     original: self.loaded.original,
                     format: self.loaded.format,
+                    disk: Some(crate::files::DiskBinding {
+                        anchor,
+                        version: self.version,
+                        path: self.observed.resolved_path(),
+                        epoch: 1,
+                    }),
                 };
                 Ok(OpenOutcome::Imported { snapshot, binding })
             }

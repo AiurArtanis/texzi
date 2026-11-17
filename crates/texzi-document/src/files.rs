@@ -42,6 +42,8 @@ pub enum FileError {
     ExternalChangeDuringRead,
     UnsupportedFileKind,
     NeedsLegacyByteMap,
+    UnverifiedDiskBinding,
+    StaleDiskBinding,
     Document(crate::Error),
 }
 impl From<crate::Error> for FileError {
@@ -156,6 +158,8 @@ impl LoadedBytes {
             imported: snapshot.clone(),
             original: self.original,
             format: self.format,
+            #[cfg(windows)]
+            disk: None,
         };
         Ok((snapshot, binding))
     }
@@ -165,6 +169,15 @@ pub struct FileBinding {
     imported: Snapshot,
     original: Arc<[u8]>,
     format: Format,
+    #[cfg(windows)]
+    disk: Option<DiskBinding>,
+}
+#[cfg(windows)]
+struct DiskBinding {
+    anchor: windows_identity::OpenAnchor,
+    version: windows_identity::FileVersion,
+    path: std::path::PathBuf,
+    epoch: u64,
 }
 pub struct PreparedSave {
     capture: SaveCapture,
@@ -183,6 +196,19 @@ impl PreparedSave {
     }
 }
 impl FileBinding {
+    #[cfg(windows)]
+    fn checked_disk_binding(&self, store: &Store) -> Result<&DiskBinding, FileError> {
+        let disk = self.disk.as_ref().ok_or(FileError::UnverifiedDiskBinding)?;
+        store.snapshot(self.doc())?; // Validate before indexing owner metadata.
+        let metadata = store.observer_metadata(self.doc());
+        if metadata.baseline.token != self.imported.token
+            || metadata.attention.binding_epoch != disk.epoch
+            || metadata.attention.target.as_ref() != Some(&disk.version.identity.target_key())
+        {
+            return Err(FileError::StaleDiskBinding);
+        }
+        Ok(disk)
+    }
     pub fn doc(&self) -> DocId {
         self.imported.doc
     }

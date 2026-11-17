@@ -13,7 +13,7 @@ attach 消费私有 owned 捕获，原读 File 和 parent 持有到 owner 返回
 
 Store 为每个 verified-open 新文档保留 FILE_READ_ATTRIBUTES 属性句柄，share READ|WRITE|DELETE；它是对象存续见证，不是正文/安全描述符/路径锁。保留期间仍允许正常写入和替换，不能据此断言磁盘内容未变。新的捕获与被保留的属性句柄均须核实各自实际 ID，才可按同一对象定位 Existing；硬链接不因路径不同另建 DocId。
 
-旧绑定没有见证、或保存回执没有转交新对象见证时，即使 key 字符串相同也返回 ContinuityUnproven。现有成功保存接受入口使该文档的见证失效；关闭文档释放见证。不会用 raw/mtime/路径相同弥补连续性，也不把新捕获 raw 配到旧 dirty token。后续恢复/显式核验及保存后的见证转交尚未实现。
+旧绑定没有 Store 见证、或保存回执没有向 Store 转交新对象见证时，即使 key 字符串相同也返回 ContinuityUnproven。现有成功保存接受入口使该文档的 Store 见证失效；关闭释放 Store 份额，调用方仍持 FileBinding 时其独立属性句柄可继续存续，但不能恢复已关闭 Doc。不会用 raw/mtime/路径相同弥补连续性，也不把新捕获 raw 配到旧 dirty token。返回 binding 的磁盘凭据见 T07-CURRENT-SAVE-PREFLIGHT.md；恢复/显式核验及向 Store 的保存后见证转交尚未实现。
 
 ## 错误顺序与原子性
 
