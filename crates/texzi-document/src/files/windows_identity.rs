@@ -1,7 +1,9 @@
 //! Handle-based Windows identity observation, not an atomic replacement API.
 //! Keep the directory handle alive; no delete sharing pins this parent.
+mod open;
 use super::windows_security::SecurityDescriptor;
 use crate::TargetKey;
+pub use open::{OpenFailure, OpenIssue, OpenedExisting};
 use std::{
     ffi::{OsStr, OsString},
     fs::{File, OpenOptions},
