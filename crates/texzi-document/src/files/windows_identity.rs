@@ -209,6 +209,16 @@ impl ObservedTarget {
         let hex: String = id.id.iter().map(|b| format!("{b:02x}")).collect();
         TargetKey(format!("windows-{kind}:{:016x}:{hex}", id.volume))
     }
+    /// Always include the parent domain, including when this target exists.
+    /// This is deliberately conservative: all writes in one directory serialize.
+    pub fn save_scope(&self) -> crate::SaveScope {
+        let id = self.parent_identity;
+        let hex: String = id.id.iter().map(|b| format!("{b:02x}")).collect();
+        crate::SaveScope {
+            parent: TargetKey(format!("windows-parent:{:016x}:{hex}", id.volume)),
+            object: self.version.as_ref().map(|_| self.reservation_key()),
+        }
+    }
     /// Full byte comparison is intentionally not described as compare-and-swap.
     /// Publication must still retain any version raced in after this check.
     pub fn recheck(&self) -> Result<(), IdentityError> {

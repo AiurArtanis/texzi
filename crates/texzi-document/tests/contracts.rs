@@ -5,6 +5,7 @@ mod file_staging;
 mod native_plans;
 mod observers;
 mod save_failures;
+mod save_scopes;
 mod views;
 #[cfg(windows)]
 mod windows_identity;

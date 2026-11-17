@@ -1,6 +1,18 @@
 //! Only public write entrypoints; nested writes publish once at the outer return.
 use crate::*;
 impl Store {
+    /// Resolver-supplied dual domains; still memory coordination, not disk proof.
+    pub fn begin_scoped_save(
+        &mut self,
+        doc: DocId,
+        target: TargetKey,
+        guard: String,
+        scope: SaveScope,
+    ) -> Result<SaveCapture, Error> {
+        self.observed_write(doc, |s| {
+            s.begin_scoped_save_unpublished(doc, target, guard, scope)
+        })
+    }
     pub fn finish_save_failure(
         &mut self,
         c: &SaveCapture,

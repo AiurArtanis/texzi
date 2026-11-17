@@ -28,6 +28,8 @@ fn actual_file_id_unifies_hardlinks_and_detects_external_bytes() {
     assert_eq!(a.version().unwrap().identity, b.version().unwrap().identity);
     assert_eq!(a.reservation_key(), b.reservation_key());
     assert_eq!(a.parent_identity(), b.parent_identity());
+    assert_eq!(a.save_scope(), b.save_scope());
+    assert_eq!(a.save_scope().object, Some(a.reservation_key()));
     a.recheck().unwrap();
     b.recheck().unwrap();
     fs::write(&alias, b"external\r\n").unwrap();
@@ -43,6 +45,8 @@ fn absent_names_reserve_parent_and_reject_creation_conflict() {
     let b = ObservedTarget::inspect(&dir.join("other.txt")).unwrap();
     assert!(a.version().is_none());
     assert_eq!(a.reservation_key(), b.reservation_key());
+    assert_eq!(a.save_scope().parent, b.save_scope().parent);
+    assert_eq!(a.save_scope().object, None);
     a.recheck().unwrap();
     fs::write(&p, b"external").unwrap();
     assert!(matches!(a.recheck(), Err(IdentityError::Changed)));

@@ -121,6 +121,8 @@ impl Default for HistoryBudget {
 
 /// All mutating APIs require &mut Store: one serial owner, no callback reentrancy.
 pub struct Store {
+    scope_parents: HashMap<TargetKey, ScopeLease>,
+    scope_objects: HashMap<TargetKey, ScopeLease>,
     bound_targets: HashMap<TargetKey, DocId>,
     unresolved_targets: HashMap<TargetKey, DocId>,
     pub(crate) observer: crate::observe::ObserverHub,
@@ -138,6 +140,13 @@ static NEXT_DOC: AtomicU64 = AtomicU64::new(1);
 /// Canonical identity supplied by a future T07 resolver; not a path normalizer.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TargetKey(pub String);
+/// Explicit, separate lock domains supplied by the filesystem resolver. Equality
+/// of a file key and a directory key never stands in for a hierarchy check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveScope {
+    pub parent: TargetKey,
+    pub object: Option<TargetKey>,
+}
 #[derive(Clone, Debug)]
 pub struct SaveCapture {
     pub operation: u64,
@@ -170,6 +179,7 @@ pub struct SaveFailure {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveFailureRecord {
+    pub scope: Option<SaveScope>,
     pub operation: u64,
     pub target: TargetKey,
     pub binding_epoch: u64,
@@ -179,8 +189,14 @@ pub struct SaveFailureRecord {
     pub detail: SaveFailure,
 }
 struct ActiveSave {
+    scope: Option<SaveScope>,
     capture: SaveCapture,
     stage: SaveStage,
+}
+#[derive(Clone, Copy)]
+struct ScopeLease {
+    operation: u64,
+    held: bool,
 }
 
 impl Store {
@@ -191,7 +207,45 @@ impl Store {
         target: TargetKey,
         guard: String,
     ) -> Result<SaveCapture, Error> {
+        self.begin_save_with_scope(doc, target, guard, None)
+    }
+    pub(crate) fn begin_scoped_save_unpublished(
+        &mut self,
+        doc: DocId,
+        target: TargetKey,
+        guard: String,
+        scope: SaveScope,
+    ) -> Result<SaveCapture, Error> {
+        self.begin_save_with_scope(doc, target, guard, Some(scope))
+    }
+    fn begin_save_with_scope(
+        &mut self,
+        doc: DocId,
+        target: TargetKey,
+        guard: String,
+        scope: Option<SaveScope>,
+    ) -> Result<SaveCapture, Error> {
         let s = self.snapshot(doc)?;
+        if let Some(scope) = &scope {
+            if scope
+                .object
+                .as_ref()
+                .is_some_and(|object| object != &target)
+            {
+                return Err(Error::InvalidSave);
+            }
+            let parent = self.scope_parents.get(&scope.parent);
+            let object = scope
+                .object
+                .as_ref()
+                .and_then(|key| self.scope_objects.get(key));
+            if parent.is_some_and(|lease| lease.held) || object.is_some_and(|lease| lease.held) {
+                return Err(Error::UnresolvedConflict);
+            }
+            if parent.is_some() || object.is_some() {
+                return Err(Error::Busy);
+            }
+        }
         if self.docs[&doc].save_blocked || self.unresolved_targets.contains_key(&target) {
             return Err(Error::UnresolvedConflict);
         }
@@ -214,9 +268,20 @@ impl Store {
             target: target.clone(),
             guard,
         };
+        if let Some(scope) = &scope {
+            let lease = ScopeLease {
+                operation,
+                held: false,
+            };
+            self.scope_parents.insert(scope.parent.clone(), lease);
+            if let Some(object) = &scope.object {
+                self.scope_objects.insert(object.clone(), lease);
+            }
+        }
         self.saves.insert(
             doc,
             ActiveSave {
+                scope,
                 capture: capture.clone(),
                 stage: SaveStage::Encoding,
             },
@@ -278,11 +343,33 @@ impl Store {
             result: SaveResult::Cancelled,
             error: None,
         });
-        self.release_save(c);
+        self.release_save(c, false);
         Ok(())
     }
-    fn release_save(&mut self, c: &SaveCapture) {
-        self.saves.remove(&c.snapshot.doc);
+    fn release_save(&mut self, c: &SaveCapture, hold_scope: bool) {
+        if let Some(active) = self.saves.remove(&c.snapshot.doc) {
+            if let Some(scope) = active.scope {
+                if hold_scope {
+                    if let Some(lease) = self.scope_parents.get_mut(&scope.parent) {
+                        assert_eq!(lease.operation, c.operation);
+                        lease.held = true;
+                    }
+                    if let Some(lease) = scope
+                        .object
+                        .as_ref()
+                        .and_then(|key| self.scope_objects.get_mut(key))
+                    {
+                        assert_eq!(lease.operation, c.operation);
+                        lease.held = true;
+                    }
+                } else {
+                    self.scope_parents.remove(&scope.parent);
+                    if let Some(object) = scope.object {
+                        self.scope_objects.remove(&object);
+                    }
+                }
+            }
+        }
         self.targets.remove(&c.target);
     }
     pub(crate) fn finish_save_failure_unpublished(
@@ -300,6 +387,7 @@ impl Store {
         }
         let held = detail.conflict || !before;
         let record = SaveFailureRecord {
+            scope: self.active_save(c)?.scope.clone(),
             operation: c.operation,
             target: c.target.clone(),
             binding_epoch: c.binding_epoch,
@@ -328,7 +416,7 @@ impl Store {
             self.unresolved_targets
                 .insert(c.target.clone(), c.snapshot.doc);
         }
-        self.release_save(c);
+        self.release_save(c, held);
         Ok(())
     }
     pub fn recovery_snapshot(&self, doc: DocId, operation: u64) -> Result<Snapshot, Error> {
@@ -381,11 +469,13 @@ impl Store {
             self.bound_targets.remove(&previous);
         }
         self.bound_targets.insert(c.target.clone(), c.snapshot.doc);
-        self.release_save(c);
+        self.release_save(c, false);
         Ok(())
     }
     pub fn new(budget: HistoryBudget) -> Self {
         Self {
+            scope_parents: HashMap::new(),
+            scope_objects: HashMap::new(),
             bound_targets: HashMap::new(),
             unresolved_targets: HashMap::new(),
             observer: crate::observe::ObserverHub::new(),
