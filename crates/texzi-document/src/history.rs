@@ -2,6 +2,8 @@ use crate::{
     ActiveSaveState, BaselineKind, BaselineState, FileAttention, GlobalMetadata, HistoryGroupId,
     HistoryObservation, MergeObservation, SaveObservation, SaveResult, SaveTerminal, Unimplemented,
 };
+#[cfg(windows)]
+mod verified_open;
 use crate::{
     Body, DocId, Eol, Error, Profile, Revision, SourceByte, StateToken, coordinates::boundary,
 };
@@ -14,6 +16,8 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+#[cfg(windows)]
+pub(crate) use verified_open::OpenDocument;
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -121,6 +125,10 @@ impl Default for HistoryBudget {
 
 /// All mutating APIs require &mut Store: one serial owner, no callback reentrancy.
 pub struct Store {
+    #[cfg(all(test, windows))]
+    verified_open_doc_counter: Option<Arc<AtomicU64>>,
+    #[cfg(windows)]
+    opened_identities: HashMap<DocId, crate::files::windows_identity::OpenAnchor>,
     #[cfg(windows)]
     pub(crate) publication_recovery: Arc<crate::files::windows_save::recovery::Registry>,
     scope_parents: HashMap<TargetKey, ScopeLease>,
@@ -524,6 +532,9 @@ impl Store {
             self.bound_targets.remove(&previous);
         }
         self.bound_targets.insert(final_target, c.snapshot.doc);
+        // Generic/save publication receipts do not transfer a lifetime witness.
+        #[cfg(windows)]
+        self.opened_identities.remove(&c.snapshot.doc);
         self.release_save(c, false);
         #[cfg(windows)]
         self.publication_recovery.complete(c.operation);
@@ -531,6 +542,10 @@ impl Store {
     }
     pub fn new(budget: HistoryBudget) -> Self {
         Self {
+            #[cfg(all(test, windows))]
+            verified_open_doc_counter: None,
+            #[cfg(windows)]
+            opened_identities: HashMap::new(),
             #[cfg(windows)]
             publication_recovery: Arc::default(),
             scope_parents: HashMap::new(),
@@ -1150,6 +1165,8 @@ impl Store {
             return Err(Error::UnresolvedConflict);
         }
         let d = self.docs.remove(&doc).ok_or(Error::InvalidDoc)?;
+        #[cfg(windows)]
+        self.opened_identities.remove(&doc);
         if let Some(target) = &d.bound_target {
             self.bound_targets.remove(target);
         }

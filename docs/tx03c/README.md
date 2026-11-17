@@ -23,7 +23,7 @@ ObserverScope=`DocGlobal + 显式已存在/已关闭ViewIds + schema1`，ViewIds
 | 域 | 当前返回值 |
 |---|---|
 | 正文 | 不可变Snapshot根：DocId/Revision/StateToken、UTF8 Rope、EOL/profile/BOM/provenance |
-| baseline | token/kind/backed_by_disk和dirty；支持InitialEmpty、测试用MemoryImport、ExternalLoadClaim、SavedByCaller |
+| baseline | token/kind/backed_by_disk和dirty；支持InitialEmpty、测试用MemoryImport、ExternalLoadClaim、SavedByCaller、VerifiedOpen（Windows真实只读捕获导入来源，非保存成功回执） |
 | 文件/attention | needs_target、epoch0、当前内存TargetKey、未提供fingerprint(None)、conflict/outcome_unknown明确NotImplemented、当前显示错误 |
 | save | 当前op/捕获revision-token/target/guard/阶段/cancellable，以及已发生的SucceededByCaller/Cancelled终态 |
 | history | undo/redo可用性、组数/最近组身份、当前合并边界及last_fence |

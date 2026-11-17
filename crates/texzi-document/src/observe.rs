@@ -48,6 +48,7 @@ pub enum BaselineKind {
     InitialEmpty,
     MemoryImport,
     ExternalLoadClaim,
+    VerifiedOpen,
     SavedByCaller,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -460,6 +461,10 @@ impl Store {
                 log: VecDeque::new(),
             },
         );
+    }
+    #[cfg(all(test, windows))]
+    pub(crate) fn test_observer_document_count(&self) -> usize {
+        self.observer.journals.len()
     }
     pub(crate) fn observed_write<T>(
         &mut self,

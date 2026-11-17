@@ -1,6 +1,48 @@
 //! Read-only captured open. Store identity/baseline attachment is a separate step.
 use super::*;
-use crate::files::{Encoding, FileError, Format, LoadedBytes};
+use crate::files::{Encoding, FileBinding, FileError, Format, LoadedBytes};
+
+#[derive(Debug)]
+pub enum AttachIssue {
+    Identity(IdentityError),
+    Owner(crate::Error),
+    ContinuityUnproven,
+}
+pub struct AttachFailure {
+    pub issue: AttachIssue,
+    pub capture: OpenedExisting,
+}
+impl std::fmt::Debug for AttachFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AttachFailure")
+            .field("issue", &self.issue)
+            .finish()
+    }
+}
+pub enum OpenOutcome {
+    /// Locate only: requested disk decoding/format was not applied to this Doc.
+    /// No binding for the current (possibly dirty) token is manufactured here.
+    Existing { snapshot: crate::Snapshot },
+    Imported {
+        snapshot: crate::Snapshot,
+        binding: FileBinding,
+    },
+}
+/// Same-object lifetime witness, not a content lock or saved version witness.
+pub(crate) struct OpenAnchor {
+    file: File,
+    id: FileIdentity,
+}
+impl OpenAnchor {
+    pub(crate) fn key(&self) -> crate::TargetKey {
+        self.id.target_key()
+    }
+    pub(crate) fn same_object(&self, other: &Self) -> Result<bool, IdentityError> {
+        Ok(identity(&self.file)? == self.id
+            && identity(&other.file)? == other.id
+            && self.id == other.id)
+    }
+}
 
 #[derive(Debug)]
 pub enum OpenIssue {
@@ -89,6 +131,49 @@ impl ObservedTarget {
     }
 }
 impl OpenedExisting {
+    /// Consumes a private capture while its original read handle and parent live.
+    /// Normal returned errors leave Store unchanged and return the capture.
+    pub fn attach(mut self, store: &mut crate::Store) -> Result<OpenOutcome, AttachFailure> {
+        let result = (|| {
+            self.recheck().map_err(AttachIssue::Identity)?;
+            // Keep object lifetime after releasing the strong read lock, while
+            // allowing future normal writers/replacement. Verify under that lock.
+            let file = OpenOptions::new()
+                .access_mode(FILE_READ_ATTRIBUTES)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(self.observed.resolved_path())
+                .map_err(|e| AttachIssue::Identity(e.into()))?;
+            check_kind(&file, false).map_err(AttachIssue::Identity)?;
+            let id = identity(&file).map_err(AttachIssue::Identity)?;
+            if id != self.version.identity {
+                return Err(AttachIssue::Identity(IdentityError::Changed));
+            }
+            self.recheck().map_err(AttachIssue::Identity)?;
+            store.import_verified_open(
+                &self.loaded,
+                OpenAnchor { file, id },
+                self.observed.save_scope(),
+            )
+        })();
+        match result {
+            Ok(crate::history::OpenDocument::Existing(snapshot)) => {
+                Ok(OpenOutcome::Existing { snapshot })
+            }
+            Ok(crate::history::OpenDocument::Imported(snapshot)) => {
+                let binding = FileBinding {
+                    imported: snapshot.clone(),
+                    original: self.loaded.original,
+                    format: self.loaded.format,
+                };
+                Ok(OpenOutcome::Imported { snapshot, binding })
+            }
+            Err(issue) => Err(AttachFailure {
+                issue,
+                capture: self,
+            }),
+        }
+    }
     pub fn loaded(&self) -> &LoadedBytes {
         &self.loaded
     }

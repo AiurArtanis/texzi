@@ -3,7 +3,8 @@
 mod open;
 use super::windows_security::SecurityDescriptor;
 use crate::TargetKey;
-pub use open::{OpenFailure, OpenIssue, OpenedExisting};
+pub(crate) use open::OpenAnchor;
+pub use open::{AttachFailure, AttachIssue, OpenFailure, OpenIssue, OpenOutcome, OpenedExisting};
 use std::{
     ffi::{OsStr, OsString},
     fs::{File, OpenOptions},
