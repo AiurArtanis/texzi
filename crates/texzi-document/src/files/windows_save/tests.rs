@@ -917,3 +917,108 @@ fn panicked_after_rename_keeps_poisoned_original_handle_for_inspection_only() {
     drop(notices);
     assert_eq!(fs::read(&target).unwrap(), [255, 254, 65, 0, 13, 0, 10, 0]);
 }
+
+#[test]
+fn permit_counter_failure_unregisters_only_its_operation_and_keeps_failure_owner() {
+    let (dir, other_target, mut store, other_n, other_ready) = new_ready_fixture();
+    let other_capture = other_ready.capture().clone();
+    let other_job = other_ready.permit(&mut store).unwrap();
+    assert_eq!(store.publication_recovery.len(), 1);
+    let (other_before, _) = store
+        .observe_and_subscribe(other_n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+
+    // Separate parent scope, but the same Store and registry as the live other job.
+    let overflow_dir = dir.join("overflow");
+    fs::create_dir(&overflow_dir).unwrap();
+    let target = overflow_dir.join("never-published.txt");
+    let raw = b"overflow\r\n";
+    let (n, binding) =
+        super::super::LoadedBytes::decode(Arc::from(&raw[..]), Some(super::super::Encoding::Utf8))
+            .unwrap()
+            .attach(&mut store)
+            .unwrap();
+    store.test_set_unbound_binding_epoch(n.doc, u64::MAX);
+    let ready = ObservedTarget::inspect(&target)
+        .unwrap()
+        .prepare_bound(&binding, &mut store)
+        .unwrap()
+        .begin(&mut store)
+        .unwrap()
+        .write()
+        .unwrap()
+        .lock_temporary()
+        .unwrap()
+        .prepare_new_owner_only()
+        .unwrap();
+    let capture = ready.capture().clone();
+    assert_eq!(capture.binding_epoch, u64::MAX);
+    assert_eq!(
+        store.captured_save_stage(&capture),
+        Ok(SaveStage::WritingTemp)
+    );
+    let (before, subscription) = store
+        .observe_and_subscribe(n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    // CounterExhausted is inside permit_bound_new, after the register call;
+    // this is not a cancelled/stale capture rejected by the earlier check.
+    let failure = match ready.permit(&mut store) {
+        Ok(_) => panic!("exhausted binding epoch received a permit"),
+        Err(failure) => failure,
+    };
+    assert!(matches!(
+        &failure.issue,
+        PublishIssue::Owner(Error::CounterExhausted)
+    ));
+    assert_eq!(store.publication_recovery.len(), 1);
+    assert!(store.drain_dropped_publications().is_empty());
+    assert!(store.retained_publication_recoveries().is_empty());
+    assert_eq!(
+        store.captured_save_stage(&capture),
+        Ok(SaveStage::WritingTemp)
+    );
+    assert_eq!(
+        store.captured_save_stage(&other_capture),
+        Ok(SaveStage::Replacing)
+    );
+    let (after, _) = store
+        .observe_and_subscribe(n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    assert_eq!(before.state, after.state);
+    assert_eq!(before.cursor, after.cursor);
+    assert!(matches!(
+        store.poll_observer(&subscription).unwrap(),
+        crate::ObserverPoll::Pending
+    ));
+    assert!(!target.exists());
+    let temp = failure.current_path().unwrap();
+    assert_separate_reader_denied(&temp);
+    assert_eq!(failure.read_retained_bytes().unwrap(), raw);
+    failure.record_failure(&mut store).unwrap(); // Still owned and active until here.
+    assert!(matches!(
+        store.poll_observer(&subscription).unwrap(),
+        crate::ObserverPoll::Batch(_)
+    ));
+    assert_eq!(failure.record_failure(&mut store), Err(Error::InvalidSave));
+    drop(failure);
+    assert_eq!(fs::read(&temp).unwrap(), raw);
+    assert!(!target.exists());
+    assert_eq!(store.publication_recovery.len(), 1);
+    assert!(store.drain_dropped_publications().is_empty());
+    let (other_after, _) = store
+        .observe_and_subscribe(other_n.doc, ObserverScope::new(vec![]), 8)
+        .unwrap();
+    assert_eq!(other_before.state, other_after.state);
+    assert_eq!(other_before.cursor, other_after.cursor);
+    assert_eq!(
+        store.captured_save_stage(&other_capture),
+        Ok(SaveStage::Replacing)
+    );
+    // The unrelated entry still owns its real publication and can finish normally.
+    other_job.run().unwrap().accept(&mut store).unwrap();
+    assert_eq!(store.publication_recovery.len(), 0);
+    assert_eq!(
+        fs::read(other_target).unwrap(),
+        [255, 254, 65, 0, 13, 0, 10, 0]
+    );
+}

@@ -214,12 +214,19 @@ impl NewReady {
                 #[cfg(test)]
                 verification_format: None,
             }),
-            Err(e) => Err(PublishFailure {
-                issue: PublishIssue::Owner(e),
-                resources: self.resources,
-                phase: Phase::BeforePermit,
-                _guard: None,
-            }),
+            Err(e) => {
+                // No permit was granted. The returned failure remains the sole
+                // recovery owner; dropping the local guard must not enqueue it.
+                store
+                    .publication_recovery
+                    .complete(self.capture().operation);
+                Err(PublishFailure {
+                    issue: PublishIssue::Owner(e),
+                    resources: self.resources,
+                    phase: Phase::BeforePermit,
+                    _guard: None,
+                })
+            }
         }
     }
 }

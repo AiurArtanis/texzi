@@ -548,6 +548,14 @@ impl Store {
             next_save: 1,
         }
     }
+    /// Fresh-document counter boundary fixture; absent from normal product builds.
+    #[cfg(all(test, windows))]
+    pub(crate) fn test_set_unbound_binding_epoch(&mut self, doc: DocId, epoch: u64) {
+        assert!(!self.saves.contains_key(&doc));
+        let document = self.docs.get_mut(&doc).unwrap();
+        assert!(document.bound_target.is_none());
+        document.binding_epoch = epoch;
+    }
     pub fn open_utf8(
         &mut self,
         raw: &str,
