@@ -255,6 +255,7 @@ fn ambiguous_windows_target_forms_are_rejected_without_creating_any_file() {
             Err(StageFailure {
                 issue: StageIssue::InvalidTarget,
                 recovery_temp: None,
+                ..
             })
         ));
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);

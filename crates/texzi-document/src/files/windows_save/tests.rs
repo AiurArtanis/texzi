@@ -1,6 +1,7 @@
 //! Generated-file Windows unit fixtures. Never run against user documents.
 use super::*;
 mod creation_security;
+mod returned_errors;
 use crate::{
     BoundaryPolicy, Edit, HistoryBudget, ObserverScope, SaveFailure, SaveFailureOutcome,
     Transaction,
@@ -163,6 +164,7 @@ fn security_boundary(case: SecurityCase) {
         .observe_and_subscribe(s.doc, ObserverScope::new(vec![]), 8)
         .unwrap();
     let recovery;
+    let retained_recovery;
     if mismatch || denied {
         let failure = match worker.write() {
             Ok(_) => panic!("mismatched security accepted"),
@@ -170,22 +172,27 @@ fn security_boundary(case: SecurityCase) {
         };
         if denied {
             assert!(
-                matches!(failure.issue, BoundIssue::Stage(StageIssue::Io(e)) if e.raw_os_error() == Some(5))
+                matches!(&failure.issue, BoundIssue::Stage(StageIssue::Io(e)) if e.raw_os_error() == Some(5))
             );
         } else {
             assert!(matches!(
-                failure.issue,
+                &failure.issue,
                 BoundIssue::Stage(StageIssue::SecurityMismatch)
             ));
         }
-        let returned = failure.capture.unwrap();
+        let returned = failure.capture.as_ref().unwrap().clone();
         assert_eq!(returned.operation, capture.operation);
         assert_eq!(returned.binding_epoch, capture.binding_epoch);
         assert_eq!(returned.snapshot.token, capture.snapshot.token);
         assert!(Arc::ptr_eq(&returned.snapshot.body, &capture.snapshot.body));
-        recovery = failure.recovery_temp.unwrap();
-        assert_eq!(fs::metadata(&recovery).unwrap().len(), 0);
-        assert!(fs::read(&recovery).unwrap().is_empty());
+        recovery = failure.recovery_temp.as_ref().unwrap().clone();
+        let retained = failure.recovery().unwrap().clone();
+        let temporary = retained.temporary().unwrap();
+        assert_eq!(temporary.capture().operation, returned.operation);
+        assert!(temporary.read_created_bytes().unwrap().is_empty());
+        assert_separate_reader_denied(&recovery);
+        retained.recheck_parent().unwrap();
+        retained_recovery = Some(retained);
         store
             .finish_save_failure(
                 &returned,
@@ -206,6 +213,7 @@ fn security_boundary(case: SecurityCase) {
             n.token
         );
     } else {
+        retained_recovery = None;
         let staged = worker.write().unwrap();
         assert_eq!(staged.payload(), b"NA\r\n");
         assert_eq!(staged.capture().snapshot.token, n.token);
@@ -257,14 +265,20 @@ fn security_boundary(case: SecurityCase) {
     );
     assert_eq!(fs::read(&target).unwrap(), b"A\r\n");
     assert!(recovery.exists());
-    assert_eq!(
-        fs::read(&recovery).unwrap(),
-        if mismatch || denied {
-            &b""[..]
-        } else {
-            &b"NA\r\n"[..]
-        }
-    );
+    if let Some(retained) = retained_recovery {
+        assert_separate_reader_denied(&recovery);
+        assert!(
+            retained
+                .temporary()
+                .unwrap()
+                .read_created_bytes()
+                .unwrap()
+                .is_empty()
+        );
+        retained.recheck_parent().unwrap();
+    } else {
+        assert_eq!(fs::read(&recovery).unwrap(), b"NA\r\n");
+    }
 }
 
 #[test]

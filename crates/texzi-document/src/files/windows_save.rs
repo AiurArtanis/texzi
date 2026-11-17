@@ -7,7 +7,7 @@ pub mod recovery;
 mod tests;
 use super::{
     FileBinding, FileError, Format, PreparedSave,
-    staging::{ContentGuard, StageIssue, StagedSave, StagingWork},
+    staging::{ContentGuard, StageIssue, StagedSave, StagingWork, TemporaryRecovery},
     windows_identity::{
         FileIdentity, FileVersion, HistoricalSource, IdentityError, ObservedTarget,
     },
@@ -18,7 +18,10 @@ pub use publish::{
     CommittedNew, NewFileSecurity, NewPublication, NewReady, PublishFailure, PublishIssue,
     PublishedNew,
 };
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Debug)]
 pub enum BoundIssue {
@@ -31,6 +34,56 @@ pub struct BoundFailure {
     pub issue: BoundIssue,
     pub capture: Option<SaveCapture>,
     pub recovery_temp: Option<PathBuf>,
+    recovery: Option<BoundRecovery>,
+}
+impl BoundFailure {
+    /// Retained resources for this returned error only, not a publication permit.
+    pub fn recovery(&self) -> Option<&BoundRecovery> {
+        self.recovery.as_ref()
+    }
+}
+/// Read-only resources retained by a returned pre-permit error. No Store state
+/// transition, automatic cleanup, or protection after all receipts are dropped.
+#[derive(Clone)]
+pub struct BoundRecovery {
+    capture: SaveCapture,
+    format: Format,
+    temporary: Option<TemporaryRecovery>,
+    _historical_source: Option<Arc<HistoricalSource>>,
+    _source_anchor: Option<Arc<super::windows_identity::OpenAnchor>>,
+    observed: Arc<ObservedTarget>,
+}
+impl BoundRecovery {
+    pub fn capture(&self) -> &SaveCapture {
+        &self.capture
+    }
+    pub fn format(&self) -> Format {
+        self.format
+    }
+    pub fn temporary(&self) -> Option<&TemporaryRecovery> {
+        self.temporary.as_ref()
+    }
+    pub fn parent_identity(&self) -> FileIdentity {
+        self.observed.parent_identity()
+    }
+    pub fn target_path(&self) -> PathBuf {
+        self.observed.resolved_path()
+    }
+    /// Inspect the retained original parent; does not authorize a save action.
+    pub fn recheck_parent(&self) -> Result<(), IdentityError> {
+        self.observed.recheck_parent()
+    }
+    fn failure(&self, issue: BoundIssue, temporary: Option<TemporaryRecovery>) -> BoundFailure {
+        let recovery_temp = temporary.as_ref().map(|temp| temp.temp_hint().to_owned());
+        let mut recovery = self.clone();
+        recovery.temporary = temporary;
+        BoundFailure {
+            issue,
+            capture: Some(self.capture.clone()),
+            recovery_temp,
+            recovery: Some(recovery),
+        }
+    }
 }
 impl std::fmt::Debug for BoundFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -48,17 +101,19 @@ pub struct BoundPrepared {
     prepared: PreparedSave,
 }
 pub struct BoundWork {
-    historical_source: Option<HistoricalSource>,
-    source_anchor: Option<super::windows_identity::OpenAnchor>,
-    observed: ObservedTarget,
+    historical_source: Option<Arc<HistoricalSource>>,
+    source_anchor: Option<Arc<super::windows_identity::OpenAnchor>>,
+    observed: Arc<ObservedTarget>,
     work: StagingWork,
     capture: SaveCapture,
     format: Format,
+    #[cfg(test)]
+    after_staging: Option<Box<dyn Fn(&Path) -> std::io::Result<()> + Send>>,
 }
 pub struct BoundStaged {
-    historical_source: Option<HistoricalSource>,
-    _source_anchor: Option<super::windows_identity::OpenAnchor>,
-    observed: ObservedTarget,
+    historical_source: Option<Arc<HistoricalSource>>,
+    _source_anchor: Option<Arc<super::windows_identity::OpenAnchor>>,
+    observed: Arc<ObservedTarget>,
     temporary: FileVersion,
     staged: StagedSave,
     format: Format,
@@ -122,6 +177,7 @@ impl ObservedTarget {
             issue,
             capture: None,
             recovery_temp: None,
+            recovery: None,
         };
         // Validate existence before reading metadata, including legacy None bindings.
         let owner_snapshot = store
@@ -261,33 +317,56 @@ impl BoundPrepared {
         self.prepared.capture()
     }
     pub fn begin(self, store: &mut Store) -> Result<BoundWork, BoundFailure> {
-        let work = self
-            .prepared
-            .begin_staging(store)
-            .map_err(|e| BoundFailure {
-                issue: BoundIssue::Stage(e.issue),
-                capture: Some(self.prepared.capture().clone()),
-                recovery_temp: e.recovery_temp,
-            })?;
+        let historical_source = self.historical_source.map(Arc::new);
+        let source_anchor = self.source_anchor.map(Arc::new);
+        let observed = Arc::new(self.observed);
+        let capture = self.prepared.capture().clone();
+        let format = self.prepared.format();
+        let recovery = BoundRecovery {
+            capture: capture.clone(),
+            format,
+            temporary: None,
+            _historical_source: historical_source.clone(),
+            _source_anchor: source_anchor.clone(),
+            observed: observed.clone(),
+        };
+        let work = self.prepared.begin_staging(store).map_err(|e| {
+            let temporary = e.recovery().cloned();
+            recovery.failure(BoundIssue::Stage(e.issue), temporary)
+        })?;
         Ok(BoundWork {
-            historical_source: self.historical_source,
-            source_anchor: self.source_anchor,
-            observed: self.observed,
+            historical_source,
+            source_anchor,
+            observed,
             work,
-            capture: self.prepared.capture().clone(),
-            format: self.prepared.format(),
+            capture,
+            format,
+            #[cfg(test)]
+            after_staging: None,
         })
     }
 }
 impl BoundWork {
+    /// Source-only fixture hook at the real inner/outer validation boundary.
+    #[cfg(test)]
+    pub(super) fn set_after_staging(
+        &mut self,
+        hook: impl Fn(&Path) -> std::io::Result<()> + Send + 'static,
+    ) {
+        self.after_staging = Some(Box::new(hook));
+    }
     /// No Store borrow and no caller-supplied path/guard/capture. The pinned
     /// parent and the complete original target observation travel with the work.
     pub fn write(self) -> Result<BoundStaged, BoundFailure> {
-        let fail = |issue, recovery_temp| BoundFailure {
-            issue,
-            capture: Some(self.capture.clone()),
-            recovery_temp,
+        let recovery = BoundRecovery {
+            capture: self.capture.clone(),
+            format: self.format,
+            temporary: None,
+            _historical_source: self.historical_source.clone(),
+            _source_anchor: self.source_anchor.clone(),
+            observed: self.observed.clone(),
         };
+        let fail = |issue, temporary| recovery.failure(issue, temporary);
         if let Some(source) = &self.historical_source {
             source
                 .recheck()
@@ -307,15 +386,27 @@ impl BoundWork {
                 &guard,
                 self.observed.version().map(|v| &v.security),
             )
-            .map_err(|e| fail(BoundIssue::Stage(e.issue), e.recovery_temp))?;
-        let recovery = Some(staged.recovery_temp().to_owned());
+            .map_err(|e| {
+                let temporary = e.recovery().cloned();
+                fail(BoundIssue::Stage(e.issue), temporary)
+            })?;
+        let temporary_recovery = staged.recovery();
+        #[cfg(test)]
+        if let Some(hook) = &self.after_staging {
+            hook(&self.observed.resolved_path()).map_err(|e| {
+                fail(
+                    BoundIssue::Identity(IdentityError::Io(e)),
+                    Some(temporary_recovery.clone()),
+                )
+            })?;
+        }
         self.observed
             .recheck()
-            .map_err(|e| fail(BoundIssue::Identity(e), recovery.clone()))?;
+            .map_err(|e| fail(BoundIssue::Identity(e), Some(temporary_recovery.clone())))?;
         if let Some(source) = &self.historical_source {
             source
                 .recheck()
-                .map_err(|e| fail(BoundIssue::Identity(e), recovery.clone()))?;
+                .map_err(|e| fail(BoundIssue::Identity(e), Some(temporary_recovery.clone())))?;
         }
         let (temp, current_path) = (|| -> Result<_, IdentityError> {
             let mut file = staged.created_file()?;
@@ -324,7 +415,7 @@ impl BoundWork {
                 super::windows_identity::volume_path(&file)?,
             ))
         })()
-        .map_err(|e| fail(BoundIssue::Identity(e), recovery.clone()))?;
+        .map_err(|e| fail(BoundIssue::Identity(e), Some(temporary_recovery.clone())))?;
         if current_path != staged.recovery_temp()
             || current_path.parent() != self.observed.resolved_path().parent()
             || temp.identity != staged.created_identity()
@@ -336,7 +427,10 @@ impl BoundWork {
                 .version()
                 .is_some_and(|v| v.identity == temp.identity)
         {
-            return Err(fail(BoundIssue::Identity(IdentityError::Changed), recovery));
+            return Err(fail(
+                BoundIssue::Identity(IdentityError::Changed),
+                Some(temporary_recovery),
+            ));
         }
         Ok(BoundStaged {
             historical_source: self.historical_source,
