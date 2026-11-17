@@ -22,6 +22,12 @@ pub struct FileIdentity {
     pub volume: u64,
     pub id: [u8; 16],
 }
+impl FileIdentity {
+    pub(super) fn target_key(self) -> TargetKey {
+        let hex: String = self.id.iter().map(|b| format!("{b:02x}")).collect();
+        TargetKey(format!("windows-file:{:016x}:{hex}", self.volume))
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileVersion {
     pub security: SecurityDescriptor,
@@ -162,6 +168,25 @@ fn optional_version(path: &Path) -> Result<Option<FileVersion>, IdentityError> {
     }
 }
 impl ObservedTarget {
+    pub(super) fn target_name(&self) -> &OsStr {
+        &self.name
+    }
+    pub(super) fn parent_for_new_file(&self) -> Result<File, IdentityError> {
+        self.recheck_parent()?;
+        let parent = OpenOptions::new()
+            .access_mode(FILE_ADD_FILE | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&self.parent_path)?;
+        check_kind(&parent, true)?;
+        if identity(&parent)? != self.parent_identity
+            || volume_path(&parent)? != self.parent_path
+            || SecurityDescriptor::read(&parent)? != self.parent_security
+        {
+            return Err(IdentityError::Changed);
+        }
+        Ok(parent)
+    }
     /// Resolves a local volume and a file-ID from handles. Reads original bytes;
     /// never creates or modifies the target. Only the final parent/leaf may not
     /// be reparses; ancestor aliases resolve through the opened parent handle.
@@ -217,7 +242,7 @@ impl ObservedTarget {
     /// the whole directory, avoiding unsafe case-folding/short-name assumptions.
     pub fn reservation_key(&self) -> TargetKey {
         let (kind, id) = match &self.version {
-            Some(v) => ("file", v.identity),
+            Some(v) => return v.identity.target_key(),
             None => ("new-in-directory", self.parent_identity),
         };
         let hex: String = id.id.iter().map(|b| format!("{b:02x}")).collect();
@@ -236,10 +261,16 @@ impl ObservedTarget {
     /// Full byte comparison is intentionally not described as compare-and-swap.
     /// Publication must still retain any version raced in after this check.
     pub fn recheck(&self) -> Result<(), IdentityError> {
+        self.recheck_parent()?;
+        if optional_version(&self.resolved_path())? != self.version {
+            return Err(IdentityError::Changed);
+        }
+        Ok(())
+    }
+    pub(super) fn recheck_parent(&self) -> Result<(), IdentityError> {
         if identity(&self.parent)? != self.parent_identity
             || SecurityDescriptor::read(&self.parent)? != self.parent_security
             || volume_path(&self.parent)? != self.parent_path
-            || optional_version(&self.resolved_path())? != self.version
         {
             return Err(IdentityError::Changed);
         }

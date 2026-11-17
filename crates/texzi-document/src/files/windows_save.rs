@@ -1,4 +1,5 @@
-//! Bound, pre-permit Windows staging. No replace, Ready, or success entry point.
+//! Bound Windows staging and limited new-target publication; replacement pending.
+mod publish;
 #[cfg(test)]
 mod tests;
 use super::{
@@ -8,6 +9,9 @@ use super::{
     windows_security::SecurityDescriptor,
 };
 use crate::{Error, SaveCapture, SaveStage, Store};
+pub use publish::{
+    CommittedNew, NewPublication, NewReady, PublishFailure, PublishIssue, PublishedNew,
+};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -249,7 +253,7 @@ impl BoundStaged {
         }
         Ok(())
     }
-    /// Not a CAS, ACL check, final identity, or authorization to replace anything.
+    /// Owner-held stage recheck; not a CAS or publication authorization.
     pub fn recheck_files(&self) -> Result<(), IdentityError> {
         self.observed.recheck()?;
         let mut file = self.staged.created_file()?;

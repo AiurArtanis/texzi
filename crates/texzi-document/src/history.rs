@@ -309,6 +309,25 @@ impl Store {
     pub(crate) fn captured_save_stage(&self, c: &SaveCapture) -> Result<SaveStage, Error> {
         self.active_save(c).map(|a| a.stage)
     }
+    pub(crate) fn permit_bound_new_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        scope: &SaveScope,
+    ) -> Result<(), Error> {
+        let active = self.active_save(c)?;
+        if active.stage != SaveStage::WritingTemp
+            || active.scope.as_ref() != Some(scope)
+            || scope.object.is_some()
+        {
+            return Err(Error::InvalidSave);
+        }
+        self.docs[&c.snapshot.doc]
+            .binding_epoch
+            .checked_add(1)
+            .ok_or(Error::CounterExhausted)?;
+        self.advance_save_unpublished(c, SaveStage::ReadyToReplace)?;
+        self.commit_permit_unpublished(c)
+    }
     pub(crate) fn advance_save_unpublished(
         &mut self,
         c: &SaveCapture,
@@ -438,12 +457,36 @@ impl Store {
         &mut self,
         c: &SaveCapture,
     ) -> Result<(), Error> {
-        if self.active_save(c)?.stage != SaveStage::Verifying {
+        self.accept_result_unpublished(c, c.target.clone(), false)
+            .map(|_| ())
+    }
+    pub(crate) fn accept_published_new_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        final_target: TargetKey,
+    ) -> Result<u64, Error> {
+        self.accept_result_unpublished(c, final_target, true)
+    }
+    fn accept_result_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        final_target: TargetKey,
+        published_new: bool,
+    ) -> Result<u64, Error> {
+        let active = self.active_save(c)?;
+        let required = if published_new {
+            SaveStage::Replacing
+        } else {
+            SaveStage::Verifying
+        };
+        if active.stage != required
+            || (published_new && active.scope.as_ref().is_none_or(|s| s.object.is_some()))
+        {
             return Err(Error::InvalidSave);
         }
         if self
             .bound_targets
-            .get(&c.target)
+            .get(&final_target)
             .is_some_and(|owner| *owner != c.snapshot.doc)
         {
             return Err(Error::Busy);
@@ -453,6 +496,9 @@ impl Store {
             .binding_epoch
             .checked_add(1)
             .ok_or(Error::CounterExhausted)?;
+        if published_new {
+            self.saves.get_mut(&c.snapshot.doc).unwrap().stage = SaveStage::Verifying;
+        }
         let d = self
             .docs
             .get_mut(&c.snapshot.doc)
@@ -461,7 +507,7 @@ impl Store {
         d.backed = true;
         d.baseline_kind = BaselineKind::SavedByCaller;
         let previous = d.bound_target.clone();
-        d.bound_target = Some(c.target.clone());
+        d.bound_target = Some(final_target.clone());
         d.binding_epoch = next_epoch;
         d.save_terminal = Some(SaveTerminal {
             operation: c.operation,
@@ -471,9 +517,9 @@ impl Store {
         if let Some(previous) = previous {
             self.bound_targets.remove(&previous);
         }
-        self.bound_targets.insert(c.target.clone(), c.snapshot.doc);
+        self.bound_targets.insert(final_target, c.snapshot.doc);
         self.release_save(c, false);
-        Ok(())
+        Ok(next_epoch)
     }
     pub fn new(budget: HistoryBudget) -> Self {
         Self {

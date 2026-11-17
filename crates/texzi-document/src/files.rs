@@ -1,4 +1,4 @@
-//! T07 codecs, captured payload and pre-permit staging. No target publication.
+//! T07 codecs, captured payload and Windows save components. UI integration pending.
 use crate::{DocId, SaveCapture, Snapshot, Store, TargetKey};
 use std::{path::Path, sync::Arc};
 pub mod staging;
