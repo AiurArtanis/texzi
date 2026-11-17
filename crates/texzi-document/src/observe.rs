@@ -1,4 +1,6 @@
 //! C08 memory publication, bounded replay, complete-batch client recovery.
+#[cfg(test)]
+mod failure_ack_tests;
 use crate::*;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
