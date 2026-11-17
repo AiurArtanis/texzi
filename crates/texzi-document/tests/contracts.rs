@@ -1,4 +1,5 @@
 use texzi_document::*;
+mod file_codecs;
 mod native_plans;
 mod observers;
 mod views;

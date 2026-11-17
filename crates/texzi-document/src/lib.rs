@@ -4,6 +4,7 @@
 mod anchors;
 mod body;
 mod coordinates;
+pub mod files;
 mod history;
 mod observe;
 mod observed_writes;
