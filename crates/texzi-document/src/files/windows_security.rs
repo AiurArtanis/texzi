@@ -4,7 +4,10 @@ use std::{fs::File, io, os::windows::io::AsRawHandle};
 use windows_sys::Win32::{
     Foundation::LocalFree,
     Security::{
-        Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
+        Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+            SE_FILE_OBJECT, SetSecurityInfo,
+        },
         *,
     },
 };
@@ -12,7 +15,7 @@ use windows_sys::Win32::{
 struct LocalDescriptor(PSECURITY_DESCRIPTOR);
 impl Drop for LocalDescriptor {
     fn drop(&mut self) {
-        // SAFETY: GetSecurityInfo returned this LocalAlloc-managed descriptor.
+        // SAFETY: Windows returned this LocalAlloc-managed descriptor.
         unsafe {
             LocalFree(self.0);
         }
@@ -33,6 +36,102 @@ impl std::fmt::Debug for SecurityDescriptor {
     }
 }
 impl SecurityDescriptor {
+    /// Seal a new, empty temporary file without inheriting broader reader ACEs.
+    /// Keep its actual owner/group. OWNER_RIGHTS is the file owner, not everyone.
+    pub(super) fn protect_new_file(file: &File) -> io::Result<()> {
+        let sddl: Vec<u16> = "D:P(A;;FA;;;OW)(A;;FA;;;SY)\0".encode_utf16().collect();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: terminated static-policy input and a valid output pointer.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if descriptor.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing private descriptor",
+            ));
+        }
+        let owned = LocalDescriptor(descriptor);
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut dacl = std::ptr::null_mut();
+        // SAFETY: the descriptor was produced by the conversion API and is live.
+        if unsafe { GetSecurityDescriptorDacl(owned.0, &mut present, &mut dacl, &mut defaulted) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if present == 0 || dacl.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing private temporary DACL",
+            ));
+        }
+        let code = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null(),
+            )
+        };
+        if code != 0 {
+            return Err(io::Error::from_raw_os_error(code as i32));
+        }
+        let actual = Self::read(file)?;
+        let actual_descriptor = actual.storage.as_ptr().cast_mut().cast();
+        let mut control = 0;
+        let mut revision = 0;
+        let mut actual_present = 0;
+        let mut actual_defaulted = 0;
+        let mut actual_dacl = std::ptr::null_mut();
+        // SAFETY: both descriptors are live OS-produced, valid allocations.
+        if unsafe { GetSecurityDescriptorControl(actual_descriptor, &mut control, &mut revision) }
+            == 0
+            || unsafe {
+                GetSecurityDescriptorDacl(
+                    actual_descriptor,
+                    &mut actual_present,
+                    &mut actual_dacl,
+                    &mut actual_defaulted,
+                )
+            } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if actual_present == 0 || actual_dacl.is_null() || control & SE_DACL_PROTECTED == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "private temporary DACL was not protected",
+            ));
+        }
+        let matches = unsafe {
+            let expected = std::slice::from_raw_parts(dacl.cast::<u8>(), (*dacl).AclSize as usize);
+            let returned = std::slice::from_raw_parts(
+                actual_dacl.cast::<u8>(),
+                (*actual_dacl).AclSize as usize,
+            );
+            expected == returned
+        };
+        if !matches {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "private temporary DACL mismatch",
+            ));
+        }
+        Ok(())
+    }
     #[cfg(test)]
     pub(super) fn with_flipped_dacl_protection(&self) -> io::Result<Self> {
         let mut changed = self.clone();

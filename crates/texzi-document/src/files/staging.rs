@@ -159,8 +159,8 @@ impl StagingWork {
     }
     /// Reserves an exclusive sibling, writes the captured payload, flushes and
     /// rereads it, then rechecks the target. Errors keep reservation and temp.
-    /// There is deliberately no publish/commit/success function before identity
-    /// coordination and the post-permit failure API have been reviewed.
+    /// This lower-level API does not publish a name or accept a saved baseline;
+    /// those require the separate bound new-target proof and owner permit.
     pub fn write_temp(
         self,
         target: &Path,
@@ -236,10 +236,17 @@ impl StagingWork {
                     DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
                     FILE_SHARE_NONE, WRITE_DAC, WRITE_OWNER,
                 };
+                let access = FILE_GENERIC_READ
+                    | FILE_GENERIC_WRITE
+                    | DELETE
+                    | WRITE_DAC
+                    | if required_security.is_some() {
+                        WRITE_OWNER
+                    } else {
+                        0
+                    };
                 options
-                    .access_mode(
-                        FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER,
-                    )
+                    .access_mode(access)
                     .share_mode(FILE_SHARE_NONE)
                     .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
             }
@@ -296,6 +303,13 @@ impl StagingWork {
                     issue: StageIssue::Io(e),
                     recovery_temp: Some(temp.clone()),
                 })?;
+        } else {
+            super::windows_security::SecurityDescriptor::protect_new_file(&file).map_err(|e| {
+                StageFailure {
+                    issue: StageIssue::Io(e),
+                    recovery_temp: Some(temp.clone()),
+                }
+            })?;
         }
         // Unit-test-only fault at the real post-copy/pre-payload boundary. No
         // hook, environment switch, or alternative path exists in product builds.
