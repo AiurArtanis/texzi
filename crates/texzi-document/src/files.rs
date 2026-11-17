@@ -1,6 +1,7 @@
-//! T07 codec/read boundary. No disk replacement or save-success receipt here.
-use crate::{DocId, Profile, SaveCapture, Snapshot, Store, TargetKey};
+//! T07 codecs, captured payload and pre-permit staging. No target publication.
+use crate::{DocId, SaveCapture, Snapshot, Store, TargetKey};
 use std::{path::Path, sync::Arc};
+pub mod staging;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -32,6 +33,9 @@ pub enum FileError {
     NeedsDecodedImportApi,
     WrongDocument,
     ProfileChangeNeedsCoordination,
+    ExternalChangeDuringRead,
+    UnsupportedFileKind,
+    NeedsLegacyByteMap,
     Document(crate::Error),
 }
 impl From<crate::Error> for FileError {
@@ -44,15 +48,27 @@ pub struct LoadedBytes {
     original: Arc<[u8]>,
     text: String,
     format: Format,
-    disk_read: bool,
 }
 impl LoadedBytes {
     /// Reads bytes only. Filesystem identity/reparse resolution is not claimed.
     pub fn read_only(path: &Path, explicit: Option<Encoding>) -> Result<Self, FileError> {
-        let mut loaded =
-            Self::decode(std::fs::read(path).map_err(FileError::Io)?.into(), explicit)?;
-        loaded.disk_read = true;
-        Ok(loaded)
+        use std::io::Read;
+        let mut file = std::fs::File::open(path).map_err(FileError::Io)?;
+        let before = file.metadata().map_err(FileError::Io)?;
+        if !before.is_file() {
+            return Err(FileError::UnsupportedFileKind);
+        }
+        let modified = before.modified().map_err(FileError::Io)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(FileError::Io)?;
+        let after = file.metadata().map_err(FileError::Io)?;
+        if before.len() != after.len()
+            || after.len() != bytes.len() as u64
+            || after.modified().map_err(FileError::Io)? != modified
+        {
+            return Err(FileError::ExternalChangeDuringRead);
+        }
+        Self::decode(bytes.into(), explicit)
     }
     pub fn decode(original: Arc<[u8]>, explicit: Option<Encoding>) -> Result<Self, FileError> {
         let signature = if !matches!(explicit, Some(Encoding::Utf16Le | Encoding::Utf16Be))
@@ -86,7 +102,6 @@ impl LoadedBytes {
             }
         })?;
         Ok(Self {
-            disk_read: false,
             original,
             text,
             format: Format {
@@ -98,6 +113,28 @@ impl LoadedBytes {
     pub fn text(&self) -> &str {
         &self.text
     }
+    /// An explicit BOM policy disambiguates a signature from literal FEFF text.
+    pub fn decode_exact(original: Arc<[u8]>, format: Format) -> Result<Self, FileError> {
+        let prefix: &[u8] = if format.bom {
+            match format.encoding {
+                Encoding::Utf8 => &[0xef, 0xbb, 0xbf],
+                Encoding::Utf16Le => &[0xff, 0xfe],
+                Encoding::Utf16Be => &[0xfe, 0xff],
+                _ => return Err(FileError::UnsupportedBom),
+            }
+        } else {
+            &[]
+        };
+        if !original.starts_with(prefix) {
+            return Err(FileError::BomMismatch);
+        }
+        let text = decode(&original[prefix.len()..], format.encoding)?;
+        Ok(Self {
+            original,
+            text,
+            format,
+        })
+    }
     pub fn format(&self) -> Format {
         self.format
     }
@@ -106,10 +143,9 @@ impl LoadedBytes {
     }
     /// No Store mutation happens until decoding and the import precondition pass.
     pub fn attach(self, store: &mut Store) -> Result<(Snapshot, FileBinding), FileError> {
-        if self.text.starts_with('\u{feff}') {
-            return Err(FileError::NeedsDecodedImportApi);
-        }
-        let snapshot = store.open_utf8(&self.text, Profile::default(), self.disk_read)?;
+        // File identity is not yet resolved: even a real read is not a verified
+        // filesystem binding. Import decoded content without claiming disk identity.
+        let snapshot = store.open_decoded(&self.text, self.format)?;
         let binding = FileBinding {
             imported: snapshot.clone(),
             original: self.original,
@@ -151,7 +187,7 @@ impl FileBinding {
         if s.doc != self.imported.doc {
             return Err(FileError::WrongDocument);
         }
-        if s.body.profile.utf8_bom {
+        if s.body.profile.utf8_bom || s.body.profile.file_format != Some(format) {
             return Err(FileError::ProfileChangeNeedsCoordination);
         }
         // Token plus exact immutable body identity, not revision or text equality.
@@ -160,6 +196,20 @@ impl FileBinding {
             && Arc::ptr_eq(&s.body, &self.imported.body)
         {
             return Ok(self.original.clone());
+        }
+        if format == self.format
+            && !matches!(
+                format.encoding,
+                Encoding::Utf8 | Encoding::Utf16Le | Encoding::Utf16Be
+            )
+        {
+            let imported = self.imported.body.to_utf8();
+            let text = std::str::from_utf8(&imported).map_err(|_| FileError::InvalidBytes)?;
+            if encode(text, self.format)?.as_slice() != self.original.as_ref() {
+                // Without an exact legacy byte map, reencoding could rewrite
+                // untouched aliases. Preserve the original and reject the save.
+                return Err(FileError::NeedsLegacyByteMap);
+            }
         }
         let utf8 = s.body.to_utf8();
         let text = std::str::from_utf8(&utf8).map_err(|_| FileError::InvalidBytes)?;
@@ -174,9 +224,6 @@ impl FileBinding {
         guard: String,
         format: Format,
     ) -> Result<PreparedSave, FileError> {
-        if format != self.format {
-            return Err(FileError::ProfileChangeNeedsCoordination);
-        }
         let snapshot = store.snapshot(self.doc())?;
         let bytes = self.encode_snapshot(&snapshot, format)?;
         let capture = store.begin_save(self.doc(), target, guard)?;

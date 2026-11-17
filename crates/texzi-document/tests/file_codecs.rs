@@ -48,10 +48,195 @@ fn malformed_input_and_bom_conflicts_reject_without_replacement() {
         LoadedBytes::decode(Arc::from([0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 65]), None).unwrap();
     assert_eq!(loaded.text(), "\u{feff}A");
     let mut store = Store::new(HistoryBudget::default());
+    let (s, binding) = loaded.attach(&mut store).unwrap();
+    assert_eq!(s.body.source().to_string(), "\u{feff}A");
+    assert_eq!(
+        &*binding.encode_snapshot(&s, binding.format()).unwrap(),
+        &[0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 65]
+    );
+}
+#[test]
+fn handwritten_feff_goldens_do_not_strip_content_and_undo_recovers_original() {
+    let cases: Vec<(Format, Vec<u8>, &str)> = vec![
+        (
+            format(Encoding::Utf8, true),
+            vec![0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 65],
+            "\u{feff}A",
+        ),
+        (
+            format(Encoding::Utf16Le, true),
+            vec![0xff, 0xfe, 0xff, 0xfe, 65, 0],
+            "\u{feff}A",
+        ),
+        (
+            format(Encoding::Utf16Be, true),
+            vec![0xfe, 0xff, 0xfe, 0xff, 0, 65],
+            "\u{feff}A",
+        ),
+        (
+            format(Encoding::Utf8, false),
+            vec![0xef, 0xbb, 0xbf, 65],
+            "\u{feff}A",
+        ),
+        (
+            format(Encoding::Utf16Le, true),
+            vec![0xff, 0xfe, 0xff, 0xfe, 0xff, 0xfe, 65, 0],
+            "\u{feff}\u{feff}A",
+        ),
+        (format(Encoding::Utf8, false), vec![], ""),
+        (format(Encoding::Utf16Be, true), vec![0xfe, 0xff], ""),
+    ];
+    for (f, raw, text) in cases {
+        let loaded = LoadedBytes::decode_exact(raw.clone().into(), f).unwrap();
+        assert_eq!(loaded.text(), text);
+        let mut store = Store::new(HistoryBudget::default());
+        let (s, binding) = loaded.attach(&mut store).unwrap();
+        assert_eq!(s.body.source().to_string(), text);
+        assert_eq!(&*binding.encode_snapshot(&s, f).unwrap(), raw);
+        if let Some(at) = text.find('A') {
+            let next = store
+                .submit(Transaction {
+                    doc: s.doc,
+                    base: s.revision,
+                    edits: vec![Edit::input(&s, at..at + 1, "B")],
+                    boundary: BoundaryPolicy::Grapheme,
+                    cancelled: false,
+                })
+                .unwrap()
+                .snapshot;
+            let changed = binding.encode_snapshot(&next, f).unwrap();
+            let decoded = LoadedBytes::decode_exact(changed, f).unwrap();
+            assert_eq!(decoded.text(), text.replace('A', "B"));
+            let restored = store.undo(s.doc).unwrap().snapshot;
+            assert_eq!(restored.token, s.token);
+            assert_eq!(&*binding.encode_snapshot(&restored, f).unwrap(), raw);
+        }
+    }
+}
+#[test]
+fn format_history_and_memory_only_receipt_keep_newer_format_dirty() {
+    let raw = vec![0xff, 0xfe, 65, 0];
+    let loaded = LoadedBytes::decode(raw.clone().into(), None).unwrap();
+    let f = loaded.format();
+    let mut store = Store::new(HistoryBudget::default());
+    let (s, b) = loaded.attach(&mut store).unwrap();
+    let prepared = b
+        .prepare(
+            &mut store,
+            TargetKey("memory-fixture".into()),
+            String::new(),
+            f,
+        )
+        .unwrap();
+    let mut profile = s.body.profile;
+    profile.file_format = Some(format(Encoding::Utf16Be, true));
+    let changed = store
+        .set_serialization(s.doc, s.revision, profile, None)
+        .unwrap()
+        .snapshot;
+    assert_ne!(changed.token, s.token);
+    assert_eq!(
+        &*b.encode_snapshot(&changed, profile.file_format.unwrap())
+            .unwrap(),
+        &[0xfe, 0xff, 0, 65]
+    );
+    // Simulated Store receipt only; no file is written or claimed verified here.
+    super::complete(&mut store, prepared.capture());
+    assert!(store.dirty(s.doc).unwrap());
+    assert_eq!(store.snapshot(s.doc).unwrap().body.profile, profile);
+    assert_eq!(
+        store.accept_verified_save(prepared.capture()),
+        Err(Error::InvalidSave)
+    );
+    let restored = store.undo(s.doc).unwrap().snapshot;
+    assert_eq!(restored.token, s.token);
+    assert!(!store.dirty(s.doc).unwrap());
+    assert_eq!(&*b.encode_snapshot(&restored, f).unwrap(), raw);
+    let noop = store
+        .set_serialization(s.doc, restored.revision, restored.body.profile, None)
+        .unwrap();
+    assert!(!noop.changed);
+    assert_eq!(noop.snapshot.token, restored.token);
+    let redo = store.redo(s.doc).unwrap().snapshot;
+    assert_eq!(redo.body.profile, profile);
+    assert!(store.dirty(s.doc).unwrap());
+    let mut without_bom = profile;
+    without_bom.file_format = Some(format(Encoding::Utf16Be, false));
+    let bom_change = store
+        .set_serialization(s.doc, redo.revision, without_bom, None)
+        .unwrap()
+        .snapshot;
+    assert_ne!(bom_change.token, redo.token);
+    assert_eq!(bom_change.body.source().to_string(), "A");
+    assert_eq!(
+        &*b.encode_snapshot(&bom_change, without_bom.file_format.unwrap())
+            .unwrap(),
+        &[0, 65]
+    );
+    let undo_bom = store.undo(s.doc).unwrap().snapshot;
+    assert_eq!(undo_bom.token, redo.token);
+    assert_eq!(undo_bom.body.profile, profile);
+}
+#[test]
+fn unencodable_format_is_undoable_and_does_not_reserve_save_target() {
+    let loaded = LoadedBytes::decode_exact(
+        vec![0xf0, 0x9f, 0x98, 0x80].into(),
+        format(Encoding::Utf8, false),
+    )
+    .unwrap();
+    let mut store = Store::new(HistoryBudget::default());
+    let (s, b) = loaded.attach(&mut store).unwrap();
+    let mut profile = s.body.profile;
+    let f = format(Encoding::Windows1252, false);
+    profile.file_format = Some(f);
+    let bad = store
+        .set_serialization(s.doc, s.revision, profile, None)
+        .unwrap()
+        .snapshot;
+    assert_ne!(bad.token, s.token);
+    assert!(
+        b.prepare(
+            &mut store,
+            TargetKey("bad-encoding".into()),
+            String::new(),
+            f
+        )
+        .is_err()
+    );
+    assert!(store.dirty(s.doc).unwrap());
+    let c = store
+        .begin_save(s.doc, TargetKey("not-reserved".into()), String::new())
+        .unwrap();
+    store.cancel_save(&c).unwrap();
+    let restored = store.undo(s.doc).unwrap().snapshot;
+    assert_eq!(restored.token, s.token);
+    assert!(!store.dirty(s.doc).unwrap());
+}
+#[test]
+fn noncanonical_legacy_bytes_passthrough_but_modified_save_requires_byte_map() {
+    let f = format(Encoding::Gb18030WebEncodingRs0844, false);
+    let raw = vec![0xa3, 0xa0, 65];
+    let loaded = LoadedBytes::decode_exact(raw.clone().into(), f).unwrap();
+    assert_eq!(loaded.text(), "\u{3000}A");
+    let mut store = Store::new(HistoryBudget::default());
+    let (s, b) = loaded.attach(&mut store).unwrap();
+    assert_eq!(&*b.encode_snapshot(&s, f).unwrap(), raw);
+    let changed = store
+        .submit(Transaction {
+            doc: s.doc,
+            base: s.revision,
+            edits: vec![Edit::input(&s, 3..4, "B")],
+            boundary: BoundaryPolicy::Grapheme,
+            cancelled: false,
+        })
+        .unwrap()
+        .snapshot;
     assert!(matches!(
-        loaded.attach(&mut store),
-        Err(FileError::NeedsDecodedImportApi)
+        b.encode_snapshot(&changed, f),
+        Err(FileError::NeedsLegacyByteMap)
     ));
+    let restored = store.undo(s.doc).unwrap().snapshot;
+    assert_eq!(&*b.encode_snapshot(&restored, f).unwrap(), raw);
 }
 #[test]
 fn legacy_choices_are_explicit_and_lossy_output_is_rejected() {

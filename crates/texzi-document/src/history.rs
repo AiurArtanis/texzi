@@ -290,6 +290,34 @@ impl Store {
         if profile.version != 1 {
             return Err(Error::InvalidProfile);
         }
+        self.open_import(raw, profile, backed_by_disk, false)
+    }
+    pub fn open_decoded(
+        &mut self,
+        text: &str,
+        format: crate::files::Format,
+    ) -> Result<Snapshot, Error> {
+        self.open_import(
+            text,
+            Profile {
+                version: 2,
+                file_format: Some(format),
+                ..Profile::default()
+            },
+            false,
+            true,
+        )
+    }
+    fn open_import(
+        &mut self,
+        raw: &str,
+        profile: Profile,
+        backed_by_disk: bool,
+        decoded: bool,
+    ) -> Result<Snapshot, Error> {
+        if !profile.valid() {
+            return Err(Error::InvalidProfile);
+        }
         let id = NEXT_DOC
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| x.checked_add(1))
             .map_err(|_| Error::CounterExhausted)?;
@@ -298,7 +326,11 @@ impl Store {
             doc: DocId(id),
             revision: Revision(0),
             token,
-            body: Arc::new(Body::import_utf8(raw, profile)),
+            body: Arc::new(if decoded {
+                Body::import_decoded(raw, profile)
+            } else {
+                Body::import_utf8(raw, profile)
+            }),
         };
         self.docs.insert(
             current.doc,
@@ -471,7 +503,7 @@ impl Store {
         profile: Profile,
         eol: Option<Eol>,
     ) -> Result<Receipt, Error> {
-        if profile.version != 1 {
+        if !profile.valid() {
             return Err(Error::InvalidProfile);
         }
         let s = self.snapshot(doc)?;

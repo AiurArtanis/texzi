@@ -72,7 +72,12 @@ fn body_json(s: &Snapshot) -> Value {
         let origin=origin.as_ref().map(|o|{let id=if let Some(i)=sources.iter().position(|p|std::sync::Arc::ptr_eq(p,&o.source)){i}else{sources.push(o.source.clone());sources.len()-1};json!({"source":id,"raw_start":o.raw.start,"raw_end":o.raw.end,"logical_len":o.logical_len})});
         json!({"start":span.start,"end":span.end,"origin":origin})
     }).collect::<Vec<_>>();
-    json!({"revision":s.revision.0,"token":format!("{:?}",s.token),"source":s.body.source().to_string(),"serialized_utf8":String::from_utf8(s.body.to_utf8()).unwrap(),"eols":s.body.eols().iter().map(|e|format!("{e:?}")).collect::<Vec<_>>(),"profile":{"encoding":"UTF-8","bom":s.body.profile.utf8_bom,"version":s.body.profile.version,"default_eol":format!("{:?}",s.body.profile.default_eol)},"provenance":{"sources":sources.iter().map(|s|s.as_ref()).collect::<Vec<_>>(),"spans":spans}})
+    let profile = if let Some(f) = s.body.profile.file_format {
+        json!({"encoding":format!("{:?}",f.encoding),"bom":f.bom,"version":s.body.profile.version,"default_eol":format!("{:?}",s.body.profile.default_eol)})
+    } else {
+        json!({"encoding":"UTF-8","bom":s.body.profile.utf8_bom,"version":s.body.profile.version,"default_eol":format!("{:?}",s.body.profile.default_eol)})
+    };
+    json!({"revision":s.revision.0,"token":format!("{:?}",s.token),"source":s.body.source().to_string(),"serialized_utf8":String::from_utf8(s.body.to_utf8()).unwrap(),"eols":s.body.eols().iter().map(|e|format!("{e:?}")).collect::<Vec<_>>(),"profile":profile,"provenance":{"sources":sources.iter().map(|s|s.as_ref()).collect::<Vec<_>>(),"spans":spans}})
 }
 fn global_json(g: &ObservedGlobal, views: &HashMap<String, ViewId>) -> Value {
     let m = &g.metadata;
