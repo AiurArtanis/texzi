@@ -1,6 +1,8 @@
 //! Bound Windows staging and limited new-target publication; replacement pending.
 #[cfg(test)]
 mod current_tests;
+#[forbid(unsafe_code)]
+mod existing;
 mod publish;
 pub mod recovery;
 #[cfg(test)]
@@ -14,6 +16,10 @@ use super::{
     windows_security::SecurityDescriptor,
 };
 use crate::{Error, SaveCapture, SaveStage, Store};
+pub use existing::{
+    ExistingReadCandidate, ExistingReadCapture, ExistingReadFailure, ExistingReadIssue,
+    ExistingReadWork,
+};
 pub use publish::{
     CommittedNew, NewFileSecurity, NewPublication, NewReady, PublishFailure, PublishIssue,
     PublishedNew,

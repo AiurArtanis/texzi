@@ -1,5 +1,7 @@
 //! Handle-based Windows identity observation, not an atomic replacement API.
 //! Keep the directory handle alive; no delete sharing pins this parent.
+#[forbid(unsafe_code)]
+mod existing_read;
 mod open;
 use super::windows_security::SecurityDescriptor;
 use crate::TargetKey;
@@ -222,6 +224,11 @@ fn optional_version(path: &Path) -> Result<Option<FileVersion>, IdentityError> {
     }
 }
 impl ObservedTarget {
+    /// Retains a strictly shared read handle for this observation's original
+    /// complete version. This does not refresh its baseline or bind a document.
+    pub(super) fn hold_existing_read(&self) -> Result<File, IdentityError> {
+        existing_read::hold_existing_read(self)
+    }
     pub(super) fn target_name(&self) -> &OsStr {
         &self.name
     }
