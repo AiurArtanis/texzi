@@ -1,7 +1,23 @@
 //! Owner/group/DACL observation and copying onto a new temporary file only.
 //! No SACL access or privilege changes.
 use std::{fs::File, io, os::windows::io::AsRawHandle};
-use windows_sys::Win32::{Foundation::ERROR_INSUFFICIENT_BUFFER, Security::*};
+use windows_sys::Win32::{
+    Foundation::LocalFree,
+    Security::{
+        Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
+        *,
+    },
+};
+
+struct LocalDescriptor(PSECURITY_DESCRIPTOR);
+impl Drop for LocalDescriptor {
+    fn drop(&mut self) {
+        // SAFETY: GetSecurityInfo returned this LocalAlloc-managed descriptor.
+        unsafe {
+            LocalFree(self.0);
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecurityDescriptor {
@@ -23,7 +39,7 @@ impl SecurityDescriptor {
         let descriptor = self.storage.as_ptr().cast_mut().cast();
         let mut control = 0;
         let mut revision = 0;
-        // SAFETY: descriptor came from GetKernelObjectSecurity and remains live;
+        // SAFETY: descriptor came from GetSecurityInfo and remains live;
         // these APIs read the input descriptor and do not modify its buffer.
         if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
             return Err(io::Error::last_os_error());
@@ -37,10 +53,44 @@ impl SecurityDescriptor {
             | GROUP_SECURITY_INFORMATION
             | DACL_SECURITY_INFORMATION
             | inheritance;
+        let mut owner = std::ptr::null_mut();
+        let mut group = std::ptr::null_mut();
+        let mut dacl = std::ptr::null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
+        // SAFETY: read-only OS-produced descriptor; output pointers refer into
+        // its live storage for the duration of SetSecurityInfo below.
+        if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted) } == 0
+            || unsafe { GetSecurityDescriptorGroup(descriptor, &mut group, &mut defaulted) } == 0
+            || unsafe {
+                GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)
+            } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // Do not turn an absent/uninterpretable DACL into a NULL DACL. A present
+        // NULL DACL is retained only when explicitly present in the source.
+        if owner.is_null() || group.is_null() || present == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported owner/group/DACL representation",
+            ));
+        }
         // SAFETY: live create_new handle, validated OS-produced descriptor. The
         // OS enforces WRITE_OWNER/WRITE_DAC; no privileges are enabled on error.
-        if unsafe { SetKernelObjectSecurity(file.as_raw_handle(), flags, descriptor) } == 0 {
-            return Err(io::Error::last_os_error());
+        let result = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                flags,
+                owner,
+                group,
+                dacl,
+                std::ptr::null(),
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::from_raw_os_error(result as i32));
         }
         Ok(())
     }
@@ -51,22 +101,51 @@ impl SecurityDescriptor {
     pub(super) fn read(file: &File) -> io::Result<Self> {
         let flags =
             OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
-        let mut needed = 0;
-        // SAFETY: live handle, null output with zero capacity, valid size pointer.
-        let ok = unsafe {
-            GetKernelObjectSecurity(
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: live file/directory handle and valid output pointer. Other
+        // output pointers are optional; request the complete descriptor only.
+        let result = unsafe {
+            GetSecurityInfo(
                 file.as_raw_handle(),
+                SE_FILE_OBJECT,
                 flags,
                 std::ptr::null_mut(),
-                0,
-                &mut needed,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
             )
         };
-        let error = io::Error::last_os_error();
-        if ok == 0 && error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
-            return Err(error);
+        if result != 0 {
+            return Err(io::Error::from_raw_os_error(result as i32));
         }
-        // Windows ACLs are bounded; refuse unexplained allocations before IO.
+        if descriptor.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing security descriptor",
+            ));
+        }
+        let owned = LocalDescriptor(descriptor);
+        // SAFETY: successful GetSecurityInfo descriptor remains allocated here.
+        if unsafe { IsValidSecurityDescriptor(owned.0) } == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid security descriptor",
+            ));
+        }
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe { GetSecurityDescriptorControl(owned.0, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if control & SE_SELF_RELATIVE == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported absolute security descriptor",
+            ));
+        }
+        let needed = unsafe { GetSecurityDescriptorLength(owned.0) };
+        // Bound our owned copy; Windows owns the source allocation until drop.
         if needed == 0 || needed > 1_048_576 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -74,25 +153,14 @@ impl SecurityDescriptor {
             ));
         }
         let mut storage = vec![0u64; (needed as usize).div_ceil(8)];
-        let capacity = (storage.len() * 8) as u32;
-        // SAFETY: aligned, zero-initialized output of capacity bytes and live handle.
-        if unsafe {
-            GetKernelObjectSecurity(
-                file.as_raw_handle(),
-                flags,
+        // SAFETY: validated self-relative descriptor of needed bytes; our aligned
+        // initialized destination is at least that large and does not overlap.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                owned.0.cast::<u8>(),
                 storage.as_mut_ptr().cast(),
-                capacity,
-                &mut needed,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        if needed == 0 || needed > capacity {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "security descriptor size changed",
-            ));
+                needed as usize,
+            );
         }
         Ok(Self {
             storage,
