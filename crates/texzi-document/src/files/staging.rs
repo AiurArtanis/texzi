@@ -110,9 +110,8 @@ impl PreparedSave {
                 return Err(StageIssue::Conflict);
             }
             guard.verify(target)?;
-            store
-                .advance_save(&self.capture, SaveStage::ReadyToReplace)
-                .map_err(StageIssue::Document)?;
+            // Stay WritingTemp until a filesystem identity coordinator verifies
+            // the target/parent/epoch and explicitly authorizes ReadyToReplace.
             Ok(())
         })();
         work.map_err(|issue| StageFailure {

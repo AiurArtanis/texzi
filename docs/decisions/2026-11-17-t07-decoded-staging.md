@@ -13,3 +13,5 @@
 一次离线document --lib check实际exit101：encoding_rs0.8.44无条件build-dependency rustversion/build.rs及multiversion_no_op仍需link.exe，未检查到本次产品代码。原始日志保留，不重试/安装/换target，不把fmt当类型检查。fmt/locked metadata/diff按实际命令另记。
 
 后续仍需失败终态及Unknown冲突闩锁、真实文件ID/epoch及SaveAs唯一协调，再接ReplaceFileW+备份/新目标无覆盖发布/事后核验与binding原子刷新。不得用临时写完成或内存receipt宣布安全保存成功。严格GBK936/GB18030标准映射、未改legacy区间原字节地图、UI打开保存、完整结构和查找均在原首版队列。
+
+后续收紧：暂存成功仍停WritingTemp；内容比较不等于身份确认，不能自行进入ReadyToReplace。未来身份协调器须核target/parent/epoch和DocId归属后才能推进。组件新增断言临时写后commit_permit仍InvalidSave。此前154f5aa源码阶段的Ready推进保留在git历史，不套成已运行失败或通过。

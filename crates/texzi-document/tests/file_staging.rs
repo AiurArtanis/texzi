@@ -62,6 +62,7 @@ fn staged_payload_is_captured_and_never_replaces_original() {
     assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"new\r\n");
     assert_eq!(fs::read(&target).unwrap(), b"old\r\n");
     assert!(store.dirty(s.doc).unwrap());
+    assert_eq!(store.commit_permit(p.capture()), Err(Error::InvalidSave));
     assert_eq!(
         store.accept_verified_save(p.capture()),
         Err(Error::InvalidSave)
