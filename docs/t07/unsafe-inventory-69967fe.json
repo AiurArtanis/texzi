@@ -1,0 +1,1800 @@
+{
+  "scope": "static fixed-source lexical/module-layout inventory; NOT a compiler or memory-safety proof",
+  "product_commit": "69967fef327bcabb2363e144847fafde9521e4b5",
+  "source_files": [
+    {
+      "path": "crates/texzi-document/src/anchors.rs",
+      "bytes": 1817,
+      "sha256": "457B6C9EF24F520F797B8329BF2B25366BBA0834FDAF6AEE90341818668829B5"
+    },
+    {
+      "path": "crates/texzi-document/src/bin/document-probe.rs",
+      "bytes": 16472,
+      "sha256": "70C160263A010C57B982BC8130D64D8D369E3D8B13BAD3AA3AE9951836BDDFAB"
+    },
+    {
+      "path": "crates/texzi-document/src/bin/document_probe/observe.rs",
+      "bytes": 21665,
+      "sha256": "11826CFA12B36EA3B5B565C3A7396045D88656F83BDF5F9C80FE16DA43D9E8F9"
+    },
+    {
+      "path": "crates/texzi-document/src/bin/document_probe/save.rs",
+      "bytes": 3171,
+      "sha256": "EF79A92DC08840B07A56F5DA3DC37C983959EEF5C728D25BC5FCCC3A4AB16B36"
+    },
+    {
+      "path": "crates/texzi-document/src/body.rs",
+      "bytes": 6848,
+      "sha256": "CB9AE8A833B5B63A27CE00B891FD8C0568B4A0416B77AC2EC3B5216C6CC240D0"
+    },
+    {
+      "path": "crates/texzi-document/src/coordinates.rs",
+      "bytes": 5160,
+      "sha256": "FFAA0A32AECB9F05423D9069B331D7565C69314349F19256DD6C5F1C45B78D43"
+    },
+    {
+      "path": "crates/texzi-document/src/files.rs",
+      "bytes": 13514,
+      "sha256": "5EA56C6F5CA2EA6D344621CDAEC719AD287E5EEF076EBAF036F7047255D33E4B"
+    },
+    {
+      "path": "crates/texzi-document/src/files/staging.rs",
+      "bytes": 14380,
+      "sha256": "498F2EECA70BFD121CAAC8DB6D823C2F85A5CF141242E4EAC52039B31AE24C33"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_identity.rs",
+      "bytes": 12651,
+      "sha256": "BED7EE5C48C5CC44DC0E7906FE15E42B35D13DF31749177E2AE4626642F90E06"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_identity/open.rs",
+      "bytes": 9202,
+      "sha256": "594863ABB0B097987A42F070E594B4A13FBC8DD52C21DBE406726599198AEA5B"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_identity/open/tests.rs",
+      "bytes": 6747,
+      "sha256": "154D8774708B85695F4A763CA681A9311C82953820B5356CE16DF37930322747"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_save.rs",
+      "bytes": 18232,
+      "sha256": "C302A726D7E16989121CA79C39617EBD98EF21DC2034EA33B3594363D1731BC9"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_save/current_tests.rs",
+      "bytes": 28048,
+      "sha256": "9A90FD2A8D7C26898EC474DDD1FD7AC126328E1096529F4850625DD4324831F8"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_save/current_tests/parent_replacement.rs",
+      "bytes": 11449,
+      "sha256": "15E620EBB41503E69B000708B9542E0B48C97CCE4B076B1B8FF4A0691AC7F420"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_save/publish.rs",
+      "bytes": 20935,
+      "sha256": "8668E6397FEEDE160555F2216A0E4BB6032DEC9334280711695976E5D9668DAF"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_save/recovery.rs",
+      "bytes": 7832,
+      "sha256": "6D2D26E2FBAFF3D62620325C8E59297A7EBF62721B9FF119A7FB40400DE919A5"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_save/tests.rs",
+      "bytes": 39785,
+      "sha256": "798BACAC41082B77065247D730E74E5E396026D42FD9AC904530AA7C421B6749"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_save/tests/creation_security.rs",
+      "bytes": 23025,
+      "sha256": "2EC40DE77FF91500989CDF0FBC537A795E6A6CEB6A58484B8E51F9D8DC6DEC7F"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_save/tests/creation_security/contracts.rs",
+      "bytes": 26270,
+      "sha256": "13595B40172F5889F972BF8CC6A846BC2EDDFD67CA4AB48F8B8DC9B749F12D70"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_save/tests/creation_security/unsupported_creation.rs",
+      "bytes": 5784,
+      "sha256": "917CDB1F53FC8BF4218B61DF88C30FCCA55FE5D815ABCD0A20C1EF64911CE664"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "bytes": 19130,
+      "sha256": "F1216E38139BD39DF10EFBC3906680FF143EFD7C7CC5366779D33E8303B15DFB"
+    },
+    {
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "bytes": 5108,
+      "sha256": "3DCD35497597A505B6E406B900B798A0EB6633CC3AFF0659F48A48EDD41295F2"
+    },
+    {
+      "path": "crates/texzi-document/src/history.rs",
+      "bytes": 40981,
+      "sha256": "9D96CF97A4B3F28267BF6075D0D7789B60003E8F14800506AE5A383954509187"
+    },
+    {
+      "path": "crates/texzi-document/src/history/failure_ack.rs",
+      "bytes": 3471,
+      "sha256": "B4A9E4BB3334E86EB822B4FE80254F69DC0B973F453FC0A3598945269404670F"
+    },
+    {
+      "path": "crates/texzi-document/src/history/verified_open.rs",
+      "bytes": 4314,
+      "sha256": "D17222A0FE684FE3060B8B523CF18B34E6EA923EB17EAF54DF3CF7642CD74B30"
+    },
+    {
+      "path": "crates/texzi-document/src/history/verified_open/tests.rs",
+      "bytes": 19284,
+      "sha256": "F4666F766C9AE057B6D462ABFE911D10E69AF2528BD3D4D99548D9FBD5EE3EEF"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "bytes": 1575,
+      "sha256": "F3CE09A4E0034B897D0F1C844B8CB230A0BEA885C26AEF9F9C353DF47C03ABFA"
+    },
+    {
+      "path": "crates/texzi-document/src/observe.rs",
+      "bytes": 37712,
+      "sha256": "CEFE98F8E6DBBFC6A7B45D0353B7334882AED125EBF034A2D627D292EEC95FE0"
+    },
+    {
+      "path": "crates/texzi-document/src/observe/failure_ack_tests.rs",
+      "bytes": 9735,
+      "sha256": "303086D116759F1B53D2BCD4EBBFEC80C5729F62BEF5E7954AEDB898E8815F3A"
+    },
+    {
+      "path": "crates/texzi-document/src/observed_writes.rs",
+      "bytes": 6538,
+      "sha256": "289D71844D0861B8E472DC58ABF9F748F00972392A604ACB915667EA745C8DB4"
+    },
+    {
+      "path": "crates/texzi-document/src/provenance.rs",
+      "bytes": 7458,
+      "sha256": "5F1408984D749964DBBD3ED17081AA770BC8D73354AE7103939D08DEBE62301B"
+    },
+    {
+      "path": "crates/texzi-document/src/ui_plan.rs",
+      "bytes": 3295,
+      "sha256": "6F03C24B304D875045F259FCDD3C05EB4BC11C7B11C273C6396105136EDB1193"
+    },
+    {
+      "path": "crates/texzi-document/src/view_store.rs",
+      "bytes": 11020,
+      "sha256": "D6688CDDFA4FAEEEED685F6D2EA46D4F682BC948DDF366F52CE4251DA2433EDB"
+    },
+    {
+      "path": "crates/texzi-document/src/views.rs",
+      "bytes": 6848,
+      "sha256": "C7757DD012A45413117E4465D3099E58436676686EB30DEC9CE9D5F22BD5D7B5"
+    },
+    {
+      "path": "crates/texzi-document/tests/binding_epochs/mod.rs",
+      "bytes": 4823,
+      "sha256": "45DB03073E75464A60A4A588D59ABBD8796B0E91122E333ED5EEFA68906D8E73"
+    },
+    {
+      "path": "crates/texzi-document/tests/contracts.rs",
+      "bytes": 16737,
+      "sha256": "6CA1D8F3B5C02F0FE8B1F948337BA4CDE9F9B61C050BFD157FC4B92CCBB1D33E"
+    },
+    {
+      "path": "crates/texzi-document/tests/file_codecs/mod.rs",
+      "bytes": 11121,
+      "sha256": "DC030E88321D2694070B9E01EFBE959F7A9E7145C30C06E8A2EE8083FC8FC8F5"
+    },
+    {
+      "path": "crates/texzi-document/tests/file_staging/mod.rs",
+      "bytes": 10523,
+      "sha256": "FE71619C92A6B8AD9BE93B63464077B387CABCDBC2FBD7649BA4D5A03FB0B209"
+    },
+    {
+      "path": "crates/texzi-document/tests/native_plans.rs",
+      "bytes": 1927,
+      "sha256": "6AC831C8733F46EC4C1C987136EBE62AD54F81962D046C6577D99C8EC363DEF5"
+    },
+    {
+      "path": "crates/texzi-document/tests/observers/mod.rs",
+      "bytes": 17829,
+      "sha256": "F236FA957AA3B66F8E4D36C065D5540C4E549E26F1E8FA400B83DB4A80327EF5"
+    },
+    {
+      "path": "crates/texzi-document/tests/save_failure_ack/mod.rs",
+      "bytes": 23329,
+      "sha256": "57864E7858F5E3F55BDCDBCECC69B97E68E931A06213E44C8FB23BA777E9B3E7"
+    },
+    {
+      "path": "crates/texzi-document/tests/save_failures/mod.rs",
+      "bytes": 6559,
+      "sha256": "3FDBB6B1A1946BE96B09CC654DFAD5A5F547CA49926B78568A045D7969EEF495"
+    },
+    {
+      "path": "crates/texzi-document/tests/save_scopes/mod.rs",
+      "bytes": 5310,
+      "sha256": "908C90A91E0AF806B8E72B3E7217A816CB33F49001F12B7CCE79F848891B7FC2"
+    },
+    {
+      "path": "crates/texzi-document/tests/views/mod.rs",
+      "bytes": 11414,
+      "sha256": "682A86CE122785FD5120DC91321EE7A20EF9B15F7FB902B37CB5110B1CA827EA"
+    },
+    {
+      "path": "crates/texzi-document/tests/windows_bound_staging/mod.rs",
+      "bytes": 8527,
+      "sha256": "B0797C74A089395A7E5FF3CBB447CC0E22778BC7AEC3EDFE8F1E0D069146293E"
+    },
+    {
+      "path": "crates/texzi-document/tests/windows_identity/mod.rs",
+      "bytes": 2689,
+      "sha256": "BCE2197F6D63B0230255DD3426B3489C61BA3EF678DF4F4283CB553427F274A6"
+    }
+  ],
+  "crate_roots": [
+    {
+      "kind": "lib",
+      "path": "crates/texzi-document/src/lib.rs",
+      "module": "texzi_document"
+    },
+    {
+      "kind": "binary-layout",
+      "path": "crates/texzi-document/src/bin/document-probe.rs",
+      "module": "bin::document-probe"
+    },
+    {
+      "kind": "integration-layout",
+      "path": "crates/texzi-document/tests/contracts.rs",
+      "module": "test::contracts"
+    },
+    {
+      "kind": "integration-layout",
+      "path": "crates/texzi-document/tests/native_plans.rs",
+      "module": "test::native_plans"
+    }
+  ],
+  "module_nodes": [
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document",
+      "path": "crates/texzi-document/src/lib.rs",
+      "effective_source_lint": "deny",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::anchors",
+      "path": "crates/texzi-document/src/anchors.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::body",
+      "path": "crates/texzi-document/src/body.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::coordinates",
+      "path": "crates/texzi-document/src/coordinates.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files",
+      "path": "crates/texzi-document/src/files.rs",
+      "effective_source_lint": "deny",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::staging",
+      "path": "crates/texzi-document/src/files/staging.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_identity",
+      "path": "crates/texzi-document/src/files/windows_identity.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_identity::open",
+      "path": "crates/texzi-document/src/files/windows_identity/open.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_identity::open::tests",
+      "path": "crates/texzi-document/src/files/windows_identity/open/tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save",
+      "path": "crates/texzi-document/src/files/windows_save.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::current_tests",
+      "path": "crates/texzi-document/src/files/windows_save/current_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::current_tests::parent_replacement",
+      "path": "crates/texzi-document/src/files/windows_save/current_tests/parent_replacement.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::publish",
+      "path": "crates/texzi-document/src/files/windows_save/publish.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::recovery",
+      "path": "crates/texzi-document/src/files/windows_save/recovery.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::tests",
+      "path": "crates/texzi-document/src/files/windows_save/tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::tests::creation_security",
+      "path": "crates/texzi-document/src/files/windows_save/tests/creation_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::tests::creation_security::contracts",
+      "path": "crates/texzi-document/src/files/windows_save/tests/creation_security/contracts.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::tests::creation_security::unsupported_creation",
+      "path": "crates/texzi-document/src/files/windows_save/tests/creation_security/unsupported_creation.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::history",
+      "path": "crates/texzi-document/src/history.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::history::failure_ack",
+      "path": "crates/texzi-document/src/history/failure_ack.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::history::verified_open",
+      "path": "crates/texzi-document/src/history/verified_open.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::history::verified_open::tests",
+      "path": "crates/texzi-document/src/history/verified_open/tests.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::observe",
+      "path": "crates/texzi-document/src/observe.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::observe::failure_ack_tests",
+      "path": "crates/texzi-document/src/observe/failure_ack_tests.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": [
+        "#[cfg(test)]",
+        "#![cfg(test)]"
+      ]
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::observed_writes",
+      "path": "crates/texzi-document/src/observed_writes.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::provenance",
+      "path": "crates/texzi-document/src/provenance.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::ui_plan",
+      "path": "crates/texzi-document/src/ui_plan.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::view_store",
+      "path": "crates/texzi-document/src/view_store.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::views",
+      "path": "crates/texzi-document/src/views.rs",
+      "effective_source_lint": "forbid",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "binary-layout",
+      "module": "bin::document-probe",
+      "path": "crates/texzi-document/src/bin/document-probe.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": [
+        "feature=probe (manifest)"
+      ]
+    },
+    {
+      "crate_kind": "binary-layout",
+      "module": "bin::document-probe::observe_probe",
+      "path": "crates/texzi-document/src/bin/document_probe/observe.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": [
+        "feature=probe (manifest)"
+      ]
+    },
+    {
+      "crate_kind": "binary-layout",
+      "module": "bin::document-probe::save_probe",
+      "path": "crates/texzi-document/src/bin/document_probe/save.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": [
+        "feature=probe (manifest)"
+      ]
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts",
+      "path": "crates/texzi-document/tests/contracts.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::binding_epochs",
+      "path": "crates/texzi-document/tests/binding_epochs/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::file_codecs",
+      "path": "crates/texzi-document/tests/file_codecs/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::file_staging",
+      "path": "crates/texzi-document/tests/file_staging/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::native_plans",
+      "path": "crates/texzi-document/tests/native_plans.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::observers",
+      "path": "crates/texzi-document/tests/observers/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::save_failure_ack",
+      "path": "crates/texzi-document/tests/save_failure_ack/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::save_failures",
+      "path": "crates/texzi-document/tests/save_failures/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::save_scopes",
+      "path": "crates/texzi-document/tests/save_scopes/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::views",
+      "path": "crates/texzi-document/tests/views/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::windows_bound_staging",
+      "path": "crates/texzi-document/tests/windows_bound_staging/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::contracts::windows_identity",
+      "path": "crates/texzi-document/tests/windows_identity/mod.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "crate_kind": "integration-layout",
+      "module": "test::native_plans",
+      "path": "crates/texzi-document/tests/native_plans.rs",
+      "effective_source_lint": "rust-default/not-inherited-from-lib",
+      "cfg_not_evaluated": []
+    }
+  ],
+  "module_edges": [
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::anchors",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 7,
+      "resolved_path": "crates/texzi-document/src/anchors.rs",
+      "attributes": [
+        "#![deny(unsafe_code)]",
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::body",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 9,
+      "resolved_path": "crates/texzi-document/src/body.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::coordinates",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 11,
+      "resolved_path": "crates/texzi-document/src/coordinates.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::files",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 12,
+      "resolved_path": "crates/texzi-document/src/files.rs",
+      "attributes": []
+    },
+    {
+      "from": "texzi_document::files",
+      "to": "texzi_document::files::staging",
+      "declaration_path": "crates/texzi-document/src/files.rs",
+      "line": 5,
+      "resolved_path": "crates/texzi-document/src/files/staging.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document::files",
+      "to": "texzi_document::files::windows_identity",
+      "declaration_path": "crates/texzi-document/src/files.rs",
+      "line": 9,
+      "resolved_path": "crates/texzi-document/src/files/windows_identity.rs",
+      "attributes": [
+        "#[cfg(windows)]",
+        "#[allow(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document::files::windows_identity",
+      "to": "texzi_document::files::windows_identity::open",
+      "declaration_path": "crates/texzi-document/src/files/windows_identity.rs",
+      "line": 3,
+      "resolved_path": "crates/texzi-document/src/files/windows_identity/open.rs",
+      "attributes": []
+    },
+    {
+      "from": "texzi_document::files::windows_identity::open",
+      "to": "texzi_document::files::windows_identity::open::tests",
+      "declaration_path": "crates/texzi-document/src/files/windows_identity/open.rs",
+      "line": 230,
+      "resolved_path": "crates/texzi-document/src/files/windows_identity/open/tests.rs",
+      "attributes": [
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "from": "texzi_document::files",
+      "to": "texzi_document::files::windows_save",
+      "declaration_path": "crates/texzi-document/src/files.rs",
+      "line": 12,
+      "resolved_path": "crates/texzi-document/src/files/windows_save.rs",
+      "attributes": [
+        "#[cfg(windows)]",
+        "#[allow(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document::files::windows_save",
+      "to": "texzi_document::files::windows_save::current_tests",
+      "declaration_path": "crates/texzi-document/src/files/windows_save.rs",
+      "line": 3,
+      "resolved_path": "crates/texzi-document/src/files/windows_save/current_tests.rs",
+      "attributes": [
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "from": "texzi_document::files::windows_save::current_tests",
+      "to": "texzi_document::files::windows_save::current_tests::parent_replacement",
+      "declaration_path": "crates/texzi-document/src/files/windows_save/current_tests.rs",
+      "line": 2,
+      "resolved_path": "crates/texzi-document/src/files/windows_save/current_tests/parent_replacement.rs",
+      "attributes": []
+    },
+    {
+      "from": "texzi_document::files::windows_save",
+      "to": "texzi_document::files::windows_save::publish",
+      "declaration_path": "crates/texzi-document/src/files/windows_save.rs",
+      "line": 4,
+      "resolved_path": "crates/texzi-document/src/files/windows_save/publish.rs",
+      "attributes": []
+    },
+    {
+      "from": "texzi_document::files::windows_save",
+      "to": "texzi_document::files::windows_save::recovery",
+      "declaration_path": "crates/texzi-document/src/files/windows_save.rs",
+      "line": 5,
+      "resolved_path": "crates/texzi-document/src/files/windows_save/recovery.rs",
+      "attributes": []
+    },
+    {
+      "from": "texzi_document::files::windows_save",
+      "to": "texzi_document::files::windows_save::tests",
+      "declaration_path": "crates/texzi-document/src/files/windows_save.rs",
+      "line": 7,
+      "resolved_path": "crates/texzi-document/src/files/windows_save/tests.rs",
+      "attributes": [
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "from": "texzi_document::files::windows_save::tests",
+      "to": "texzi_document::files::windows_save::tests::creation_security",
+      "declaration_path": "crates/texzi-document/src/files/windows_save/tests.rs",
+      "line": 3,
+      "resolved_path": "crates/texzi-document/src/files/windows_save/tests/creation_security.rs",
+      "attributes": []
+    },
+    {
+      "from": "texzi_document::files::windows_save::tests::creation_security",
+      "to": "texzi_document::files::windows_save::tests::creation_security::contracts",
+      "declaration_path": "crates/texzi-document/src/files/windows_save/tests/creation_security.rs",
+      "line": 2,
+      "resolved_path": "crates/texzi-document/src/files/windows_save/tests/creation_security/contracts.rs",
+      "attributes": []
+    },
+    {
+      "from": "texzi_document::files::windows_save::tests::creation_security",
+      "to": "texzi_document::files::windows_save::tests::creation_security::unsupported_creation",
+      "declaration_path": "crates/texzi-document/src/files/windows_save/tests/creation_security.rs",
+      "line": 3,
+      "resolved_path": "crates/texzi-document/src/files/windows_save/tests/creation_security/unsupported_creation.rs",
+      "attributes": []
+    },
+    {
+      "from": "texzi_document::files",
+      "to": "texzi_document::files::windows_security",
+      "declaration_path": "crates/texzi-document/src/files.rs",
+      "line": 15,
+      "resolved_path": "crates/texzi-document/src/files/windows_security.rs",
+      "attributes": [
+        "#[cfg(windows)]",
+        "#[allow(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document::files::windows_security",
+      "to": "texzi_document::files::windows_security::creation_policy_tests",
+      "declaration_path": "crates/texzi-document/src/files/windows_security.rs",
+      "line": 471,
+      "resolved_path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "attributes": [
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::history",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 14,
+      "resolved_path": "crates/texzi-document/src/history.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document::history",
+      "to": "texzi_document::history::failure_ack",
+      "declaration_path": "crates/texzi-document/src/history.rs",
+      "line": 5,
+      "resolved_path": "crates/texzi-document/src/history/failure_ack.rs",
+      "attributes": []
+    },
+    {
+      "from": "texzi_document::history",
+      "to": "texzi_document::history::verified_open",
+      "declaration_path": "crates/texzi-document/src/history.rs",
+      "line": 7,
+      "resolved_path": "crates/texzi-document/src/history/verified_open.rs",
+      "attributes": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "from": "texzi_document::history::verified_open",
+      "to": "texzi_document::history::verified_open::tests",
+      "declaration_path": "crates/texzi-document/src/history/verified_open.rs",
+      "line": 113,
+      "resolved_path": "crates/texzi-document/src/history/verified_open/tests.rs",
+      "attributes": [
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::observe",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 16,
+      "resolved_path": "crates/texzi-document/src/observe.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document::observe",
+      "to": "texzi_document::observe::failure_ack_tests",
+      "declaration_path": "crates/texzi-document/src/observe.rs",
+      "line": 3,
+      "resolved_path": "crates/texzi-document/src/observe/failure_ack_tests.rs",
+      "attributes": [
+        "#[cfg(test)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::observed_writes",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 18,
+      "resolved_path": "crates/texzi-document/src/observed_writes.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::provenance",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 20,
+      "resolved_path": "crates/texzi-document/src/provenance.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::ui_plan",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 22,
+      "resolved_path": "crates/texzi-document/src/ui_plan.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::view_store",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 24,
+      "resolved_path": "crates/texzi-document/src/view_store.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "texzi_document",
+      "to": "texzi_document::views",
+      "declaration_path": "crates/texzi-document/src/lib.rs",
+      "line": 26,
+      "resolved_path": "crates/texzi-document/src/views.rs",
+      "attributes": [
+        "#[forbid(unsafe_code)]"
+      ]
+    },
+    {
+      "from": "bin::document-probe",
+      "to": "bin::document-probe::observe_probe",
+      "declaration_path": "crates/texzi-document/src/bin/document-probe.rs",
+      "line": 9,
+      "resolved_path": "crates/texzi-document/src/bin/document_probe/observe.rs",
+      "attributes": [
+        "#[path = \"document_probe/observe.rs\"]"
+      ]
+    },
+    {
+      "from": "bin::document-probe",
+      "to": "bin::document-probe::save_probe",
+      "declaration_path": "crates/texzi-document/src/bin/document-probe.rs",
+      "line": 11,
+      "resolved_path": "crates/texzi-document/src/bin/document_probe/save.rs",
+      "attributes": [
+        "#[path = \"document_probe/save.rs\"]"
+      ]
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::binding_epochs",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 2,
+      "resolved_path": "crates/texzi-document/tests/binding_epochs/mod.rs",
+      "attributes": []
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::file_codecs",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 3,
+      "resolved_path": "crates/texzi-document/tests/file_codecs/mod.rs",
+      "attributes": []
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::file_staging",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 4,
+      "resolved_path": "crates/texzi-document/tests/file_staging/mod.rs",
+      "attributes": []
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::native_plans",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 5,
+      "resolved_path": "crates/texzi-document/tests/native_plans.rs",
+      "attributes": []
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::observers",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 6,
+      "resolved_path": "crates/texzi-document/tests/observers/mod.rs",
+      "attributes": []
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::save_failure_ack",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 7,
+      "resolved_path": "crates/texzi-document/tests/save_failure_ack/mod.rs",
+      "attributes": []
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::save_failures",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 8,
+      "resolved_path": "crates/texzi-document/tests/save_failures/mod.rs",
+      "attributes": []
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::save_scopes",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 9,
+      "resolved_path": "crates/texzi-document/tests/save_scopes/mod.rs",
+      "attributes": []
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::views",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 10,
+      "resolved_path": "crates/texzi-document/tests/views/mod.rs",
+      "attributes": []
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::windows_bound_staging",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 12,
+      "resolved_path": "crates/texzi-document/tests/windows_bound_staging/mod.rs",
+      "attributes": [
+        "#[cfg(windows)]"
+      ]
+    },
+    {
+      "from": "test::contracts",
+      "to": "test::contracts::windows_identity",
+      "declaration_path": "crates/texzi-document/tests/contracts.rs",
+      "line": 14,
+      "resolved_path": "crates/texzi-document/tests/windows_identity/mod.rs",
+      "attributes": [
+        "#[cfg(windows)]"
+      ]
+    }
+  ],
+  "unsafe_sites": [
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_identity",
+      "path": "crates/texzi-document/src/files/windows_identity.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 122,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_identity",
+      "path": "crates/texzi-document/src/files/windows_identity.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 157,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::publish",
+      "path": "crates/texzi-document/src/files/windows_save/publish.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 298,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::tests",
+      "path": "crates/texzi-document/src/files/windows_save/tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 47,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::tests",
+      "path": "crates/texzi-document/src/files/windows_save/tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 48,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::tests",
+      "path": "crates/texzi-document/src/files/windows_save/tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 62,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::tests::creation_security",
+      "path": "crates/texzi-document/src/files/windows_save/tests/creation_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 69,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_save::tests::creation_security",
+      "path": "crates/texzi-document/src/files/windows_save/tests/creation_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 75,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 19,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 45,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 67,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 78,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 100,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 102,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 119,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 142,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 145,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 165,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 184,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 185,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 186,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 202,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 233,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 258,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 259,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 280,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 288,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 311,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 319,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 328,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]"
+      ],
+      "line": 339,
+      "kind": "block",
+      "test_source": false
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 391,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 413,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 427,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 438,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 439,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 449,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 455,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security",
+      "path": "crates/texzi-document/src/files/windows_security.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 464,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 9,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 11,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 17,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 26,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 31,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 62,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 71,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 73,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 76,
+      "kind": "block",
+      "test_source": true
+    },
+    {
+      "crate_kind": "lib",
+      "module": "texzi_document::files::windows_security::creation_policy_tests",
+      "path": "crates/texzi-document/src/files/windows_security/creation_policy_tests.rs",
+      "effective_source_lint": "allow",
+      "cfg_not_evaluated": [
+        "#[cfg(windows)]",
+        "#[cfg(test)]"
+      ],
+      "line": 112,
+      "kind": "block",
+      "test_source": true
+    }
+  ],
+  "lint_attributes": [
+    {
+      "path": "crates/texzi-document/src/files.rs",
+      "line": 4,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/files.rs",
+      "line": 8,
+      "attribute": "#[allow(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/files.rs",
+      "line": 11,
+      "attribute": "#[allow(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/files.rs",
+      "line": 14,
+      "attribute": "#[allow(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 4,
+      "attribute": "#![deny(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 6,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 8,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 10,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 13,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 15,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 17,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 19,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 21,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 23,
+      "attribute": "#[forbid(unsafe_code)]"
+    },
+    {
+      "path": "crates/texzi-document/src/lib.rs",
+      "line": 25,
+      "attribute": "#[forbid(unsafe_code)]"
+    }
+  ],
+  "path_attributes": [
+    {
+      "path": "crates/texzi-document/src/bin/document-probe.rs",
+      "line": 8,
+      "attribute": "#[path = \"document_probe/observe.rs\"]"
+    },
+    {
+      "path": "crates/texzi-document/src/bin/document-probe.rs",
+      "line": 10,
+      "attribute": "#[path = \"document_probe/save.rs\"]"
+    }
+  ],
+  "include_entries": [
+    {
+      "path": "crates/texzi-document/tests/contracts.rs",
+      "line": 53,
+      "kind": "include_str",
+      "role": "data"
+    }
+  ],
+  "configuration_scan_paths": [
+    ".cargo/config.toml",
+    ".github/workflows/tx00.yml",
+    "Cargo.toml",
+    "crates/texzi-app/Cargo.toml",
+    "crates/texzi-document/Cargo.toml",
+    "scripts/build-candidate.ps1",
+    "scripts/build-fixed-oracle.ps1",
+    "scripts/native-command.ps1",
+    "scripts/select-linker.ps1",
+    "scripts/test-document-probe.py",
+    "scripts/test-native-logging.ps1",
+    "scripts/test-observer-probe.py",
+    "scripts/test-startup-failure.ps1",
+    "scripts/verify-fixed-oracle-source.py",
+    "vendor/nsh-base/Cargo.toml",
+    "vendor/nsh-platform-windows/Cargo.toml"
+  ],
+  "configuration_flag_mentions": [
+    {
+      "path": "scripts/select-linker.ps1",
+      "line": 18,
+      "tokens": [
+        "CARGO_ENCODED_RUSTFLAGS"
+      ]
+    }
+  ],
+  "counts": {
+    "rust_files": 46,
+    "module_contexts": 47,
+    "lib_files": 31,
+    "unsafe_sites": 49,
+    "lib_test_unsafe": 25,
+    "lib_non_test_unsafe": 24,
+    "lint_attributes": 15
+  },
+  "limitations": [
+    "No cfg evaluation, macro expansion, dependency expansion or Cargo metadata execution.",
+    "Current outline-module layout only; no general Rust parsing claim.",
+    "Independent binary/test roots do not inherit lib lint; include_str is data.",
+    "Tracked config text only; no global/ambient compiler argument guarantee."
+  ],
+  "typecheck": "NOT_RUN",
+  "build": "NOT_RUN",
+  "runtime": "NOT_RUN"
+}
