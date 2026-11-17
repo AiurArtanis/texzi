@@ -381,6 +381,100 @@ fn creation_default_verification_failure_after_restore_keeps_creation_security_a
     );
 }
 
+#[test]
+fn creation_default_flush_access_denial_after_restore_keeps_creation_security_and_unknown_n() {
+    let CreationFixture {
+        dir,
+        target,
+        mut store,
+        n,
+        locked,
+        created,
+        private,
+        private_probe,
+    } = creation_fixture("creation-post-restore-flush-denial");
+    let capture = locked.capture().clone();
+    let expected_final_path = locked.staged.target_path();
+    let expected_security = created.security.clone();
+    assert!(expected_security != private);
+    assert_owner_and_group_unchanged(&private, &expected_security);
+    let ready = locked.prepare_new_creation_default().unwrap();
+    drop(private_probe);
+    let mut job = ready.permit(&mut store).unwrap();
+    let restored_calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls = restored_calls.clone();
+    let expected = created.clone();
+    let final_path = expected_final_path.clone();
+    job.set_post_rename_flush_handle(move |file| {
+        // Reached only after the production rename and DACL setter succeeded.
+        assert_eq!(file.as_raw_handle() as usize, expected.handle);
+        let current_path = windows_identity::volume_path(file)
+            .map_err(|error| std::io::Error::other(format!("fixture path query: {error:?}")))?;
+        assert_eq!(current_path, final_path);
+        assert!(!expected.path.exists());
+        let mut reader = file.try_clone()?;
+        let actual = windows_identity::read_version_handle(&mut reader)
+            .map_err(|error| std::io::Error::other(format!("fixture version query: {error:?}")))?;
+        assert_eq!(actual.identity, expected.identity);
+        assert_eq!(actual.bytes.as_ref(), CAPTURED_UTF16);
+        assert!(actual.security == expected.security);
+        assert_owner_and_group_unchanged(&actual.security, &expected.security);
+        // No fabricated IO error: the existing DuplicateHandle helper grants
+        // READ_CONTROL only, so the next real sync_all must fail with error 5.
+        let limited = duplicate_read_control(file)?;
+        hook_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(limited)
+    });
+    let current = newer_edit(&mut store, &n);
+    let frozen = freeze_owner_state(&mut store, &n);
+    let failure = match job.run() {
+        Ok(_) => panic!("post-restore read-control-only flush was accepted"),
+        Err(failure) => failure,
+    };
+    assert_eq!(restored_calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(&failure.issue, PublishIssue::Io(error) if error.raw_os_error() == Some(5)));
+    assert_eq!(failure.security_policy(), NewFileSecurity::CreationDefault);
+    assert_same_capture(failure.capture(), &capture);
+    let actual_path = failure.current_path().unwrap();
+    assert_eq!(actual_path, expected_final_path);
+    assert_eq!(actual_path.file_name(), target.file_name());
+    assert!(target.exists());
+    assert!(!created.path.exists());
+    let actual = failure.current_version().unwrap();
+    assert_eq!(actual.identity, created.identity);
+    assert_eq!(actual.bytes.as_ref(), CAPTURED_UTF16);
+    assert!(actual.security == expected_security);
+    assert!(actual.security != private);
+    assert_owner_and_group_unchanged(&actual.security, &private);
+    assert_eq!(failure.read_retained_bytes().unwrap(), CAPTURED_UTF16);
+    assert_separate_reader_denied(&target);
+    failure.record_failure(&mut store).unwrap();
+    let recorded =
+        assert_unknown_retains_state(&mut store, &frozen, &n, &current, &capture, &actual_path);
+    assert_eq!(failure.record_failure(&mut store), Err(Error::InvalidSave));
+    let duplicate = freeze_owner_state(&mut store, &n);
+    assert_eq!(duplicate.observed.state, recorded.state);
+    assert_eq!(duplicate.observed.cursor, recorded.cursor);
+    assert_parent_scope_held(&mut store, &dir, &capture, "post-restore-flush");
+    // Unknown preserves the actual restored DACL; it does not roll it back.
+    assert!(failure.current_version().unwrap().security == expected_security);
+    drop(failure);
+    let notices = store.drain_dropped_publications();
+    assert_eq!(notices.len(), 1);
+    assert_recovery_contract(
+        &notices[0],
+        NewFileSecurity::CreationDefault,
+        &expected_security,
+        &expected_security,
+        &capture,
+        &created,
+        &actual_path,
+    );
+    let drained = freeze_owner_state(&mut store, &n);
+    assert_eq!(drained.observed.state, recorded.state);
+    assert_eq!(drained.observed.cursor, recorded.cursor);
+}
+
 fn dropped_security_policy_contract(after_rename: bool) {
     for policy in [NewFileSecurity::OwnerOnly, NewFileSecurity::CreationDefault] {
         let label = match (policy, after_rename) {

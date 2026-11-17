@@ -30,6 +30,8 @@ Unknown 不表示 ACL 回滚或保密撤回。恢复已经成功但后续 flush�
 
 接口补充回归另列在 creation_security/contracts、unsupported_creation 和 windows_security/creation_policy_tests：两策略正控制、后置验证失败、两策略丢 worker/result 的冻结 expected/actual、恢复前 payload 故障及竞争；absent、NULL、present 空 ACL 分别验证。三种 descriptor 只在测试 owned buffer 中构造，经实际验证 API 检查；真实 prepare 拒绝路径使用私有 cfg(test) credential override，不把该注入称为 OS 创建了 NULL/空 ACL 文件。空 ACL 只验证表示/准备，不执行空 ACL 发布；不新增生产 setter 或 probe 开关。
 
+另补 CreationDefault 恢复成功后的 native flush 拒绝用例：后置私有 test hook 先核原 File 的最终路径、ID、N bytes 及真实 creation descriptor，再返回 READ_CONTROL-only DuplicateHandle，由生产路径的真实 `sync_all` 产生预期 OS error 5，不预制 Err、不注入 format 错误。断言 Unknown/N/N+1/baseline/history/epoch、保留原资源与 held，重复 record 及 Drop/drain 不新增终态，actual 仍为 creation DACL。此用例与 setter 未成功的拒绝及恢复后 format 校验失败分列；只交源码，预期错误 5 和共享行为仍未运行证实。
+
 后续真实 harness 要与 contracts 分列；当前所有新用例 NOT_RUN。SetSecurityInfo 对 inherited ACE 的重新继承/规范化与 full descriptor 相等能否满足、权限/共享及崩溃边界尚无运行证明，严格失败谓词不等于功能可用。SACL/标签/EFS/多主体及完整权限策略未闭；本步不改 CI/GH/linker/push/GUI/剪贴板/远端/权限/发布限制。
 
 ## 既存 Rust lint 边界修正
