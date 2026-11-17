@@ -286,3 +286,6 @@ fn cancelled_old_worker_error_and_readonly_recovery_preserve_the_new_reservation
     assert_eq!(fs::read(target).unwrap(), b"A\r\n");
     store.cancel_save(&next).unwrap();
 }
+
+#[forbid(unsafe_code)]
+mod edge_cases;
