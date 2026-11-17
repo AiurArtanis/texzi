@@ -3,6 +3,7 @@ mod file_codecs;
 mod file_staging;
 mod native_plans;
 mod observers;
+mod save_failures;
 mod views;
 
 fn store(raw: &str) -> (Store, Snapshot) {

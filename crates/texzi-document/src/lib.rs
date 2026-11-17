@@ -44,6 +44,7 @@ pub enum Error {
     NoHistory,
     Busy,
     InvalidSave,
+    UnresolvedConflict,
     TooLate,
     InvalidView,
     StaleView,

@@ -85,6 +85,9 @@ struct Entry {
     charge: usize,
 }
 pub(crate) struct Document {
+    failures: Vec<SaveFailureRecord>,
+    recovery_snapshots: Vec<(u64, Snapshot)>,
+    save_blocked: bool,
     pub(crate) closed_views: std::collections::BTreeMap<ViewId, crate::ClosedView>,
     baseline_kind: BaselineKind,
     bound_target: Option<TargetKey>,
@@ -117,6 +120,7 @@ impl Default for HistoryBudget {
 
 /// All mutating APIs require &mut Store: one serial owner, no callback reentrancy.
 pub struct Store {
+    unresolved_targets: HashMap<TargetKey, DocId>,
     pub(crate) observer: crate::observe::ObserverHub,
     pub(crate) docs: HashMap<DocId, Document>,
     pub(crate) view_docs: HashMap<ViewId, DocId>,
@@ -148,6 +152,30 @@ pub enum SaveStage {
     Replacing,
     Verifying,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveFailureOutcome {
+    BeforeReplace,
+    ReplaceFailed,
+    OutcomeUnknown,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveFailure {
+    pub outcome: SaveFailureOutcome,
+    pub conflict: bool,
+    pub os_error: Option<i32>,
+    pub message: String,
+    pub recovery_paths: Vec<std::path::PathBuf>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveFailureRecord {
+    pub operation: u64,
+    pub target: TargetKey,
+    pub binding_epoch: u64,
+    pub revision: Revision,
+    pub token: StateToken,
+    pub stage: SaveStage,
+    pub detail: SaveFailure,
+}
 struct ActiveSave {
     capture: SaveCapture,
     stage: SaveStage,
@@ -162,6 +190,9 @@ impl Store {
         guard: String,
     ) -> Result<SaveCapture, Error> {
         let s = self.snapshot(doc)?;
+        if self.docs[&doc].save_blocked || self.unresolved_targets.contains_key(&target) {
+            return Err(Error::UnresolvedConflict);
+        }
         if self.saves.contains_key(&doc) || self.targets.contains_key(&target) {
             return Err(Error::Busy);
         }
@@ -194,6 +225,7 @@ impl Store {
             || a.capture.guard != c.guard
             || a.capture.snapshot.revision != c.snapshot.revision
             || a.capture.snapshot.token != c.snapshot.token
+            || !Arc::ptr_eq(&a.capture.snapshot.body, &c.snapshot.body)
         {
             return Err(Error::InvalidSave);
         }
@@ -243,6 +275,62 @@ impl Store {
         self.saves.remove(&c.snapshot.doc);
         self.targets.remove(&c.target);
     }
+    pub(crate) fn finish_save_failure_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        detail: SaveFailure,
+    ) -> Result<(), Error> {
+        let stage = self.active_save(c)?.stage;
+        let before = matches!(
+            stage,
+            SaveStage::Encoding | SaveStage::WritingTemp | SaveStage::ReadyToReplace
+        );
+        if (detail.outcome == SaveFailureOutcome::BeforeReplace) != before {
+            return Err(Error::InvalidSave);
+        }
+        let held = detail.conflict || !before;
+        let record = SaveFailureRecord {
+            operation: c.operation,
+            target: c.target.clone(),
+            binding_epoch: c.binding_epoch,
+            revision: c.snapshot.revision,
+            token: c.snapshot.token,
+            stage,
+            detail,
+        };
+        let d = self
+            .docs
+            .get_mut(&c.snapshot.doc)
+            .ok_or(Error::InvalidDoc)?;
+        d.save_terminal = Some(SaveTerminal {
+            operation: c.operation,
+            result: if record.detail.outcome == SaveFailureOutcome::OutcomeUnknown {
+                SaveResult::OutcomeUnknown
+            } else {
+                SaveResult::Failed
+            },
+            error: Some(record.detail.message.clone()),
+        });
+        d.recovery_snapshots.push((c.operation, c.snapshot.clone()));
+        d.failures.push(record);
+        d.save_blocked |= held;
+        if held {
+            self.unresolved_targets
+                .insert(c.target.clone(), c.snapshot.doc);
+        }
+        self.release_save(c);
+        Ok(())
+    }
+    pub fn recovery_snapshot(&self, doc: DocId, operation: u64) -> Result<Snapshot, Error> {
+        self.docs
+            .get(&doc)
+            .ok_or(Error::InvalidDoc)?
+            .recovery_snapshots
+            .iter()
+            .find(|(op, _)| *op == operation)
+            .map(|(_, s)| s.clone())
+            .ok_or(Error::InvalidSave)
+    }
     /// TRUST BOUNDARY: T07 IO owner must supply a truly verified durable result.
     /// Component tests simulate that result; they provide no disk-save evidence.
     pub(crate) fn accept_verified_save_unpublished(
@@ -270,6 +358,7 @@ impl Store {
     }
     pub fn new(budget: HistoryBudget) -> Self {
         Self {
+            unresolved_targets: HashMap::new(),
             observer: crate::observe::ObserverHub::new(),
             docs: HashMap::new(),
             view_docs: HashMap::new(),
@@ -335,6 +424,9 @@ impl Store {
         self.docs.insert(
             current.doc,
             Document {
+                failures: Vec::new(),
+                recovery_snapshots: Vec::new(),
+                save_blocked: false,
                 closed_views: std::collections::BTreeMap::new(),
                 baseline_kind: if backed_by_disk {
                     BaselineKind::ExternalLoadClaim
@@ -813,13 +905,34 @@ impl Store {
             },
             dirty: d.current.token != d.baseline,
             attention: FileAttention {
+                recoveries: d.failures.clone(),
                 needs_target: d.bound_target.is_none(),
                 binding_epoch: 0,
                 target: d.bound_target.clone(),
                 known_fingerprint: None,
-                conflict: Unimplemented::NotImplemented,
-                save_outcome_unknown: Unimplemented::NotImplemented,
-                display_error: None,
+                conflict: if d.save_blocked {
+                    let r = d.failures.last().unwrap();
+                    Unimplemented::NeedsVerification {
+                        operation: r.operation,
+                        target: r.target.clone(),
+                    }
+                } else {
+                    Unimplemented::NotImplemented
+                },
+                save_outcome_unknown: if let Some(r) = d
+                    .failures
+                    .iter()
+                    .rev()
+                    .find(|r| r.detail.outcome == SaveFailureOutcome::OutcomeUnknown)
+                {
+                    Unimplemented::NeedsVerification {
+                        operation: r.operation,
+                        target: r.target.clone(),
+                    }
+                } else {
+                    Unimplemented::NotImplemented
+                },
+                display_error: d.save_terminal.as_ref().and_then(|t| t.error.clone()),
             },
             save: SaveObservation {
                 active,
@@ -846,6 +959,9 @@ impl Store {
         self.saves.contains_key(&doc)
     }
     pub(crate) fn remove_memory_document(&mut self, doc: DocId) -> Result<(), Error> {
+        if self.docs.get(&doc).ok_or(Error::InvalidDoc)?.failures.len() > 0 {
+            return Err(Error::UnresolvedConflict);
+        }
         let d = self.docs.remove(&doc).ok_or(Error::InvalidDoc)?;
         for id in d.views.keys() {
             self.view_docs.remove(id);

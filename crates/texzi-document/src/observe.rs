@@ -53,6 +53,7 @@ pub enum BaselineKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unimplemented {
     NotImplemented,
+    NeedsVerification { operation: u64, target: TargetKey },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BaselineState {
@@ -62,6 +63,7 @@ pub struct BaselineState {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileAttention {
+    pub recoveries: Vec<crate::SaveFailureRecord>,
     pub needs_target: bool,
     pub binding_epoch: u64,
     pub target: Option<TargetKey>,
@@ -85,6 +87,8 @@ pub struct ActiveSaveState {
 pub enum SaveResult {
     SucceededByCaller,
     Cancelled,
+    Failed,
+    OutcomeUnknown,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveTerminal {

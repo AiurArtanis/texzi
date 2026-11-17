@@ -1,6 +1,15 @@
 //! Only public write entrypoints; nested writes publish once at the outer return.
 use crate::*;
 impl Store {
+    pub fn finish_save_failure(
+        &mut self,
+        c: &SaveCapture,
+        detail: SaveFailure,
+    ) -> Result<(), Error> {
+        self.observed_write(c.snapshot.doc, |s| {
+            s.finish_save_failure_unpublished(c, detail)
+        })
+    }
     pub fn submit(&mut self, txn: Transaction) -> Result<Receipt, Error> {
         self.observed_write(txn.doc, |s| s.submit_unpublished(txn))
     }

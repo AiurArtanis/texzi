@@ -79,11 +79,29 @@ fn body_json(s: &Snapshot) -> Value {
     };
     json!({"revision":s.revision.0,"token":format!("{:?}",s.token),"source":s.body.source().to_string(),"serialized_utf8":String::from_utf8(s.body.to_utf8()).unwrap(),"eols":s.body.eols().iter().map(|e|format!("{e:?}")).collect::<Vec<_>>(),"profile":profile,"provenance":{"sources":sources.iter().map(|s|s.as_ref()).collect::<Vec<_>>(),"spans":spans}})
 }
+fn attention_json(a: &FileAttention) -> Value {
+    let mut value = json!({"needs_target":a.needs_target,"binding_epoch":a.binding_epoch,"target":a.target.as_ref().map(|t|&t.0),"known_fingerprint":a.known_fingerprint,"conflict":format!("{:?}",a.conflict),"save_outcome_unknown":format!("{:?}",a.save_outcome_unknown),"display_error":a.display_error});
+    if !a.recoveries.is_empty() {
+        value["recoveries"]=json!(a.recoveries.iter().map(|r|json!({"operation":r.operation,"target":r.target.0,"binding_epoch":r.binding_epoch,"revision":r.revision.0,"token":format!("{:?}",r.token),"stage":format!("{:?}",r.stage),"outcome":format!("{:?}",r.detail.outcome),"conflict":r.detail.conflict,"os_error":r.detail.os_error,"message":r.detail.message,"paths":r.detail.recovery_paths.iter().map(|p|path_json(p)).collect::<Vec<_>>() })).collect::<Vec<_>>());
+    }
+    value
+}
+fn path_json(path: &std::path::Path) -> Value {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        json!({"display":path.to_string_lossy(),"utf16":path.as_os_str().encode_wide().collect::<Vec<_>>()})
+    }
+    #[cfg(not(windows))]
+    {
+        json!({"display":path.to_string_lossy(),"os_bytes":path.as_os_str().as_encoded_bytes()})
+    }
+}
 fn global_json(g: &ObservedGlobal, views: &HashMap<String, ViewId>) -> Value {
     let m = &g.metadata;
     let active=m.save.active.as_ref().map(|a|json!({"operation":a.operation,"revision":a.revision.0,"token":format!("{:?}",a.token),"target":a.target.0,"guard":a.guard,"binding_epoch":a.binding_epoch,"stage":format!("{:?}",a.stage),"cancellable":a.cancellable}));
     let merge=m.history.merge.as_ref().map(|m|json!({"view":alias(views,&m.view),"tick_ms":m.tick_ms,"end":m.end,"token":format!("{:?}",m.token)}));
-    json!({"document":body_json(&g.document),"baseline":{"token":format!("{:?}",m.baseline.token),"kind":format!("{:?}",m.baseline.kind),"backed_by_disk":m.baseline.backed_by_disk},"dirty":m.dirty,"attention":{"needs_target":m.attention.needs_target,"binding_epoch":m.attention.binding_epoch,"target":m.attention.target.as_ref().map(|t|&t.0),"known_fingerprint":m.attention.known_fingerprint,"conflict":format!("{:?}",m.attention.conflict),"save_outcome_unknown":format!("{:?}",m.attention.save_outcome_unknown),"display_error":m.attention.display_error},"save":{"active":active,"last_terminal":m.save.last_terminal.as_ref().map(|t|json!({"operation":t.operation,"result":format!("{:?}",t.result),"error":t.error}))},"history":{"can_undo":m.history.can_undo,"can_redo":m.history.can_redo,"undo_groups":m.history.undo_groups,"redo_groups":m.history.redo_groups,"last_undo_group":m.history.last_undo_group.map(|id|id.0),"last_redo_group":m.history.last_redo_group.map(|id|id.0),"merge":merge,"last_fence":format!("{:?}",m.history.last_fence)}})
+    json!({"document":body_json(&g.document),"baseline":{"token":format!("{:?}",m.baseline.token),"kind":format!("{:?}",m.baseline.kind),"backed_by_disk":m.baseline.backed_by_disk},"dirty":m.dirty,"attention":attention_json(&m.attention),"save":{"active":active,"last_terminal":m.save.last_terminal.as_ref().map(|t|json!({"operation":t.operation,"result":format!("{:?}",t.result),"error":t.error}))},"history":{"can_undo":m.history.can_undo,"can_redo":m.history.can_redo,"undo_groups":m.history.undo_groups,"redo_groups":m.history.redo_groups,"last_undo_group":m.history.last_undo_group.map(|id|id.0),"last_redo_group":m.history.last_redo_group.map(|id|id.0),"merge":merge,"last_fence":format!("{:?}",m.history.last_fence)}})
 }
 fn view_json(
     v: &ObservedView,
