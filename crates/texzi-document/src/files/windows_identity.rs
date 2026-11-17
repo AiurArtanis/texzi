@@ -1,5 +1,6 @@
 //! Handle-based Windows identity observation, not an atomic replacement API.
 //! Keep the directory handle alive; no delete sharing pins this parent.
+use super::windows_security::SecurityDescriptor;
 use crate::TargetKey;
 use std::{
     ffi::{OsStr, OsString},
@@ -23,6 +24,7 @@ pub struct FileIdentity {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileVersion {
+    pub security: SecurityDescriptor,
     pub identity: FileIdentity,
     pub modified: SystemTime,
     pub bytes: Arc<[u8]>,
@@ -43,6 +45,7 @@ impl From<io::Error> for IdentityError {
 }
 pub struct ObservedTarget {
     parent: File,
+    parent_security: SecurityDescriptor,
     parent_identity: FileIdentity,
     parent_path: PathBuf,
     name: OsString,
@@ -76,7 +79,7 @@ fn identity(file: &File) -> Result<FileIdentity, IdentityError> {
         id: i.FileId.Identifier,
     })
 }
-fn check_kind(file: &File, directory: bool) -> Result<(), IdentityError> {
+pub(super) fn check_kind(file: &File, directory: bool) -> Result<(), IdentityError> {
     let attrs: FILE_ATTRIBUTE_TAG_INFO = handle_info(file, FileAttributeTagInfo)?;
     if attrs.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(IdentityError::ReparsePoint);
@@ -125,7 +128,11 @@ fn open_file(path: &Path) -> Result<File, IdentityError> {
     Ok(file)
 }
 fn read_version(mut file: File) -> Result<FileVersion, IdentityError> {
+    read_version_handle(&mut file)
+}
+pub(super) fn read_version_handle(file: &mut File) -> Result<FileVersion, IdentityError> {
     let id = identity(&file)?;
+    let security = SecurityDescriptor::read(file)?;
     let before = file.metadata()?;
     let modified = before.modified()?;
     file.rewind()?;
@@ -136,10 +143,12 @@ fn read_version(mut file: File) -> Result<FileVersion, IdentityError> {
         || before.len() != after.len()
         || after.len() != bytes.len() as u64
         || modified != after.modified()?
+        || security != SecurityDescriptor::read(file)?
     {
         return Err(IdentityError::Changed);
     }
     Ok(FileVersion {
+        security,
         identity: id,
         modified,
         bytes: bytes.into(),
@@ -174,16 +183,18 @@ impl ObservedTarget {
             return Err(IdentityError::InvalidPath);
         }
         let parent = OpenOptions::new()
-            .access_mode(FILE_READ_ATTRIBUTES)
+            .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
             .open(path.parent().ok_or(IdentityError::InvalidPath)?)?;
         check_kind(&parent, true)?;
         let parent_identity = identity(&parent)?;
+        let parent_security = SecurityDescriptor::read(&parent)?;
         let parent_path = volume_path(&parent)?;
         let version = optional_version(&parent_path.join(&name))?;
         Ok(Self {
             parent,
+            parent_security,
             parent_identity,
             parent_path,
             name,
@@ -195,6 +206,9 @@ impl ObservedTarget {
     }
     pub fn parent_identity(&self) -> FileIdentity {
         self.parent_identity
+    }
+    pub fn parent_security(&self) -> &SecurityDescriptor {
+        &self.parent_security
     }
     pub fn resolved_path(&self) -> PathBuf {
         self.parent_path.join(&self.name)
@@ -223,6 +237,7 @@ impl ObservedTarget {
     /// Publication must still retain any version raced in after this check.
     pub fn recheck(&self) -> Result<(), IdentityError> {
         if identity(&self.parent)? != self.parent_identity
+            || SecurityDescriptor::read(&self.parent)? != self.parent_security
             || volume_path(&self.parent)? != self.parent_path
             || optional_version(&self.resolved_path())? != self.version
         {

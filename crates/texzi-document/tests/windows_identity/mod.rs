@@ -28,6 +28,8 @@ fn actual_file_id_unifies_hardlinks_and_detects_external_bytes() {
     assert_eq!(a.version().unwrap().identity, b.version().unwrap().identity);
     assert_eq!(a.reservation_key(), b.reservation_key());
     assert_eq!(a.parent_identity(), b.parent_identity());
+    assert!(!a.parent_security().as_bytes().is_empty());
+    assert!(!a.version().unwrap().security.as_bytes().is_empty());
     assert_eq!(a.save_scope(), b.save_scope());
     assert_eq!(a.save_scope().object, Some(a.reservation_key()));
     a.recheck().unwrap();

@@ -155,3 +155,61 @@ fn bound_staged_temp_tampering_is_detected_without_ready_or_target_mutation() {
         b"external temporary bytes"
     );
 }
+
+#[test]
+fn locked_temporary_observes_security_and_denies_ordinary_write_delete_and_rename() {
+    let dir = fixture();
+    let target = dir.join("original.txt");
+    fs::write(&target, b"A").unwrap();
+    let mut store = Store::new(HistoryBudget::default());
+    let (_, binding) = loaded(&mut store);
+    let staged = ObservedTarget::inspect(&target)
+        .unwrap()
+        .prepare_bound(&binding, &mut store)
+        .unwrap()
+        .begin(&mut store)
+        .unwrap()
+        .write()
+        .unwrap();
+    let temporary = staged.recovery_temp().to_owned();
+    let observed_security = ObservedTarget::inspect(&temporary)
+        .unwrap()
+        .version()
+        .unwrap()
+        .security
+        .clone();
+    let locked = staged.lock_temporary().unwrap();
+    locked.check_owner(&store).unwrap();
+    locked.recheck_files().unwrap();
+    assert_eq!(locked.temporary_security(), &observed_security);
+    assert!(!locked.temporary_security().as_bytes().is_empty());
+    assert!(!locked.original_security().unwrap().as_bytes().is_empty());
+    // Stop at the first unexpected success; do not erase its fixture evidence.
+    assert_eq!(
+        fs::write(&temporary, b"must not truncate")
+            .unwrap_err()
+            .raw_os_error(),
+        Some(32)
+    );
+    assert_eq!(
+        fs::remove_file(&temporary).unwrap_err().raw_os_error(),
+        Some(32)
+    );
+    assert_eq!(
+        fs::rename(&temporary, dir.join("must-not-rename.txt"))
+            .unwrap_err()
+            .raw_os_error(),
+        Some(32)
+    );
+    assert_eq!(fs::read(&temporary).unwrap(), b"A");
+    assert_eq!(fs::read(&target).unwrap(), b"A");
+    assert_eq!(
+        store.commit_permit(locked.capture()),
+        Err(Error::InvalidSave)
+    );
+    store.cancel_save(locked.capture()).unwrap();
+    drop(locked); // Explicit resource lifetime; never deletes the recovery file.
+    fs::write(&temporary, b"fixture after unlock").unwrap();
+    assert_eq!(fs::read(&temporary).unwrap(), b"fixture after unlock");
+    assert_eq!(fs::read(&target).unwrap(), b"A");
+}

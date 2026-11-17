@@ -6,6 +6,8 @@ pub mod staging;
 pub mod windows_identity;
 #[cfg(windows)]
 pub mod windows_save;
+#[cfg(windows)]
+pub mod windows_security;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {

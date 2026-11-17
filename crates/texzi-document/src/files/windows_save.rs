@@ -3,9 +3,15 @@ use super::{
     FileBinding, FileError, Format, PreparedSave,
     staging::{ContentGuard, StageIssue, StagedSave, StagingWork},
     windows_identity::{FileIdentity, IdentityError, ObservedTarget},
+    windows_security::SecurityDescriptor,
 };
 use crate::{Error, SaveCapture, SaveStage, Store};
 use std::path::{Path, PathBuf};
+use std::{
+    fs::{File, OpenOptions},
+    os::windows::fs::OpenOptionsExt,
+};
+use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
 
 #[derive(Debug)]
 pub enum BoundIssue {
@@ -14,11 +20,19 @@ pub enum BoundIssue {
     Stage(StageIssue),
     Document(Error),
 }
-#[derive(Debug)]
 pub struct BoundFailure {
     pub issue: BoundIssue,
     pub capture: Option<SaveCapture>,
     pub recovery_temp: Option<PathBuf>,
+}
+impl std::fmt::Debug for BoundFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoundFailure")
+            .field("issue", &self.issue)
+            .field("operation", &self.capture.as_ref().map(|c| c.operation))
+            .field("recovery_temp", &self.recovery_temp)
+            .finish()
+    }
 }
 pub struct BoundPrepared {
     observed: ObservedTarget,
@@ -35,6 +49,23 @@ pub struct BoundStaged {
     temporary: ObservedTarget,
     staged: StagedSave,
     format: Format,
+}
+pub struct LockedStaged {
+    staged: BoundStaged,
+    _file: File,
+    security: SecurityDescriptor,
+}
+pub struct LockFailure {
+    pub issue: IdentityError,
+    pub staged: BoundStaged,
+}
+impl std::fmt::Debug for LockFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LockFailure")
+            .field("issue", &self.issue)
+            .field("recovery_temp", &self.staged.recovery_temp())
+            .finish()
+    }
 }
 impl ObservedTarget {
     /// The observation is consumed: callers cannot replace its target, scope or
@@ -145,6 +176,36 @@ impl BoundWork {
     }
 }
 impl BoundStaged {
+    /// Read handle excludes ordinary competing write/delete handles. It cannot
+    /// authorize publication and is deliberately not unlocked for a path rename.
+    pub fn lock_temporary(self) -> Result<LockedStaged, LockFailure> {
+        let attempt = (|| -> Result<(File, SecurityDescriptor), IdentityError> {
+            self.recheck_files()?;
+            let mut file = OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(self.recovery_temp())?;
+            super::windows_identity::check_kind(&file, false)?;
+            let current = super::windows_identity::read_version_handle(&mut file)?;
+            if Some(&current) != self.temporary.version() {
+                return Err(IdentityError::Changed);
+            }
+            self.observed.recheck()?;
+            Ok((file, current.security))
+        })();
+        match attempt {
+            Ok((file, security)) => Ok(LockedStaged {
+                staged: self,
+                _file: file,
+                security,
+            }),
+            Err(issue) => Err(LockFailure {
+                issue,
+                staged: self,
+            }),
+        }
+    }
     pub fn capture(&self) -> &SaveCapture {
         self.staged.capture()
     }
@@ -181,5 +242,31 @@ impl BoundStaged {
     pub fn recheck_files(&self) -> Result<(), IdentityError> {
         self.observed.recheck()?;
         self.temporary.recheck()
+    }
+}
+impl LockedStaged {
+    pub fn capture(&self) -> &SaveCapture {
+        self.staged.capture()
+    }
+    pub fn recovery_temp(&self) -> &Path {
+        self.staged.recovery_temp()
+    }
+    pub fn payload(&self) -> &[u8] {
+        self.staged.payload()
+    }
+    pub fn format(&self) -> Format {
+        self.staged.format()
+    }
+    pub fn temporary_security(&self) -> &SecurityDescriptor {
+        &self.security
+    }
+    pub fn original_security(&self) -> Option<&SecurityDescriptor> {
+        self.staged.observed.version().map(|v| &v.security)
+    }
+    pub fn check_owner(&self, store: &Store) -> Result<(), Error> {
+        self.staged.check_owner(store)
+    }
+    pub fn recheck_files(&self) -> Result<(), IdentityError> {
+        self.staged.recheck_files()
     }
 }
