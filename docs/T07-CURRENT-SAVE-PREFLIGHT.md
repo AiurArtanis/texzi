@@ -23,3 +23,11 @@ verified-open 在原强读 File/parent 保护下复制属性句柄，复制失�
 新增防绕过 fixture 全部 NOT_RUN：同源 bytes/ID 外变、硬链接、真实发布后旧 None binding、closed Doc，以及大小写 alias/名称歧义边界。大小写 alias fixture 明确要求默认大小写不敏感临时目录，不改系统设置；不扩为全卷/全文件系统验收。
 
 来源复核不是 CAS，known_fingerprint 投影仍 None。Store 的保存后对象见证转交、恢复解锁/崩溃日志、外部竞争版本保全、普通覆盖、完整权限策略、严格 GB 标准和完整 T07 尚未完成。
+
+## 历史父目录被替换时的关系检查
+
+有磁盘凭据的独立 SaveAs 在编码/预约前重新观察完整历史源路径。父目录/读取/权限/reparse/path 错误直接返回，不以错误当作“独立目标”；源 leaf 不存在但父目录仍可验证时保留明确的 version=None。新的 HistoricalSource 只用于命名关系：双方重检后，当前实际 file-ID 相同，或当前实际 parent-ID 相同且 leaf 精确/ASCII 保守相等，则转 Current 全查原 disk.version/path。历史源当前 parent 与目的 parent 相同也纳入非 ASCII 歧义拒绝。没有 Unicode lower/upper 推断，不把历史 parent ID 不同当独立目的地证明。
+
+历史路径解析到的外部新对象及 bytes 不更新旧凭据、正文或 baseline。真正独立 SaveAs 仍编码唯一 Store snapshot；该关系观察按值随 Prepared/Work/Staged/Locked/发布与恢复资源持有，在写前后、发布前后及 owner accept 前重检。它临时 pin 当前解析到的源 parent，不是 Store 永久目录锁或 CAS。普通前检失败释放局部观察；消费 Work 返回 BoundFailure 时只保既有 capture/temp 路径，历史观察随 Work 释放；LockFailure/PublishFailure/registry 沿既有 owned 资源保留。
+
+如果历史 parent 已无法读取/解析，或刚捕获的历史观察随后变化，独立 SaveAs 也会保守失败；这不是完整恢复 UI。额外全文件读取、缓冲及操作期目录 pin 的资源成本未测。新增 parent_replacement 子模块 fixture 只针对父目录 éParent→ÉParent 换 ID、ASCII source.txt 的反例，明确前提失败标记；所有 Windows 行为与 Rust 执行仍 NOT_RUN。

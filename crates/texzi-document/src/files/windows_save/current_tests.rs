@@ -1,4 +1,5 @@
 //! Generated fixtures; save receipts are not disk-write evidence.
+mod parent_replacement;
 use super::*;
 use crate::files::{Encoding, LoadedBytes, windows_identity::OpenOutcome};
 use crate::{BoundaryPolicy, Edit, HistoryBudget, ObserverScope, Transaction};
@@ -718,9 +719,11 @@ fn existing_unicode_case_equivalent_new_object_is_not_an_independent_save_as() {
     let before = observe(&mut store, n.doc);
     let bytes = generated_directory_bytes(&upper);
     let error = failure(new.prepare_save_as(&binding, &mut store));
+    // Fresh historical resolution now proves this is Current; reject its
+    // changed version, rather than relying only on the ambiguous-name guard.
     assert!(matches!(
         &error.issue,
-        BoundIssue::Identity(IdentityError::InvalidPath)
+        BoundIssue::Identity(IdentityError::Changed)
     ));
     unchanged(&mut store, &before, &error);
     assert_eq!(generated_directory_bytes(&upper), bytes);

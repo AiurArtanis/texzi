@@ -8,7 +8,9 @@ mod tests;
 use super::{
     FileBinding, FileError, Format, PreparedSave,
     staging::{ContentGuard, StageIssue, StagedSave, StagingWork},
-    windows_identity::{FileIdentity, FileVersion, IdentityError, ObservedTarget},
+    windows_identity::{
+        FileIdentity, FileVersion, HistoricalSource, IdentityError, ObservedTarget,
+    },
     windows_security::SecurityDescriptor,
 };
 use crate::{Error, SaveCapture, SaveStage, Store};
@@ -39,11 +41,13 @@ impl std::fmt::Debug for BoundFailure {
     }
 }
 pub struct BoundPrepared {
+    historical_source: Option<HistoricalSource>,
     source_anchor: Option<super::windows_identity::OpenAnchor>,
     observed: ObservedTarget,
     prepared: PreparedSave,
 }
 pub struct BoundWork {
+    historical_source: Option<HistoricalSource>,
     source_anchor: Option<super::windows_identity::OpenAnchor>,
     observed: ObservedTarget,
     work: StagingWork,
@@ -51,6 +55,7 @@ pub struct BoundWork {
     format: Format,
 }
 pub struct BoundStaged {
+    historical_source: Option<HistoricalSource>,
     _source_anchor: Option<super::windows_identity::OpenAnchor>,
     observed: ObservedTarget,
     temporary: FileVersion,
@@ -157,6 +162,16 @@ impl ObservedTarget {
             .map(|disk| disk.anchor.try_clone())
             .transpose()
             .map_err(|e| fail(BoundIssue::Identity(e)))?;
+        // Re-resolve the complete historical namespace for SaveAs. A changed
+        // parent ID/canonical spelling cannot by itself authorize independence.
+        // Errors stay errors, never a fallback to "different destination".
+        let historical_source = if !current {
+            disk.map(|disk| HistoricalSource::observe(&disk.path))
+                .transpose()
+                .map_err(|e| fail(BoundIssue::Identity(e)))?
+        } else {
+            None
+        };
         self.recheck().map_err(|e| fail(BoundIssue::Identity(e)))?;
         let canonical = if disk.is_some() {
             self.canonical_observed_path()
@@ -164,9 +179,15 @@ impl ObservedTarget {
         } else {
             None
         };
+        let relation = historical_source
+            .as_ref()
+            .map(|source| source.relation_to(&self))
+            .transpose()
+            .map_err(|e| fail(BoundIssue::Identity(e)))?;
         // SaveAs cannot disguise the source path (even after ID replacement) or
         // a hardlink to the source object as an independent destination.
         let current = current
+            || relation.is_some_and(|r| r.same_file || (r.same_parent && r.same_leaf))
             || disk.is_some_and(|disk| {
                 self.resolved_path() == disk.path
                     || canonical.as_ref() == Some(&disk.path)
@@ -185,7 +206,8 @@ impl ObservedTarget {
             // Proven Current paths/IDs still take the full version check below.
             if !current
                 && (self.parent_identity() == disk.parent
-                    || self.resolved_path().parent() == disk.path.parent())
+                    || self.resolved_path().parent() == disk.path.parent()
+                    || relation.is_some_and(|r| r.same_parent))
                 && [self.resolved_path().file_name(), disk.path.file_name()]
                     .iter()
                     .any(|name| !name.and_then(|s| s.to_str()).is_some_and(str::is_ascii))
@@ -199,6 +221,14 @@ impl ObservedTarget {
             })
         {
             return Err(fail(BoundIssue::Identity(IdentityError::Changed)));
+        }
+        // Current already owns/rechecks its destination. Keep the fresh source
+        // observation only for independent SaveAs; it is not a new saved baseline.
+        let historical_source = if current { None } else { historical_source };
+        if let Some(source) = &historical_source {
+            source
+                .recheck()
+                .map_err(|e| fail(BoundIssue::Identity(e)))?;
         }
         let snapshot = owner_snapshot;
         let format = snapshot
@@ -216,6 +246,7 @@ impl ObservedTarget {
             )
             .map_err(|e| fail(BoundIssue::File(e)))?;
         Ok(BoundPrepared {
+            historical_source,
             source_anchor,
             observed: self,
             prepared,
@@ -236,6 +267,7 @@ impl BoundPrepared {
                 recovery_temp: e.recovery_temp,
             })?;
         Ok(BoundWork {
+            historical_source: self.historical_source,
             source_anchor: self.source_anchor,
             observed: self.observed,
             work,
@@ -253,6 +285,11 @@ impl BoundWork {
             capture: Some(self.capture.clone()),
             recovery_temp,
         };
+        if let Some(source) = &self.historical_source {
+            source
+                .recheck()
+                .map_err(|e| fail(BoundIssue::Identity(e), None))?;
+        }
         self.observed
             .recheck()
             .map_err(|e| fail(BoundIssue::Identity(e), None))?;
@@ -272,6 +309,11 @@ impl BoundWork {
         self.observed
             .recheck()
             .map_err(|e| fail(BoundIssue::Identity(e), recovery.clone()))?;
+        if let Some(source) = &self.historical_source {
+            source
+                .recheck()
+                .map_err(|e| fail(BoundIssue::Identity(e), recovery.clone()))?;
+        }
         let (temp, current_path) = (|| -> Result<_, IdentityError> {
             let mut file = staged.created_file()?;
             Ok((
@@ -294,6 +336,7 @@ impl BoundWork {
             return Err(fail(BoundIssue::Identity(IdentityError::Changed), recovery));
         }
         Ok(BoundStaged {
+            historical_source: self.historical_source,
             _source_anchor: self.source_anchor,
             observed: self.observed,
             temporary: temp,
@@ -375,12 +418,19 @@ impl BoundStaged {
     }
     /// Owner-held stage recheck; not a CAS or publication authorization.
     pub fn recheck_files(&self) -> Result<(), IdentityError> {
+        self.recheck_historical_source()?;
         self.observed.recheck()?;
         let mut file = self.staged.created_file()?;
         if super::windows_identity::read_version_handle(&mut file)? != self.temporary
             || super::windows_identity::volume_path(&file)? != self.staged.recovery_temp()
         {
             return Err(IdentityError::Changed);
+        }
+        Ok(())
+    }
+    pub(super) fn recheck_historical_source(&self) -> Result<(), IdentityError> {
+        if let Some(source) = &self.historical_source {
+            source.recheck()?;
         }
         Ok(())
     }

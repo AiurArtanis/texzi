@@ -329,6 +329,7 @@ impl NewPublication {
             #[cfg(not(test))]
             let flush_file = &*file;
             flush_file.sync_all()?;
+            self.resources.staged.recheck_historical_source()?;
             self.resources.staged.observed.recheck_parent()?;
             // Query the actual post-rename identity and bytes, never assign the
             // old reservation key or cached temporary ID as the final identity.
@@ -384,6 +385,7 @@ impl PublishedNew {
         let snapshot = self.capture().snapshot.clone();
         let format = self.resources.format();
         let anchor = (|| -> Result<_, PublishIssue> {
+            self.resources.staged.recheck_historical_source()?;
             let mut file = self.resources.staged.staged.created_file()?;
             if super::super::windows_identity::read_version_handle(&mut file)? != self.version {
                 return Err(PublishIssue::VerificationMismatch);

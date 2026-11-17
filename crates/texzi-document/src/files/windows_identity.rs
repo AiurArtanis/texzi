@@ -61,6 +61,57 @@ pub struct ObservedTarget {
     version: Option<FileVersion>,
 }
 
+/// A fresh, read-only resolution of the historical complete source path.
+/// Retains its parent handle only for the operation's relationship checks; this
+/// observation never replaces a disk binding or its original version baseline.
+pub(super) struct HistoricalSource {
+    observed: ObservedTarget,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct HistoricalRelation {
+    pub same_file: bool,
+    pub same_parent: bool,
+    pub same_leaf: bool,
+}
+
+impl HistoricalSource {
+    pub(super) fn observe(path: &Path) -> Result<Self, IdentityError> {
+        let observed = ObservedTarget::inspect(path)?;
+        observed.recheck()?;
+        Ok(Self { observed })
+    }
+
+    pub(super) fn relation_to(
+        &self,
+        destination: &ObservedTarget,
+    ) -> Result<HistoricalRelation, IdentityError> {
+        self.recheck()?;
+        destination.recheck()?;
+        let same_file = match (&self.observed.version, &destination.version) {
+            (Some(source), Some(destination)) => source.identity == destination.identity,
+            _ => false,
+        };
+        let same_parent = self.observed.parent_identity == destination.parent_identity;
+        // Only exact spelling or ASCII case folding is supported here. This is
+        // a name relation, never independent proof of file identity.
+        let same_leaf = self.observed.name == destination.name
+            || match (self.observed.name.to_str(), destination.name.to_str()) {
+                (Some(source), Some(destination)) => source.eq_ignore_ascii_case(destination),
+                _ => false,
+            };
+        Ok(HistoricalRelation {
+            same_file,
+            same_parent,
+            same_leaf,
+        })
+    }
+
+    pub(super) fn recheck(&self) -> Result<(), IdentityError> {
+        self.observed.recheck()
+    }
+}
+
 fn handle_info<T: Default>(
     file: &File,
     class: FILE_INFO_BY_HANDLE_CLASS,
