@@ -1,4 +1,6 @@
 //! Bound, pre-permit Windows staging. No replace, Ready, or success entry point.
+#[cfg(test)]
+mod tests;
 use super::{
     FileBinding, FileError, Format, PreparedSave,
     staging::{ContentGuard, StageIssue, StagedSave, StagingWork},

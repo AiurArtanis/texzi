@@ -33,6 +33,28 @@ impl std::fmt::Debug for SecurityDescriptor {
     }
 }
 impl SecurityDescriptor {
+    #[cfg(test)]
+    pub(super) fn with_flipped_dacl_protection(&self) -> io::Result<Self> {
+        let mut changed = self.clone();
+        let descriptor = changed.storage.as_mut_ptr().cast();
+        let mut control = 0;
+        let mut revision = 0;
+        // SAFETY: live aligned copy of a validated OS-produced descriptor.
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe {
+            SetSecurityDescriptorControl(
+                descriptor,
+                SE_DACL_PROTECTED,
+                (control ^ SE_DACL_PROTECTED) & SE_DACL_PROTECTED,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(changed)
+    }
     /// Internal caller must supply only its own create_new temporary handle,
     /// before writing payload. Never applies to an existing document path.
     pub(super) fn apply_to_new_file(&self, file: &File) -> io::Result<()> {

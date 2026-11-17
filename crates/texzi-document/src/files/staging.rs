@@ -46,6 +46,8 @@ pub struct StagedSave {
 pub struct StagingWork {
     capture: crate::SaveCapture,
     bytes: Arc<[u8]>,
+    #[cfg(all(test, windows))]
+    security_hook: Option<Box<dyn Fn(&File) -> std::io::Result<()> + Send>>,
 }
 impl StagedSave {
     #[cfg(windows)]
@@ -111,10 +113,19 @@ impl PreparedSave {
         Ok(StagingWork {
             capture: self.capture.clone(),
             bytes: self.bytes.clone(),
+            #[cfg(all(test, windows))]
+            security_hook: None,
         })
     }
 }
 impl StagingWork {
+    #[cfg(all(test, windows))]
+    pub(super) fn set_security_hook(
+        &mut self,
+        hook: impl Fn(&File) -> std::io::Result<()> + Send + 'static,
+    ) {
+        self.security_hook = Some(Box::new(hook));
+    }
     /// Reserves an exclusive sibling, writes the captured payload, flushes and
     /// rereads it, then rechecks the target. Errors keep reservation and temp.
     /// There is deliberately no publish/commit/success function before identity
@@ -233,6 +244,15 @@ impl StagingWork {
                     issue: StageIssue::Io(e),
                     recovery_temp: Some(temp.clone()),
                 })?;
+        }
+        // Unit-test-only fault at the real post-copy/pre-payload boundary. No
+        // hook, environment switch, or alternative path exists in product builds.
+        #[cfg(all(test, windows))]
+        if let Some(hook) = &self.security_hook {
+            hook(&file).map_err(|e| StageFailure {
+                issue: StageIssue::Io(e),
+                recovery_temp: Some(temp.clone()),
+            })?;
         }
         #[cfg(windows)]
         let payload_security =
