@@ -11,6 +11,7 @@ use std::{
 pub(crate) struct Registry(Mutex<BTreeMap<u64, Entry>>);
 struct Entry {
     resources: Arc<LockedStaged>,
+    security_policy: NewFileSecurity,
     dropped: bool,
     recorded: bool,
 }
@@ -33,7 +34,11 @@ impl Drop for Guard {
     }
 }
 impl Registry {
-    pub(super) fn register(self: &Arc<Self>, resources: Arc<LockedStaged>) -> Guard {
+    pub(super) fn register(
+        self: &Arc<Self>,
+        resources: Arc<LockedStaged>,
+        security_policy: NewFileSecurity,
+    ) -> Guard {
         let operation = resources.capture().operation;
         let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
         // Only the owner can grant a permit, once per monotonically allocated operation.
@@ -42,6 +47,7 @@ impl Registry {
             operation,
             Entry {
                 resources,
+                security_policy,
                 dropped: false,
                 recorded: false,
             },
@@ -67,13 +73,13 @@ impl Registry {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&operation);
     }
-    fn dropped(&self) -> Vec<(Arc<LockedStaged>, bool)> {
+    fn dropped(&self) -> Vec<(Arc<LockedStaged>, bool, NewFileSecurity)> {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
             .filter(|e| e.dropped)
-            .map(|e| (e.resources.clone(), e.recorded))
+            .map(|e| (e.resources.clone(), e.recorded, e.security_policy))
             .collect()
     }
     #[cfg(test)]
@@ -86,10 +92,15 @@ impl Registry {
 /// Dropping this receipt does not release the Store's retained copy.
 pub struct PublicationRecovery {
     resources: Arc<LockedStaged>,
+    security_policy: NewFileSecurity,
     pub terminal_recorded: bool,
     pub owner_error: Option<Error>,
 }
 impl PublicationRecovery {
+    /// Intended final policy, not proof it was applied or a recovery permit.
+    pub fn security_policy(&self) -> NewFileSecurity {
+        self.security_policy
+    }
     pub fn capture(&self) -> &SaveCapture {
         self.resources.capture()
     }
@@ -125,9 +136,10 @@ impl Store {
         self.publication_recovery
             .dropped()
             .into_iter()
-            .map(|(resources, recorded)| {
+            .map(|(resources, recorded, security_policy)| {
                 let mut notice = PublicationRecovery {
                     resources,
+                    security_policy,
                     terminal_recorded: recorded,
                     owner_error: None,
                 };
@@ -140,7 +152,7 @@ impl Store {
                                 else { SaveFailureOutcome::OutcomeUnknown },
                             conflict: !before,
                             os_error: None,
-                            message: "publication result dropped; inspect retained original handle before recovery".into(),
+                            message: format!("publication result dropped ({security_policy:?}); inspect retained original handle before recovery"),
                             recovery_paths: notice.candidate_paths(),
                         })
                     });
@@ -161,11 +173,14 @@ impl Store {
         self.publication_recovery
             .dropped()
             .into_iter()
-            .map(|(resources, recorded)| PublicationRecovery {
-                resources,
-                terminal_recorded: recorded,
-                owner_error: None,
-            })
+            .map(
+                |(resources, recorded, security_policy)| PublicationRecovery {
+                    resources,
+                    security_policy,
+                    terminal_recorded: recorded,
+                    owner_error: None,
+                },
+            )
             .collect()
     }
     /// Release only registry ownership after explicit owner acknowledgement.

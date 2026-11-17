@@ -15,7 +15,8 @@ use super::{
 };
 use crate::{Error, SaveCapture, SaveStage, Store};
 pub use publish::{
-    CommittedNew, NewPublication, NewReady, PublishFailure, PublishIssue, PublishedNew,
+    CommittedNew, NewFileSecurity, NewPublication, NewReady, PublishFailure, PublishIssue,
+    PublishedNew,
 };
 use std::path::{Path, PathBuf};
 

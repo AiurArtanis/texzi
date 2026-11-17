@@ -215,6 +215,66 @@ impl SecurityDescriptor {
         }
         Ok(())
     }
+    /// Validate only the captured creation DACL representation before a permit.
+    /// This does not open a file, change an object, or enable any privilege.
+    pub(super) fn validate_creation_dacl_restore(&self) -> io::Result<()> {
+        self.creation_dacl_restore_parts().map(|_| ())
+    }
+    /// Internal caller must retain the original FILE_SHARE_NONE create_new File
+    /// and prove that its no-overwrite publication succeeded before this call.
+    /// This does not authorize an arbitrary path or an existing document. Only
+    /// the creation DACL is restored; the publisher must reread and compare the
+    /// complete security descriptor before accepting the result.
+    pub(super) fn restore_creation_dacl_to_published_new(&self, file: &File) -> io::Result<()> {
+        let (dacl, flags) = self.creation_dacl_restore_parts()?;
+        // SAFETY: dacl refers into this live, validated OS-produced descriptor;
+        // the internal publisher retains the original exclusively held File.
+        // OWNER/GROUP/SACL are neither requested nor changed by this operation.
+        let code = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                flags,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null(),
+            )
+        };
+        if code != 0 {
+            return Err(io::Error::from_raw_os_error(code as i32));
+        }
+        Ok(())
+    }
+    fn creation_dacl_restore_parts(&self) -> io::Result<(*mut ACL, u32)> {
+        let descriptor = self.storage.as_ptr().cast_mut().cast();
+        let mut control = 0;
+        let mut revision = 0;
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut dacl = std::ptr::null_mut();
+        // SAFETY: the aligned self-relative descriptor came from GetSecurityInfo
+        // and stays live. Both APIs read its storage without modifying it.
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
+            || unsafe {
+                GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)
+            } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if present == 0 || dacl.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "creation DACL restoration requires a present non-NULL DACL",
+            ));
+        }
+        let inheritance = if control & SE_DACL_PROTECTED != 0 {
+            PROTECTED_DACL_SECURITY_INFORMATION
+        } else {
+            UNPROTECTED_DACL_SECURITY_INFORMATION
+        };
+        Ok((dacl, DACL_SECURITY_INFORMATION | inheritance))
+    }
     pub fn as_bytes(&self) -> &[u8] {
         // SAFETY: length was checked against initialized aligned storage below.
         unsafe { std::slice::from_raw_parts(self.storage.as_ptr().cast(), self.length) }

@@ -1,5 +1,6 @@
 //! Generated-file Windows unit fixtures. Never run against user documents.
 use super::*;
+mod creation_security;
 use crate::{
     BoundaryPolicy, Edit, HistoryBudget, ObserverScope, SaveFailure, SaveFailureOutcome,
     Transaction,

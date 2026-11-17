@@ -1,12 +1,17 @@
 //! T07 codecs, captured payload and Windows save components. UI integration pending.
 use crate::{DocId, SaveCapture, Snapshot, Store, TargetKey};
 use std::{path::Path, sync::Arc};
+#[forbid(unsafe_code)]
 pub mod staging;
 #[cfg(windows)]
+// Raw Windows calls stay in these three explicit adapters and their fixtures.
+#[allow(unsafe_code)]
 pub mod windows_identity;
 #[cfg(windows)]
+#[allow(unsafe_code)]
 pub mod windows_save;
 #[cfg(windows)]
+#[allow(unsafe_code)]
 pub mod windows_security;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

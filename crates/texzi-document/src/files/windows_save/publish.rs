@@ -1,4 +1,4 @@
-//! New targets only, owner/SYSTEM-only policy. Existing replacement is excluded.
+//! New targets only, with explicit final DACL policy. Existing replacement is excluded.
 use super::recovery::Guard;
 use super::*;
 use crate::{SaveFailure, SaveFailureOutcome, Snapshot};
@@ -21,6 +21,22 @@ pub enum PublishIssue {
     Owner(Error),
     VerificationMismatch,
 }
+/// Final security of a new name. Every temporary file remains private first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewFileSecurity {
+    OwnerOnly,
+    /// Restore the DACL captured from the original create_new handle, only
+    /// after successful rename. Does not promise arbitrary inheritance rules.
+    CreationDefault,
+}
+impl NewFileSecurity {
+    fn expected(self, resources: &LockedStaged) -> &SecurityDescriptor {
+        match self {
+            Self::OwnerOnly => resources.temporary_security(),
+            Self::CreationDefault => resources.creation_security(),
+        }
+    }
+}
 impl From<io::Error> for PublishIssue {
     fn from(e: io::Error) -> Self {
         Self::Io(e)
@@ -40,6 +56,7 @@ enum Phase {
 #[must_use = "record the terminal result and retain or explicitly resolve recovery resources"]
 pub struct PublishFailure {
     pub issue: PublishIssue,
+    security_policy: NewFileSecurity,
     resources: Arc<LockedStaged>,
     phase: Phase,
     _guard: Option<Guard>,
@@ -53,6 +70,9 @@ impl std::fmt::Debug for PublishFailure {
     }
 }
 impl PublishFailure {
+    pub fn security_policy(&self) -> NewFileSecurity {
+        self.security_policy
+    }
     pub fn capture(&self) -> &SaveCapture {
         self.resources.capture()
     }
@@ -97,8 +117,8 @@ impl PublishFailure {
                     _ => None,
                 },
                 message: format!(
-                    "new-target publication: {:?}; candidate recovery paths require verification",
-                    self.issue
+                    "new-target publication ({:?}): {:?}; candidate recovery paths require verification",
+                    self.security_policy, self.issue
                 ),
                 recovery_paths: paths,
             },
@@ -108,12 +128,14 @@ impl PublishFailure {
 }
 #[must_use = "obtain the owner permit or explicitly handle the still-active save"]
 pub struct NewReady {
+    security_policy: NewFileSecurity,
     resources: Arc<LockedStaged>,
     parent: File,
     name: Vec<u16>,
 }
 #[must_use = "a granted permit requires publication or an explicit failed outcome"]
 pub struct NewPublication {
+    security_policy: NewFileSecurity,
     guard: Option<Guard>,
     resources: Arc<LockedStaged>,
     parent: File,
@@ -124,15 +146,19 @@ pub struct NewPublication {
     post_rename_flush_handle: Option<Box<dyn Fn(&File) -> io::Result<File> + Send>>,
     #[cfg(test)]
     verification_format: Option<Format>,
+    #[cfg(test)]
+    creation_dacl_handle: Option<Box<dyn Fn(&File) -> io::Result<File> + Send>>,
 }
 #[must_use = "accept the verified result or explicitly record the uncertain outcome"]
 pub struct PublishedNew {
+    security_policy: NewFileSecurity,
     guard: Option<Guard>,
     resources: Arc<LockedStaged>,
     version: FileVersion,
     path: PathBuf,
 }
 pub struct CommittedNew {
+    pub security_policy: NewFileSecurity,
     pub binding: FileBinding,
     pub version: FileVersion,
     pub path: PathBuf,
@@ -144,11 +170,22 @@ impl LockedStaged {
     /// Explicit initial policy: a new file remains restricted to owner/SYSTEM.
     /// No claim of destination inheritance or existing-file SaveAs replacement.
     pub fn prepare_new_owner_only(self) -> Result<NewReady, PublishFailure> {
+        self.prepare_new(NewFileSecurity::OwnerOnly)
+    }
+    /// Keep private staging, then restore its original creation DACL only at
+    /// the successfully published new name. Not existing-target replacement.
+    pub fn prepare_new_creation_default(self) -> Result<NewReady, PublishFailure> {
+        self.prepare_new(NewFileSecurity::CreationDefault)
+    }
+    fn prepare_new(self, security_policy: NewFileSecurity) -> Result<NewReady, PublishFailure> {
         let attempt = (|| -> Result<_, PublishIssue> {
             if self.original_security().is_some() {
                 return Err(PublishIssue::ExistingTargetUnsupported);
             }
             self.recheck_files()?;
+            if security_policy == NewFileSecurity::CreationDefault {
+                self.creation_security().validate_creation_dacl_restore()?;
+            }
             let observed = &self.staged.observed;
             let text = observed
                 .target_name()
@@ -172,12 +209,14 @@ impl LockedStaged {
         })();
         match attempt {
             Ok((parent, name)) => Ok(NewReady {
+                security_policy,
                 resources: Arc::new(self),
                 parent,
                 name,
             }),
             Err(issue) => Err(PublishFailure {
                 issue,
+                security_policy,
                 resources: Arc::new(self),
                 phase: Phase::BeforePermit,
                 _guard: None,
@@ -186,6 +225,9 @@ impl LockedStaged {
     }
 }
 impl NewReady {
+    pub fn security_policy(&self) -> NewFileSecurity {
+        self.security_policy
+    }
     pub fn capture(&self) -> &SaveCapture {
         self.resources.capture()
     }
@@ -194,15 +236,19 @@ impl NewReady {
         if store.captured_save_stage(self.capture()) != Ok(SaveStage::WritingTemp) {
             return Err(PublishFailure {
                 issue: PublishIssue::Owner(Error::InvalidSave),
+                security_policy: self.security_policy,
                 resources: self.resources,
                 phase: Phase::BeforePermit,
                 _guard: None,
             });
         }
         // Retain the original handles before the owner transitions to Replacing.
-        let guard = store.publication_recovery.register(self.resources.clone());
+        let guard = store
+            .publication_recovery
+            .register(self.resources.clone(), self.security_policy);
         match store.permit_bound_new(self.capture(), &scope) {
             Ok(()) => Ok(NewPublication {
+                security_policy: self.security_policy,
                 guard: Some(guard),
                 resources: self.resources,
                 parent: self.parent,
@@ -213,6 +259,8 @@ impl NewReady {
                 post_rename_flush_handle: None,
                 #[cfg(test)]
                 verification_format: None,
+                #[cfg(test)]
+                creation_dacl_handle: None,
             }),
             Err(e) => {
                 // No permit was granted. The returned failure remains the sole
@@ -222,6 +270,7 @@ impl NewReady {
                     .complete(self.capture().operation);
                 Err(PublishFailure {
                     issue: PublishIssue::Owner(e),
+                    security_policy: self.security_policy,
                     resources: self.resources,
                     phase: Phase::BeforePermit,
                     _guard: None,
@@ -269,6 +318,16 @@ fn rename_new(file: &File, parent: &File, name: &[u16], attempted: &mut bool) ->
     Ok(())
 }
 impl NewPublication {
+    pub fn security_policy(&self) -> NewFileSecurity {
+        self.security_policy
+    }
+    #[cfg(test)]
+    pub(super) fn set_creation_dacl_handle(
+        &mut self,
+        hook: impl Fn(&File) -> io::Result<File> + Send + 'static,
+    ) {
+        self.creation_dacl_handle = Some(Box::new(hook));
+    }
     #[cfg(test)]
     pub(super) fn set_post_rename_flush_handle(
         &mut self,
@@ -296,6 +355,7 @@ impl NewPublication {
         if let Err(e) = self.resources.recheck_files() {
             return Err(PublishFailure {
                 issue: PublishIssue::Identity(e),
+                security_policy: self.security_policy,
                 resources: self.resources,
                 phase: Phase::Permitted,
                 _guard: self.guard,
@@ -306,6 +366,7 @@ impl NewPublication {
             if let Err(e) = hook(&self.resources.staged.target_path()) {
                 return Err(PublishFailure {
                     issue: PublishIssue::Io(e),
+                    security_policy: self.security_policy,
                     resources: self.resources,
                     phase: Phase::Permitted,
                     _guard: self.guard,
@@ -318,6 +379,32 @@ impl NewPublication {
             let mut file = self.resources.staged.staged.created_file()?;
             file.sync_all()?;
             rename_new(&file, &self.parent, &self.name, &mut attempted)?;
+            if self.security_policy == NewFileSecurity::CreationDefault {
+                // Never broaden a sibling temporary name. Prove that the same
+                // exclusive File has reached the intended final name first.
+                self.resources.staged.recheck_historical_source()?;
+                self.resources.staged.observed.recheck_parent()?;
+                if super::super::windows_identity::volume_path(&file)? != path
+                    || super::super::windows_identity::identity(&file)?
+                        != self.resources.staged.temporary_identity()
+                    || &SecurityDescriptor::read(&file)? != self.resources.temporary_security()
+                {
+                    return Err(PublishIssue::VerificationMismatch);
+                }
+                #[cfg(test)]
+                let dacl_handle = self
+                    .creation_dacl_handle
+                    .as_ref()
+                    .map(|hook| hook(&file))
+                    .transpose()?;
+                #[cfg(test)]
+                let dacl_file = dacl_handle.as_ref().unwrap_or(&*file);
+                #[cfg(not(test))]
+                let dacl_file = &*file;
+                self.resources
+                    .creation_security()
+                    .restore_creation_dacl_to_published_new(dacl_file)?;
+            }
             #[cfg(test)]
             let flush_handle = self
                 .post_rename_flush_handle
@@ -340,7 +427,7 @@ impl NewPublication {
             if super::super::windows_identity::volume_path(&file)? != path
                 || version.identity != self.resources.staged.temporary_identity()
                 || version.bytes.as_ref() != self.resources.payload()
-                || &version.security != self.resources.temporary_security()
+                || &version.security != self.security_policy.expected(&self.resources)
                 || self.capture().snapshot.body.profile.file_format != Some(format)
             {
                 return Err(PublishIssue::VerificationMismatch);
@@ -349,6 +436,7 @@ impl NewPublication {
         })();
         match result {
             Ok(version) => Ok(PublishedNew {
+                security_policy: self.security_policy,
                 guard: self.guard,
                 resources: self.resources,
                 version,
@@ -356,6 +444,7 @@ impl NewPublication {
             }),
             Err(issue) => Err(PublishFailure {
                 issue,
+                security_policy: self.security_policy,
                 resources: self.resources,
                 _guard: self.guard,
                 phase: if attempted {
@@ -368,6 +457,9 @@ impl NewPublication {
     }
 }
 impl PublishedNew {
+    pub fn security_policy(&self) -> NewFileSecurity {
+        self.security_policy
+    }
     #[cfg(test)]
     pub(super) fn set_handoff_path_for_test(&mut self, path: PathBuf) {
         self.path = path;
@@ -387,7 +479,9 @@ impl PublishedNew {
         let anchor = (|| -> Result<_, PublishIssue> {
             self.resources.staged.recheck_historical_source()?;
             let mut file = self.resources.staged.staged.created_file()?;
-            if super::super::windows_identity::read_version_handle(&mut file)? != self.version {
+            if &self.version.security != self.security_policy.expected(&self.resources)
+                || super::super::windows_identity::read_version_handle(&mut file)? != self.version
+            {
                 return Err(PublishIssue::VerificationMismatch);
             }
             Ok(super::super::windows_identity::OpenAnchor::from_retained(
@@ -399,6 +493,7 @@ impl PublishedNew {
             Err(issue) => {
                 return Err(PublishFailure {
                     issue,
+                    security_policy: self.security_policy,
                     resources: self.resources,
                     phase: Phase::Attempted,
                     _guard: self.guard,
@@ -407,6 +502,7 @@ impl PublishedNew {
         };
         match store.accept_published_new(self.capture(), self.version.identity.target_key()) {
             Ok(binding_epoch) => Ok(CommittedNew {
+                security_policy: self.security_policy,
                 binding: FileBinding {
                     imported: snapshot.clone(),
                     original: self.version.bytes.clone(),
@@ -426,6 +522,7 @@ impl PublishedNew {
             }),
             Err(e) => Err(PublishFailure {
                 issue: PublishIssue::Owner(e),
+                security_policy: self.security_policy,
                 resources: self.resources,
                 phase: Phase::Attempted,
                 _guard: self.guard,

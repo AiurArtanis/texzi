@@ -1,0 +1,35 @@
+# T07：新目标发布后的创建默认 DACL
+
+基于 `d398dd6cbd48402f4f9611d5592a3fc25c3881f9` 的下一个本地实现增量；先交具体不变量，随后交固定源码审核。所有新行为尚未编译/运行，不表示完整 SaveAs、权限继承或安全保存已通过。
+
+## 目的与边界
+
+目前无目标暂存会把新 File 保护为 owner/SYSTEM-only，最终只能显式按该策略发布。直接跳过暂存保护会使取消/失败后遗留的非空 temp 暴露给目录其他读者，因此本步不改 staging，也不在 temp 名称下放宽 DACL。
+
+增加显式 `NewFileSecurity::CreationDefault`，含义为恢复同一个 create_new File 在写 payload 前已捕获的创建默认 DACL。它可能含目录继承 ACE，但不推断任意目录或之后 ACL 变化的语义。旧 `OwnerOnly` 和 `prepare_new_owner_only` 保持独立显式能力；普通覆盖/已存在 destination 仍拒绝，不借本步缩减完整 T07 范围。
+
+本文 descriptor/完整读回仅指现有 `SecurityDescriptor::read` 请求的 owner/group/DACL，不包含 SACL、完整性标签或 EFS；也不把前后检查当权限或命名空间 CAS。
+
+## 具体接口与约束
+
+- `LockedStaged::prepare_new_creation_default` 与旧 owner-only 方法共用新目标/名称/身份/格式预检；只接受原观察 absent，提前验证捕获的 creation descriptor 有可恢复的非 NULL DACL。无法表达的 descriptor 在许可前明确拒绝，不静默选另一策略。
+- `NewReady` 在 permit 前固定私有 typed policy。策略随 NewPublication、PublishedNew、PublishFailure 按值移动；外部不可拼装、不能在许可后改选。结果的公开 getter 和 CommittedNew 说明实际选择。
+- 原 publication registry 同步保留该同 operation 的策略意图，丢结果后的恢复回执仍能读取；该标签不是已经应用或核实成功的证明，也不给恢复重试权限。原 Drop/drain/ack/held 规则不变。
+- 本增量不在 staging、取消、许可前错误或未成功 rename 的路径调用 DACL 恢复。对象仍被拥有时沿原规则保持私有 descriptor/独占 File；本次没有新增 close/reopen、按路径改权限、删除或重试。既存早期 staging 错误会关闭局部 File，Ready/许可前失败对象 Drop 也未纳入 registry，原句柄持续保留与 owner 收尾缺口仍未解决。
+- worker 在原 File 上完成 `ReplaceIfExists=false` 的相对名称 rename，随后先核实际 final path、原创建 ID、parent 及历史源；仅这些成功后才在原独占 File 上恢复创建 DACL。DACL-only helper 不写 owner/group，不要求新 WRITE_OWNER 权限，不复用仅适用于 pre-payload 的旧复制接口。
+- 已成功 rename 后 DACL 恢复、flush、身份/内容/格式/安全描述符读回或 owner 接受前核查失败，沿原 Attempted→OutcomeUnknown，保留原 capture、N、File/parent 和恢复资源；不把 owner-only fallback 当成功。
+- 成功必须 full descriptor 实读严格等于按 policy 选择的 expected：OwnerOnly 选原私有 payload security，CreationDefault 选创建时 descriptor；owner/group 未被主动写入，仍由该读回相等条件核查。最终 actual version/raw/path/file-ID 与同次策略进入既有结果凭据；Store 接受 N 不回滚或清除 N+1。
+
+策略通过现有不可外部拼装的结果所有权链绑定同次 capture/permit，暂不新增 Store 公共 setter 或改变一般内存 save 协议。若此证明链存在具体可绕过入口，须在固定源码审核中退回，不以文档代替。
+
+## 回归源码计划
+
+仅新增隔离生成文件的 Windows lib unit 源码，不实际运行或修改用户 ACL：创建默认策略正常新目标、实际 descriptor/原句柄/N+1/最终 binding；准备失败或已有 target 不得到覆盖能力；rename 前目标竞争不覆盖且 temp 仍为私有；rename 后 DACL helper 的受控错误走真实 Unknown 路径、保持 N/N+1/held。测试只用该原创建句柄和同目录生成对照，不修改目录或全局权限。
+
+后续真实 harness 要与 contracts 分列；当前所有新用例 NOT_RUN。SetSecurityInfo 对 inherited ACE 的重新继承/规范化与 full descriptor 相等能否满足、权限/共享及崩溃边界尚无运行证明，严格失败谓词不等于功能可用。SACL/标签/EFS/多主体及完整权限策略未闭；本步不改 CI/GH/linker/push/GUI/剪贴板/远端/权限/发布限制。
+
+## 既存 Rust lint 边界修正
+
+本轮源码检查发现根 `forbid(unsafe_code)` 会同时禁止三个已经存在的 Windows FFI 适配模块。这是确定的 lint 配置冲突，尚未运行编译，不等价已恢复可构建。
+
+改为 crate 默认 `deny(unsafe_code)`，十个纯文档模块以及 staging 各显式 `forbid(unsafe_code)`；只有 `cfg(windows)` 的 windows_identity、windows_save、windows_security 三个既有适配根使用局部 `allow(unsafe_code)`。各调用仍须保留安全性注释，新增例外须单独代码审查；静态清单审计限定这三个入口。本变更不改宿主权限、审批、模型或 OS 策略，不放宽正文/坐标/事务/history/观察/视图内核的禁止 unsafe 边界。

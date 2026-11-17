@@ -1,16 +1,28 @@
 //! Persistent document component; not connected to NSH yet.
-#![forbid(unsafe_code)]
+// Keep the document core forbidden; only the named Windows adapters in files
+// may opt into FFI. A crate-wide forbid would also reject those adapters.
+#![deny(unsafe_code)]
 
+#[forbid(unsafe_code)]
 mod anchors;
+#[forbid(unsafe_code)]
 mod body;
+#[forbid(unsafe_code)]
 mod coordinates;
 pub mod files;
+#[forbid(unsafe_code)]
 mod history;
+#[forbid(unsafe_code)]
 mod observe;
+#[forbid(unsafe_code)]
 mod observed_writes;
+#[forbid(unsafe_code)]
 mod provenance;
+#[forbid(unsafe_code)]
 mod ui_plan;
+#[forbid(unsafe_code)]
 mod view_store;
+#[forbid(unsafe_code)]
 mod views;
 
 pub use anchors::Affinity;
