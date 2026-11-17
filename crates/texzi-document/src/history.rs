@@ -306,6 +306,9 @@ impl Store {
         }
         Ok(a)
     }
+    pub(crate) fn captured_save_stage(&self, c: &SaveCapture) -> Result<SaveStage, Error> {
+        self.active_save(c).map(|a| a.stage)
+    }
     pub(crate) fn advance_save_unpublished(
         &mut self,
         c: &SaveCapture,

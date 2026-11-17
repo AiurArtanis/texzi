@@ -8,6 +8,8 @@ mod save_failures;
 mod save_scopes;
 mod views;
 #[cfg(windows)]
+mod windows_bound_staging;
+#[cfg(windows)]
 mod windows_identity;
 
 fn store(raw: &str) -> (Store, Snapshot) {

@@ -4,6 +4,8 @@ use std::{path::Path, sync::Arc};
 pub mod staging;
 #[cfg(windows)]
 pub mod windows_identity;
+#[cfg(windows)]
+pub mod windows_save;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -226,9 +228,22 @@ impl FileBinding {
         guard: String,
         format: Format,
     ) -> Result<PreparedSave, FileError> {
+        self.prepare_with_scope(store, target, guard, format, None)
+    }
+    pub(crate) fn prepare_with_scope(
+        &self,
+        store: &mut Store,
+        target: TargetKey,
+        guard: String,
+        format: Format,
+        scope: Option<crate::SaveScope>,
+    ) -> Result<PreparedSave, FileError> {
         let snapshot = store.snapshot(self.doc())?;
         let bytes = self.encode_snapshot(&snapshot, format)?;
-        let capture = store.begin_save(self.doc(), target, guard)?;
+        let capture = match scope {
+            Some(scope) => store.begin_scoped_save(self.doc(), target, guard, scope)?,
+            None => store.begin_save(self.doc(), target, guard)?,
+        };
         Ok(PreparedSave {
             capture,
             bytes,
