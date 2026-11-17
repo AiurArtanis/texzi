@@ -39,16 +39,19 @@ impl std::fmt::Debug for BoundFailure {
     }
 }
 pub struct BoundPrepared {
+    source_anchor: Option<super::windows_identity::OpenAnchor>,
     observed: ObservedTarget,
     prepared: PreparedSave,
 }
 pub struct BoundWork {
+    source_anchor: Option<super::windows_identity::OpenAnchor>,
     observed: ObservedTarget,
     work: StagingWork,
     capture: SaveCapture,
     format: Format,
 }
 pub struct BoundStaged {
+    _source_anchor: Option<super::windows_identity::OpenAnchor>,
     observed: ObservedTarget,
     temporary: FileVersion,
     staged: StagedSave,
@@ -130,6 +133,12 @@ impl ObservedTarget {
                 return Err(fail(BoundIssue::Identity(IdentityError::Changed)));
             }
         }
+        // Retain the verified source object across the owned worker, even if
+        // caller drops FileBinding immediately after this preparation returns.
+        let source_anchor = disk
+            .map(|disk| disk.anchor.try_clone())
+            .transpose()
+            .map_err(|e| fail(BoundIssue::Identity(e)))?;
         self.recheck().map_err(|e| fail(BoundIssue::Identity(e)))?;
         if current
             && disk.is_some_and(|disk| {
@@ -156,6 +165,7 @@ impl ObservedTarget {
             )
             .map_err(|e| fail(BoundIssue::File(e)))?;
         Ok(BoundPrepared {
+            source_anchor,
             observed: self,
             prepared,
         })
@@ -175,6 +185,7 @@ impl BoundPrepared {
                 recovery_temp: e.recovery_temp,
             })?;
         Ok(BoundWork {
+            source_anchor: self.source_anchor,
             observed: self.observed,
             work,
             capture: self.prepared.capture().clone(),
@@ -232,6 +243,7 @@ impl BoundWork {
             return Err(fail(BoundIssue::Identity(IdentityError::Changed), recovery));
         }
         Ok(BoundStaged {
+            _source_anchor: self.source_anchor,
             observed: self.observed,
             temporary: temp,
             staged,

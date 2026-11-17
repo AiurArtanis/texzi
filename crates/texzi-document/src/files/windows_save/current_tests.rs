@@ -76,6 +76,16 @@ fn current_capture_freezes_format_and_n_while_n_plus_one_stays_dirty() {
         .unwrap()
         .prepare_current(&binding, &mut store)
         .unwrap();
+    let source_id = binding.disk.as_ref().unwrap().version.identity;
+    drop(binding);
+    assert!(
+        prepared
+            .source_anchor
+            .as_ref()
+            .unwrap()
+            .retains(source_id)
+            .unwrap()
+    );
     assert_eq!(prepared.capture().snapshot.token, n.token);
     assert_eq!(prepared.prepared.format(), profile.file_format.unwrap());
     assert_eq!(prepared.prepared.bytes(), [255, 254, 65, 0, 13, 0, 10, 0]);

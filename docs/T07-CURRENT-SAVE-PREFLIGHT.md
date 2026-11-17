@@ -12,7 +12,7 @@ verified-open 在原强读 File/parent 保护下复制属性句柄，复制失�
 - prepare_save_as 是显式换目标。有凭据时仍核旧 owner 代次/基线/身份，但不拿 source 指纹描述 destination。新目标沿既有独立观察、双域预约和 owned worker 写前后检查；允许把正文另存新目标而不覆盖外变 source，未启用已有 destination 的最终替换。
 - prepare_bound 兼容入口：有磁盘凭据时按 current 处理；无凭据历史内存 fixture 保原目的地 staging 语义，不是普通 current-save API。公开内存 FileBinding::prepare 也不升级为真实发布凭据。应用须按动作选择 current/save_as。
 
-当前路径精确比较，另一硬链接/别名不会自动当作原目的路径；保守拒绝不等于完整路径兼容。payload 仍来自被捕获的唯一 Store snapshot/token/format，保存 N 期间 N+1 编辑不改变 N 的 payload。
+当前路径精确比较，另一硬链接/别名不会自动当作原目的路径；保守拒绝不等于完整路径兼容。payload 仍来自被捕获的唯一 Store snapshot/token/format，保存 N 期间 N+1 编辑不改变 N 的 payload。磁盘绑定的 source 属性句柄在预约前复制，并贯穿 BoundPrepared/BoundWork/BoundStaged/LockedStaged/发布及恢复资源；调用方丢弃 binding 不会提前结束该 worker 的身份见证。复制失败不取得预约。
 
 新 fixture 均 NOT_RUN：6项 current/外变/另存为/代次前检，加1项真实 rename 后属性句柄转交失败（测试修改预期 handoff 路径，经真实属性 open 的 NotFound，保持 baseline/N+1/恢复资源）。保存回执模拟只测内存协议，不证明写盘；正常发布原 fixture 增加实际 post-version/path/epoch 凭据断言。
 
