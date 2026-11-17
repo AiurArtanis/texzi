@@ -190,6 +190,7 @@ impl OpenedExisting {
                     format: self.loaded.format,
                     disk: Some(crate::files::DiskBinding {
                         anchor,
+                        parent: self.observed.parent_identity(),
                         version: self.version,
                         path: self.observed.resolved_path(),
                         epoch: 1,

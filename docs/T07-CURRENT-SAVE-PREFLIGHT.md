@@ -16,7 +16,9 @@ verified-open 在原强读 File/parent 保护下复制属性句柄，复制失�
 
 新 fixture 均 NOT_RUN：6项 current/外变/另存为/代次前检，加1项真实 rename 后属性句柄转交失败（测试修改预期 handoff 路径，经真实属性 open 的 NotFound，保持 baseline/N+1/恢复资源）。保存回执模拟只测内存协议，不证明写盘；正常发布原 fixture 增加实际 post-version/path/epoch 凭据断言。
 
-不存在的同目录非 ASCII/非 Unicode 名称没有实际 leaf handle 可核名称等价，暂返回 InvalidPath；不能用猜测大小写折叠授权新目的地。ASCII 同源拼写保守转 Current，大小写敏感目录可能多拒绝；不同父目录的新目标保留。该名称核验能力与完整路径支持仍待补，不据保守拒绝宣布完整 SaveAs。
+同目录非 ASCII/非 Unicode 名称若不能证明是已知 Current 路径或原对象，无论目标已存在还是不存在，都暂返回 InvalidPath。判定采用捕获的实际 parent file-ID 或相同历史 parent 路径，避免只依赖一种目录字符串关系；该 ID 是前检分类信息，不充当最终文件 identity/namespace 锁。新对象的 canonical 拼写不同不能证明它与历史目录项独立，不用 Unicode lower/upper 或猜测折叠授权。已证明的 Current 仍做完整版本核查；ASCII 同源拼写保守转 Current，大小写敏感目录可能多拒绝；真正不同父目录的新目标保留。该名称等价核验能力与完整 Unicode SaveAs 仍待补，不据保守拒绝宣布功能完成。
+
+新增 existing_unicode_case_equivalent_new_object_is_not_an_independent_save_as 隔离 fixture 先实际确认 é/É 在生成目录里同 ID，随后保留旧对象并创建大写拼写的新 ID，核历史/新 canonical 不同、旧拼写仍能寻址新对象。拒绝前后完整 state/cursor/目录 bytes 保持，随后不同 parent 的合法准备号不跳号。前提不满足使用明确 PRECONDITION_NOT_MET 失败标记，不返回伪 PASS，也不改系统大小写设置；本 fixture 尚未运行。
 
 新增防绕过 fixture 全部 NOT_RUN：同源 bytes/ID 外变、硬链接、真实发布后旧 None binding、closed Doc，以及大小写 alias/名称歧义边界。大小写 alias fixture 明确要求默认大小写不敏感临时目录，不改系统设置；不扩为全卷/全文件系统验收。
 

@@ -175,6 +175,7 @@ pub struct FileBinding {
 #[cfg(windows)]
 struct DiskBinding {
     anchor: windows_identity::OpenAnchor,
+    parent: windows_identity::FileIdentity,
     version: windows_identity::FileVersion,
     path: std::path::PathBuf,
     epoch: u64,

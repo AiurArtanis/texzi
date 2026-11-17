@@ -636,3 +636,120 @@ fn dirty_unbound_first_publication_uses_baseline_not_current_token_and_keeps_lat
     assert!(store.dirty(n.doc).unwrap());
     assert_eq!(fs::read(path).unwrap(), b"A\r\n");
 }
+
+#[test]
+fn existing_unicode_case_equivalent_new_object_is_not_an_independent_save_as() {
+    const PRECONDITION: &str = "T07_CURRENT_02_FIXTURE_PRECONDITION_NOT_MET (not product PASS): ";
+    let (original, mut store, old_doc, old_binding) = fixture();
+    let lower = original.with_file_name("é.txt");
+    let upper = original.with_file_name("É.txt");
+    fs::rename(&original, &lower).unwrap();
+    store.close_document(old_doc.doc).unwrap();
+    drop(old_binding);
+    let lower_observed = ObservedTarget::inspect(&lower).unwrap();
+    let first_id = lower_observed.version().unwrap().identity;
+    let upper_before = ObservedTarget::inspect(&upper).unwrap();
+    assert!(
+        upper_before.version().is_some(),
+        "{PRECONDITION}é/É are not equivalent in this directory"
+    );
+    assert_eq!(
+        upper_before.version().unwrap().identity,
+        first_id,
+        "{PRECONDITION}é/É resolve to different objects"
+    );
+    let (n, binding) = match lower_observed
+        .open_existing(None)
+        .unwrap()
+        .attach(&mut store)
+        .unwrap()
+    {
+        OpenOutcome::Imported { snapshot, binding } => (snapshot, binding),
+        _ => panic!("new source expected"),
+    };
+    let historical = binding.disk.as_ref().unwrap().path.clone();
+    assert_eq!(
+        historical.file_name(),
+        lower.file_name(),
+        "{PRECONDITION}initial canonical spelling is not lowercase"
+    );
+    // Proven same-path Unicode Current remains usable; no blanket Unicode-open ban.
+    let same = ObservedTarget::inspect(&lower)
+        .unwrap()
+        .prepare_current(&binding, &mut store)
+        .unwrap();
+    assert_eq!(same.capture().operation, 1);
+    store.cancel_save(same.capture()).unwrap();
+    let retained = original.with_file_name("old-unicode-object.txt");
+    fs::rename(&lower, &retained).unwrap();
+    fs::write(&upper, b"external uppercase object\n").unwrap();
+    let new = ObservedTarget::inspect(&upper).unwrap();
+    let new_id = new.version().unwrap().identity;
+    assert_ne!(new_id, first_id);
+    let lower_now = ObservedTarget::inspect(&lower).unwrap();
+    assert!(
+        lower_now.version().is_some(),
+        "{PRECONDITION}old spelling no longer addresses the replacement"
+    );
+    assert_eq!(
+        lower_now.version().unwrap().identity,
+        new_id,
+        "{PRECONDITION}old spelling resolves elsewhere"
+    );
+    let canonical = new.canonical_observed_path().unwrap().unwrap();
+    assert_eq!(new.parent_identity(), binding.disk.as_ref().unwrap().parent);
+    assert_eq!(
+        canonical.file_name(),
+        upper.file_name(),
+        "{PRECONDITION}replacement canonical does not retain uppercase spelling"
+    );
+    assert_ne!(
+        canonical, historical,
+        "{PRECONDITION}requires different historical/current canonical spelling"
+    );
+    assert_ne!(new.resolved_path(), historical);
+    assert!(
+        !canonical
+            .to_str()
+            .unwrap()
+            .eq_ignore_ascii_case(historical.to_str().unwrap())
+    );
+    assert_eq!(canonical.parent(), historical.parent());
+    let before = observe(&mut store, n.doc);
+    let bytes = generated_directory_bytes(&upper);
+    let error = failure(new.prepare_save_as(&binding, &mut store));
+    assert!(matches!(
+        &error.issue,
+        BoundIssue::Identity(IdentityError::InvalidPath)
+    ));
+    unchanged(&mut store, &before, &error);
+    assert_eq!(generated_directory_bytes(&upper), bytes);
+    // A genuinely different parent is an independent destination and no failed
+    // reservation consumed an operation or blocked its lease.
+    let parent = original.parent().unwrap().join("independent-parent");
+    fs::create_dir(&parent).unwrap();
+    let destination = parent.join("副本.txt");
+    let copy = ObservedTarget::inspect(&destination)
+        .unwrap()
+        .prepare_save_as(&binding, &mut store)
+        .unwrap();
+    assert_eq!(copy.capture().operation, 2);
+    store.cancel_save(copy.capture()).unwrap();
+    assert!(!destination.exists());
+    assert_eq!(fs::read(retained).unwrap(), b"A\r\n");
+    assert_eq!(fs::read(&upper).unwrap(), b"external uppercase object\n");
+    assert_eq!(fs::read(lower).unwrap(), b"external uppercase object\n");
+    let after = observe(&mut store, n.doc);
+    assert_eq!(
+        after.state.global.metadata.baseline,
+        before.state.global.metadata.baseline
+    );
+    assert_eq!(
+        after.state.global.metadata.attention.target,
+        before.state.global.metadata.attention.target
+    );
+    assert_eq!(
+        after.state.global.metadata.attention.binding_epoch,
+        before.state.global.metadata.attention.binding_epoch
+    );
+}

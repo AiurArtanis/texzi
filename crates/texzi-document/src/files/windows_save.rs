@@ -164,19 +164,6 @@ impl ObservedTarget {
         } else {
             None
         };
-        if let Some(disk) = disk {
-            // An absent Unicode sibling has no actual leaf handle to prove name
-            // equivalence. Refuse this ambiguous case rather than silently using
-            // a guessed case fold as independent-destination authorization.
-            if self.version().is_none()
-                && self.resolved_path().parent() == disk.path.parent()
-                && [self.resolved_path().file_name(), disk.path.file_name()]
-                    .iter()
-                    .any(|name| !name.and_then(|s| s.to_str()).is_some_and(str::is_ascii))
-            {
-                return Err(fail(BoundIssue::Identity(IdentityError::InvalidPath)));
-            }
-        }
         // SaveAs cannot disguise the source path (even after ID replacement) or
         // a hardlink to the source object as an independent destination.
         let current = current
@@ -192,6 +179,20 @@ impl ObservedTarget {
                         .version()
                         .is_some_and(|version| version.identity == disk.version.identity)
             });
+        if let Some(disk) = disk {
+            // A different input/canonical spelling is not proof of a different
+            // directory entry for Unicode names, even when a new object exists.
+            // Proven Current paths/IDs still take the full version check below.
+            if !current
+                && (self.parent_identity() == disk.parent
+                    || self.resolved_path().parent() == disk.path.parent())
+                && [self.resolved_path().file_name(), disk.path.file_name()]
+                    .iter()
+                    .any(|name| !name.and_then(|s| s.to_str()).is_some_and(str::is_ascii))
+            {
+                return Err(fail(BoundIssue::Identity(IdentityError::InvalidPath)));
+            }
+        }
         if current
             && disk.is_some_and(|disk| {
                 self.version() != Some(&disk.version) || canonical.as_ref() != Some(&disk.path)

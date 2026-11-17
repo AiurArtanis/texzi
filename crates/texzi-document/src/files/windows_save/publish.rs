@@ -411,6 +411,7 @@ impl PublishedNew {
                     format,
                     disk: Some(crate::files::DiskBinding {
                         anchor,
+                        parent: self.resources.staged.observed.parent_identity(),
                         version: self.version.clone(),
                         path: self.path.clone(),
                         epoch: binding_epoch,
