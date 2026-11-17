@@ -74,6 +74,9 @@ fn failure_retains_snapshot_and_unknown_blocks_retry_after_reservation_release()
             .unwrap();
         assert_eq!(observed.state.global.metadata.attention.recoveries.len(), 1);
         assert!(observed.state.global.metadata.save.active.is_none());
+        assert_eq!(observed.state.global.metadata.baseline.token, s.token);
+        assert_eq!(observed.state.global.document.body.to_utf8(), b"AB");
+        assert_eq!(store.close_document(s.doc), Err(Error::UnresolvedConflict));
         assert_eq!(store.snapshot(s.doc).unwrap().token, current.token);
         assert_eq!(store.history_depth(s.doc).unwrap(), before);
         assert!(store.dirty(s.doc).unwrap());
@@ -131,13 +134,17 @@ fn forged_capture_and_wrong_failure_phase_do_not_release_active_operation() {
     let c = store
         .begin_save(s.doc, TargetKey("target".into()), "guard".into())
         .unwrap();
-    for field in 0..4 {
+    for field in 0..8 {
         let mut bad = c.clone();
         match field {
             0 => bad.operation += 1,
             1 => bad.binding_epoch += 1,
             2 => bad.target = TargetKey("wrong".into()),
-            _ => bad.snapshot.body = other.body.clone(),
+            3 => bad.snapshot.body = other.body.clone(),
+            4 => bad.guard = "wrong".into(),
+            5 => bad.snapshot.revision = Revision(s.revision.0 + 1),
+            6 => bad.snapshot.token = other.token,
+            _ => bad.snapshot.doc = other.doc,
         };
         assert_eq!(
             store.finish_save_failure(&bad, failure(SaveFailureOutcome::BeforeReplace, false)),
