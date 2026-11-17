@@ -107,14 +107,33 @@ impl StagingWork {
         let parent = target
             .parent()
             .ok_or_else(|| fail(StageIssue::InvalidTarget))?;
+        let target_name = target.file_name().unwrap();
+        // Reject Windows ambiguous/unsupported leaf forms before any creation.
+        // Unicode names remain supported; non-Unicode OS strings are explicit
+        // rejections until the identity coordinator owns their interpretation.
+        let name = target_name
+            .to_str()
+            .ok_or_else(|| fail(StageIssue::InvalidTarget))?;
+        if name.ends_with('.')
+            || name.ends_with(' ')
+            || name.chars().any(|c| c < ' ' || "<>:\"/\\|?*".contains(c))
+        {
+            return Err(fail(StageIssue::InvalidTarget));
+        }
         guard.verify(target).map_err(fail)?;
         let mut chosen = None;
         for attempt in 0..64 {
-            let path = parent.join(format!(
-                ".texzi-{}-{}-{attempt}.tmp",
-                std::process::id(),
-                self.capture.operation
-            ));
+            // Numeric 8.3 names have no case variants and need no distinct DOS
+            // short alias. This avoids comparing Windows names using Unicode
+            // case folding, or guessing a long name's generated short alias.
+            // This is a deterministic collision namespace, not a random secret.
+            let stem = (u64::from(std::process::id()) + self.capture.operation % 100_000_000)
+                % 100_000_000;
+            let candidate = format!("{stem:08}.{attempt:03}");
+            if target_name == std::ffi::OsStr::new(&candidate) {
+                continue; // Must happen before create_new: even an absent target.
+            }
+            let path = parent.join(candidate);
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => {
                     chosen = Some((path, file));

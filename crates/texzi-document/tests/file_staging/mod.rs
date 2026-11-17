@@ -159,3 +159,105 @@ fn late_cancelled_worker_cannot_advance_a_new_save() {
     assert_eq!(std::fs::read(late.recovery_temp()).unwrap(), b"captured");
     store.cancel_save(&current).unwrap();
 }
+
+#[test]
+fn temp_target_collision_is_excluded_before_creation_and_preserves_save_state() {
+    // Fresh Store: first operation is 1. Freeze exact candidate names, including
+    // a later attempt reached only after a preexisting temp is encountered.
+    for case in 0..4 {
+        let dir = fixture();
+        let stem = (u64::from(std::process::id()) + 1) % 100_000_000;
+        let target = dir.join(match case {
+            0 => format!("{stem:08}.000"),
+            1 => format!("{stem:08}.001"),
+            2 => format!(".texzi-{}-1-0.tmp", std::process::id()),
+            _ => format!(".TEXZI-{}-1-0.TMP", std::process::id()),
+        });
+        let occupied = dir.join(format!("{stem:08}.000"));
+        if case == 1 {
+            fs::write(&occupied, b"existing temporary bytes").unwrap();
+        }
+        let mut store = Store::new(HistoryBudget::default());
+        let (s, p) = prepared(&mut store, b"captured", &target);
+        assert_eq!(p.capture().operation, 1);
+        let work = p.begin_staging(&mut store).unwrap();
+        let changed = store
+            .submit(Transaction {
+                doc: s.doc,
+                base: s.revision,
+                edits: vec![Edit::input(&s, 8..8, "-N+1")],
+                boundary: BoundaryPolicy::Grapheme,
+                cancelled: false,
+            })
+            .unwrap()
+            .snapshot;
+        let depth = store.history_depth(s.doc).unwrap();
+        let (before, _) = store
+            .observe_and_subscribe(s.doc, ObserverScope::new(vec![]), 8)
+            .unwrap();
+        let staged = work.write_temp(&target, &ContentGuard::Absent).unwrap();
+        assert_ne!(staged.recovery_temp(), target);
+        assert!(!target.exists(), "no pre-permit publication in case {case}");
+        assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"captured");
+        if case == 0 {
+            assert_eq!(staged.recovery_temp(), dir.join(format!("{stem:08}.001")));
+        }
+        if case == 1 {
+            assert_eq!(staged.recovery_temp(), dir.join(format!("{stem:08}.002")));
+            assert_eq!(fs::read(&occupied).unwrap(), b"existing temporary bytes");
+        }
+        let (after, _) = store
+            .observe_and_subscribe(s.doc, ObserverScope::new(vec![]), 8)
+            .unwrap();
+        assert_eq!(
+            before.state.global.metadata.baseline,
+            after.state.global.metadata.baseline
+        );
+        assert_eq!(after.state.global.document.token, changed.token);
+        assert_eq!(after.state.global.document.body.to_utf8(), b"captured-N+1");
+        assert_eq!(store.history_depth(s.doc).unwrap(), depth);
+        assert!(store.dirty(s.doc).unwrap());
+        assert_eq!(store.commit_permit(p.capture()), Err(Error::InvalidSave));
+        assert!(matches!(
+            store.begin_save(s.doc, TargetKey("other".into()), String::new()),
+            Err(Error::Busy)
+        ));
+        store.cancel_save(p.capture()).unwrap();
+        assert!(!target.exists());
+        assert_eq!(fs::read(staged.recovery_temp()).unwrap(), b"captured");
+        let next = store
+            .begin_save(
+                s.doc,
+                TargetKey("released-after-cancel".into()),
+                String::new(),
+            )
+            .unwrap();
+        store.cancel_save(&next).unwrap();
+    }
+}
+
+#[test]
+fn ambiguous_windows_target_forms_are_rejected_without_creating_any_file() {
+    for name in ["target.", "target ", "target:stream", "target?", "target*"] {
+        let dir = fixture();
+        let target = dir.join(name);
+        let mut store = Store::new(HistoryBudget::default());
+        let (s, p) = prepared(&mut store, b"payload", &target);
+        let work = p.begin_staging(&mut store).unwrap();
+        assert!(matches!(
+            work.write_temp(&target, &ContentGuard::Absent),
+            Err(StageFailure {
+                issue: StageIssue::InvalidTarget,
+                recovery_temp: None,
+            })
+        ));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        assert_eq!(store.snapshot(s.doc).unwrap().token, s.token);
+        assert_eq!(store.commit_permit(p.capture()), Err(Error::InvalidSave));
+        assert!(matches!(
+            store.begin_save(s.doc, TargetKey("other".into()), String::new()),
+            Err(Error::Busy)
+        ));
+        store.cancel_save(p.capture()).unwrap();
+    }
+}
