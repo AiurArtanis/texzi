@@ -134,9 +134,13 @@ fn read_only_uses_original_bytes_and_preserves_generated_file() {
 #[test]
 fn late_cancelled_worker_cannot_advance_a_new_save() {
     let dir = fixture();
-    let target = dir.join("late.txt");
+    // Old worker's candidate 0 is the absent target even after its Store lease
+    // is cancelled. The filesystem exclusion must work without that lease.
+    let stem = (u64::from(std::process::id()) + 1) % 100_000_000;
+    let target = dir.join(format!("{stem:08}.000"));
     let mut store = Store::new(HistoryBudget::default());
     let (s, p) = prepared(&mut store, b"captured", &target);
+    assert_eq!(p.capture().operation, 1);
     let work = p.begin_staging(&mut store).unwrap();
     store.cancel_save(p.capture()).unwrap();
     let current = store
@@ -147,6 +151,8 @@ fn late_cancelled_worker_cannot_advance_a_new_save() {
         )
         .unwrap();
     let late = work.write_temp(&target, &ContentGuard::Absent).unwrap();
+    assert_eq!(late.recovery_temp(), dir.join(format!("{stem:08}.001")));
+    assert_ne!(late.recovery_temp(), target);
     assert_eq!(
         store.advance_save(late.capture(), SaveStage::ReadyToReplace),
         Err(Error::InvalidSave)
