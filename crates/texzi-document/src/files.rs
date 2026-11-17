@@ -201,7 +201,8 @@ impl FileBinding {
         let disk = self.disk.as_ref().ok_or(FileError::UnverifiedDiskBinding)?;
         store.snapshot(self.doc())?; // Validate before indexing owner metadata.
         let metadata = store.observer_metadata(self.doc());
-        if metadata.baseline.token != self.imported.token
+        if !metadata.baseline.backed_by_disk
+            || metadata.baseline.token != self.imported.token
             || metadata.attention.binding_epoch != disk.epoch
             || metadata.attention.target.as_ref() != Some(&disk.version.identity.target_key())
         {

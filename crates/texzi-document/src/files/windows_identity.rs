@@ -241,6 +241,21 @@ impl ObservedTarget {
     pub fn resolved_path(&self) -> PathBuf {
         self.parent_path.join(&self.name)
     }
+    /// Resolve an existing leaf through its actual handle, not input spelling.
+    /// Compare full observed version so a raced replacement is not canonicalized
+    /// into a credential for another object.
+    pub(super) fn canonical_observed_path(&self) -> Result<Option<PathBuf>, IdentityError> {
+        let Some(expected) = &self.version else {
+            return Ok(None);
+        };
+        let mut file = open_file(&self.resolved_path())?;
+        if &read_version_handle(&mut file)? != expected {
+            return Err(IdentityError::Changed);
+        }
+        let path = volume_path(&file)?;
+        self.recheck_parent()?;
+        Ok(Some(path))
+    }
     /// Existing hardlinks share one key. For absent files deliberately reserve
     /// the whole directory, avoiding unsafe case-folding/short-name assumptions.
     pub fn reservation_key(&self) -> TargetKey {

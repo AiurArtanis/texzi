@@ -115,6 +115,24 @@ impl ObservedTarget {
             capture: None,
             recovery_temp: None,
         };
+        // Validate existence before reading metadata, including legacy None bindings.
+        let owner_snapshot = store
+            .snapshot(binding.doc())
+            .map_err(|e| fail(BoundIssue::Document(e)))?;
+        if binding.disk.is_none() {
+            let metadata = store.observer_metadata(binding.doc());
+            if metadata.attention.target.is_some()
+                || metadata.attention.binding_epoch != 0
+                || metadata.baseline.backed_by_disk
+                || metadata.baseline.token != binding.imported.token
+                || !matches!(
+                    metadata.baseline.kind,
+                    crate::BaselineKind::InitialEmpty | crate::BaselineKind::MemoryImport
+                )
+            {
+                return Err(fail(BoundIssue::File(FileError::UnverifiedDiskBinding)));
+            }
+        }
         let disk = if current || binding.disk.is_some() {
             Some(
                 binding
@@ -140,16 +158,48 @@ impl ObservedTarget {
             .transpose()
             .map_err(|e| fail(BoundIssue::Identity(e)))?;
         self.recheck().map_err(|e| fail(BoundIssue::Identity(e)))?;
+        let canonical = if disk.is_some() {
+            self.canonical_observed_path()
+                .map_err(|e| fail(BoundIssue::Identity(e)))?
+        } else {
+            None
+        };
+        if let Some(disk) = disk {
+            // An absent Unicode sibling has no actual leaf handle to prove name
+            // equivalence. Refuse this ambiguous case rather than silently using
+            // a guessed case fold as independent-destination authorization.
+            if self.version().is_none()
+                && self.resolved_path().parent() == disk.path.parent()
+                && [self.resolved_path().file_name(), disk.path.file_name()]
+                    .iter()
+                    .any(|name| !name.and_then(|s| s.to_str()).is_some_and(str::is_ascii))
+            {
+                return Err(fail(BoundIssue::Identity(IdentityError::InvalidPath)));
+            }
+        }
+        // SaveAs cannot disguise the source path (even after ID replacement) or
+        // a hardlink to the source object as an independent destination.
+        let current = current
+            || disk.is_some_and(|disk| {
+                self.resolved_path() == disk.path
+                    || canonical.as_ref() == Some(&disk.path)
+                    || self
+                        .resolved_path()
+                        .to_str()
+                        .zip(disk.path.to_str())
+                        .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+                    || self
+                        .version()
+                        .is_some_and(|version| version.identity == disk.version.identity)
+            });
         if current
             && disk.is_some_and(|disk| {
-                self.version() != Some(&disk.version) || self.resolved_path() != disk.path
+                self.version() != Some(&disk.version) || canonical.as_ref() != Some(&disk.path)
             })
         {
             return Err(fail(BoundIssue::Identity(IdentityError::Changed)));
         }
-        let snapshot = store
-            .snapshot(binding.doc())
-            .map_err(|e| fail(BoundIssue::Document(e)))?;
+        let snapshot = owner_snapshot;
         let format = snapshot
             .body
             .profile

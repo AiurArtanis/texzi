@@ -255,3 +255,252 @@ fn decoded_memory_import_is_not_a_verified_current_file_binding() {
     unchanged(&mut store, &before, &error);
     assert_eq!(fs::read(path).unwrap(), b"A\r\n");
 }
+
+fn save_as_source_change(replace_id: bool) {
+    let (path, mut store, n, binding) = fixture();
+    if replace_id {
+        fs::rename(&path, path.with_file_name("retained-original.txt")).unwrap();
+        fs::write(&path, b"A\r\n").unwrap();
+        assert_ne!(
+            ObservedTarget::inspect(&path)
+                .unwrap()
+                .version()
+                .unwrap()
+                .identity,
+            binding.disk.as_ref().unwrap().version.identity
+        );
+    } else {
+        fs::write(&path, b"outside\r\n").unwrap();
+    }
+    let actual = fs::read(&path).unwrap();
+    let before = observe(&mut store, n.doc);
+    let error = failure(
+        ObservedTarget::inspect(&path)
+            .unwrap()
+            .prepare_save_as(&binding, &mut store),
+    );
+    assert!(matches!(
+        &error.issue,
+        BoundIssue::Identity(IdentityError::Changed)
+    ));
+    unchanged(&mut store, &before, &error);
+    let destination = path.with_file_name("genuine-copy.txt");
+    let prepared = ObservedTarget::inspect(&destination)
+        .unwrap()
+        .prepare_save_as(&binding, &mut store)
+        .unwrap();
+    assert_eq!(prepared.capture().operation, 1);
+    store.cancel_save(prepared.capture()).unwrap();
+    assert!(!destination.exists());
+    assert_eq!(fs::read(path).unwrap(), actual);
+}
+#[test]
+fn save_as_source_path_cannot_bypass_external_bytes_check() {
+    save_as_source_change(false);
+}
+#[test]
+fn save_as_source_path_cannot_bypass_replaced_file_id_check() {
+    save_as_source_change(true);
+}
+#[test]
+fn save_as_hardlink_alias_is_rejected_even_when_source_version_is_unchanged() {
+    let (path, mut store, n, binding) = fixture();
+    let alias = path.with_file_name("alias.txt");
+    fs::hard_link(&path, &alias).unwrap();
+    let observed = ObservedTarget::inspect(&alias).unwrap();
+    assert_eq!(
+        observed.version().unwrap().identity,
+        binding.disk.as_ref().unwrap().version.identity
+    );
+    assert_ne!(
+        observed.resolved_path(),
+        binding.disk.as_ref().unwrap().path
+    );
+    let before = observe(&mut store, n.doc);
+    let error = failure(observed.prepare_save_as(&binding, &mut store));
+    assert!(matches!(
+        &error.issue,
+        BoundIssue::Identity(IdentityError::Changed)
+    ));
+    unchanged(&mut store, &before, &error);
+    // Same canonical path is routed through Current and passes only when unchanged.
+    let prepared = ObservedTarget::inspect(&path)
+        .unwrap()
+        .prepare_save_as(&binding, &mut store)
+        .unwrap();
+    assert_eq!(prepared.capture().operation, 1);
+    store.cancel_save(prepared.capture()).unwrap();
+    assert_eq!(fs::read(path).unwrap(), b"A\r\n");
+    assert_eq!(fs::read(alias).unwrap(), b"A\r\n");
+}
+#[test]
+fn initial_memory_binding_is_allowed_but_cannot_be_reused_after_real_publication() {
+    let (path, mut store, _, _) = fixture();
+    let destination = path.with_file_name("first-published.txt");
+    let (n, old) = LoadedBytes::decode(Arc::from(&b"memory N"[..]), Some(Encoding::Utf8))
+        .unwrap()
+        .attach(&mut store)
+        .unwrap();
+    assert!(old.disk.is_none());
+    let ready = ObservedTarget::inspect(&destination)
+        .unwrap()
+        .prepare_bound(&old, &mut store)
+        .unwrap()
+        .begin(&mut store)
+        .unwrap()
+        .write()
+        .unwrap()
+        .lock_temporary()
+        .unwrap()
+        .prepare_new_owner_only()
+        .unwrap();
+    let published = ready
+        .permit(&mut store)
+        .unwrap()
+        .run()
+        .unwrap()
+        .accept(&mut store)
+        .unwrap();
+    assert!(published.binding.disk.is_some());
+    assert!(old.disk.is_none());
+    let dirty = store
+        .submit(Transaction {
+            doc: n.doc,
+            base: n.revision,
+            edits: vec![Edit::input(&n, 0..0, "dirty ")],
+            boundary: BoundaryPolicy::Grapheme,
+            cancelled: false,
+        })
+        .unwrap()
+        .snapshot;
+    let before = observe(&mut store, n.doc);
+    let error = failure(
+        ObservedTarget::inspect(&destination)
+            .unwrap()
+            .prepare_bound(&old, &mut store),
+    );
+    assert!(matches!(
+        &error.issue,
+        BoundIssue::File(FileError::UnverifiedDiskBinding)
+    ));
+    unchanged(&mut store, &before, &error);
+    let other = path.with_file_name("old-binding-copy.txt");
+    let error = failure(
+        ObservedTarget::inspect(&other)
+            .unwrap()
+            .prepare_save_as(&old, &mut store),
+    );
+    assert!(matches!(
+        &error.issue,
+        BoundIssue::File(FileError::UnverifiedDiskBinding)
+    ));
+    unchanged(&mut store, &before, &error);
+    assert!(!other.exists());
+    // New disk binding still describes saved N, and encodes dirty N+1 at preparation.
+    let prepared = ObservedTarget::inspect(&destination)
+        .unwrap()
+        .prepare_current(&published.binding, &mut store)
+        .unwrap();
+    assert_eq!(prepared.capture().operation, 2);
+    assert_eq!(prepared.capture().snapshot.token, dirty.token);
+    assert_eq!(prepared.prepared.bytes(), b"dirty memory N");
+    store.cancel_save(prepared.capture()).unwrap();
+    assert!(store.dirty(n.doc).unwrap());
+    assert_eq!(fs::read(destination).unwrap(), b"memory N");
+}
+#[test]
+fn closed_disk_and_memory_docs_are_rejected_before_metadata_indexing() {
+    let (path, mut store, n, disk) = fixture();
+    let (memory, legacy) = LoadedBytes::decode(Arc::from(&b"memory"[..]), Some(Encoding::Utf8))
+        .unwrap()
+        .attach(&mut store)
+        .unwrap();
+    store.close_document(n.doc).unwrap();
+    store.close_document(memory.doc).unwrap();
+    for binding in [&disk, &legacy] {
+        for mode in 0..3 {
+            let observed = ObservedTarget::inspect(&path).unwrap();
+            let result = match mode {
+                0 => observed.prepare_bound(binding, &mut store),
+                1 => observed.prepare_current(binding, &mut store),
+                _ => observed.prepare_save_as(binding, &mut store),
+            };
+            let error = failure(result);
+            assert!(matches!(
+                &error.issue,
+                BoundIssue::Document(Error::InvalidDoc)
+            ));
+            assert!(error.capture.is_none());
+            assert!(error.recovery_temp.is_none());
+        }
+    }
+    assert_eq!(fs::read(path).unwrap(), b"A\r\n");
+}
+
+#[test]
+fn save_as_case_alias_of_replaced_source_cannot_skip_current_verification() {
+    let (path, mut store, n, binding) = fixture();
+    fs::rename(&path, path.with_file_name("old-object.txt")).unwrap();
+    fs::write(&path, b"replacement").unwrap();
+    let alias = path.with_file_name("ORIGINAL.TXT");
+    let observed = ObservedTarget::inspect(&alias).unwrap();
+    // This fixture targets the normal case-insensitive Windows temp directory.
+    assert!(
+        observed.version().is_some(),
+        "case-insensitive fixture precondition"
+    );
+    assert_ne!(
+        observed.version().unwrap().identity,
+        binding.disk.as_ref().unwrap().version.identity
+    );
+    let before = observe(&mut store, n.doc);
+    let error = failure(observed.prepare_save_as(&binding, &mut store));
+    assert!(matches!(
+        &error.issue,
+        BoundIssue::Identity(IdentityError::Changed)
+    ));
+    unchanged(&mut store, &before, &error);
+    assert_eq!(fs::read(path).unwrap(), b"replacement");
+}
+#[test]
+fn absent_unicode_sibling_requires_name_verification_but_distinct_parent_is_allowed() {
+    let (path, mut store, original, old_binding) = fixture();
+    let unicode = path.with_file_name("文档.txt");
+    fs::rename(&path, &unicode).unwrap();
+    store.close_document(original.doc).unwrap();
+    drop(old_binding);
+    let (n, binding) = match ObservedTarget::inspect(&unicode)
+        .unwrap()
+        .open_existing(None)
+        .unwrap()
+        .attach(&mut store)
+        .unwrap()
+    {
+        OpenOutcome::Imported { snapshot, binding } => (snapshot, binding),
+        _ => panic!("new Unicode source import expected"),
+    };
+    let sibling = unicode.with_file_name("另存.txt");
+    let before = observe(&mut store, n.doc);
+    let error = failure(
+        ObservedTarget::inspect(&sibling)
+            .unwrap()
+            .prepare_save_as(&binding, &mut store),
+    );
+    assert!(matches!(
+        &error.issue,
+        BoundIssue::Identity(IdentityError::InvalidPath)
+    ));
+    unchanged(&mut store, &before, &error);
+    assert!(!sibling.exists());
+    let other_parent = unicode.parent().unwrap().join("different-parent");
+    fs::create_dir(&other_parent).unwrap();
+    let destination = other_parent.join("另存.txt");
+    let prepared = ObservedTarget::inspect(&destination)
+        .unwrap()
+        .prepare_save_as(&binding, &mut store)
+        .unwrap();
+    assert_eq!(prepared.capture().operation, 1);
+    store.cancel_save(prepared.capture()).unwrap();
+    assert!(!destination.exists());
+    assert_eq!(fs::read(unicode).unwrap(), b"A\r\n");
+}
