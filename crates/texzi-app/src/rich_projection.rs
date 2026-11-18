@@ -11,7 +11,9 @@ use serde_json::json;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod block_styles;
 mod code_actions;
+mod heading_import;
 mod list_items;
 mod local_patch;
 mod references;
@@ -239,6 +241,9 @@ impl Projection {
             return Ok(edits);
         }
         if let Some(edits) = list_items::transaction_edits(self, next, applied)? {
+            return Ok(edits);
+        }
+        if let Some(edits) = block_styles::edits(self, next)? {
             return Ok(edits);
         }
         if &self.doc == next {
@@ -488,6 +493,11 @@ impl Projection {
             })
             .collect();
         for child in tree.children().ok_or("missing Markdown root")? {
+            let heading = heading_import::prepare(child, &source);
+            let child = heading
+                .as_ref()
+                .map(|heading| &heading.ast)
+                .unwrap_or(child);
             let p = child.position().ok_or("missing source span")?;
             let mut span = p.start.offset..p.end.offset;
             // A list container includes terminal separator EOLs beyond its
@@ -517,6 +527,8 @@ impl Projection {
             let mut opaque = contains_opaque(child) || raw.trim_start().starts_with(":::");
             let parsed = if opaque {
                 None
+            } else if let Some(heading) = heading.as_ref() {
+                heading.import(schema, &source, &definitions)
             } else if list_items::has_empty_tasks(child) {
                 // A recognized empty-task import must remove every owned
                 // placeholder by AST identity. Failure stays a complete raw

@@ -4,7 +4,7 @@ use super::{Projection, message, parse_options};
 use markdown::mdast;
 use nsh_base::rich_editor::{
     model::Node,
-    state::{EditorState, TextSelection, Transaction, TransactionOrigin},
+    state::{EditorState, EditorStateConfig, TextSelection, Transaction, TransactionOrigin},
 };
 use serde_json::json;
 use std::ops::Range;
@@ -29,6 +29,9 @@ pub struct ResourceTarget {
     pub values: ResourceValues,
     pub reference: Option<String>,
     pub visible: String,
+    /// A new link owns this exact visible text selection, not an existing AST
+    /// resource. Its source span is independently reconstructed by the guard.
+    pub selection: Option<Range<usize>>,
 }
 
 pub(super) fn destination(value: &str) -> String {
@@ -122,7 +125,183 @@ fn target(node: &mdast::Node, defs: &[&mdast::Definition]) -> Option<ResourceTar
         values: ResourceValues { url, title, alt },
         reference,
         visible,
+        selection: None,
     })
+}
+
+fn link_destination(values: &ResourceValues) -> Result<String, String> {
+    if values.url.is_empty()
+        || values.url.contains(['\n', '\r', '<', '>'])
+        || values
+            .title
+            .as_ref()
+            .is_some_and(|v| v.contains(['\n', '\r']))
+    {
+        return Err("地址不能为空，地址和标题须为单行文字".into());
+    }
+    let suffix = values
+        .title
+        .as_ref()
+        .map(|v| format!(" \"{}\"", title(v)))
+        .unwrap_or_default();
+    let destination = format!("<{}>{suffix}", destination(&values.url));
+    let tree =
+        markdown::to_mdast(&format!("[x]({destination})"), &parse_options()).map_err(message)?;
+    let mut parsed = Vec::new();
+    targets(&tree, &[], &mut parsed);
+    if !parsed
+        .first()
+        .is_some_and(|t| t.values.url == values.url && t.values.title == values.title)
+    {
+        return Err("此地址或标题不能按当前 Markdown 语法保真写入".into());
+    }
+    Ok(destination)
+}
+
+fn format_node(node: &mdast::Node) -> bool {
+    matches!(
+        node,
+        mdast::Node::Emphasis(_) | mdast::Node::Strong(_) | mdast::Node::Delete(_)
+    )
+}
+
+// Preserve the original selected bytes, including escapes/entities and mark
+// spelling. Fully selected emphasis delimiters belong inside the new link.
+// A range that crosses only one edge of an emphasis splits that same spelling
+// at the edge; complete tree equality below proves that no formatting moved.
+fn link_edges(p: &Projection, range: &Range<usize>) -> Result<(String, String, String), String> {
+    fn walk(
+        node: &mdast::Node,
+        raw: &str,
+        range: &Range<usize>,
+        start: &mut Vec<(String, String)>,
+        end: &mut Vec<(String, String)>,
+    ) -> Result<(), String> {
+        if format_node(node) {
+            let position = node.position().ok_or("格式范围缺少源码位置")?;
+            let a = position.start.offset;
+            let z = position.end.offset;
+            let at_start = a < range.start && range.start < z;
+            let at_end = a < range.end && range.end < z;
+            if at_start != at_end {
+                let children = node.children().ok_or("格式内容缺少源码位置")?;
+                let first = children
+                    .first()
+                    .and_then(mdast::Node::position)
+                    .ok_or("格式起点不能映射")?;
+                let last = children
+                    .last()
+                    .and_then(mdast::Node::position)
+                    .ok_or("格式终点不能映射")?;
+                let open = raw.get(a..first.start.offset).ok_or("格式起点不能映射")?;
+                let close = raw.get(last.end.offset..z).ok_or("格式终点不能映射")?;
+                if open.is_empty()
+                    || close.is_empty()
+                    || !open
+                        .bytes()
+                        .chain(close.bytes())
+                        .all(|b| matches!(b, b'*' | b'_' | b'~'))
+                {
+                    return Err("此格式边界请在源码中插入链接".into());
+                }
+                if at_start {
+                    start.push((open.into(), close.into()));
+                } else {
+                    end.push((open.into(), close.into()));
+                }
+            }
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                walk(child, raw, range, start, end)?;
+            }
+        }
+        Ok(())
+    }
+    let tree = markdown::to_mdast(&p.source, &parse_options()).map_err(message)?;
+    let (mut start, mut end) = (Vec::new(), Vec::new());
+    walk(&tree, &p.source, range, &mut start, &mut end)?;
+    let prefix = format!(
+        "{}[{}",
+        start.iter().rev().map(|v| v.1.as_str()).collect::<String>(),
+        start.iter().map(|v| v.0.as_str()).collect::<String>()
+    );
+    let suffix = format!(
+        "{}]",
+        end.iter().rev().map(|v| v.1.as_str()).collect::<String>()
+    );
+    Ok((
+        prefix,
+        suffix,
+        end.iter().map(|v| v.0.as_str()).collect::<String>(),
+    ))
+}
+
+fn creation_transaction(
+    state: &EditorState,
+    selection: &Range<usize>,
+    values: &ResourceValues,
+    text: &str,
+) -> Result<Transaction, String> {
+    let mut select = state.tr();
+    select.set_selection(TextSelection::create(
+        state.doc(),
+        selection.start,
+        Some(selection.end),
+    ));
+    let selected = state.apply(select).map_err(message)?;
+    let ty = state.schema().mark_type("link").ok_or("链接格式尚未安装")?;
+    let attrs = std::collections::BTreeMap::from([
+        ("href".into(), json!(values.url)),
+        ("title".into(), json!(values.title)),
+    ]);
+    let command = nsh_base::rich_editor::extensions::link::set_link(ty, attrs, vec![]);
+    let mut made = None;
+    if !command(&selected, Some(&mut |tr| made = Some(tr))) {
+        return Err("此地址或文字上下文不能创建链接".into());
+    }
+    let mut tr = made.ok_or("链接命令没有生成事务")?;
+    if selection.is_empty() {
+        if text.is_empty() || text.contains(['\n', '\r']) {
+            return Err("请输入单行链接文字".into());
+        }
+        tr.insert_text(text, None, None);
+        tr.set_stored_marks(None);
+    }
+    Ok(tr)
+}
+
+fn creation_edits(
+    p: &Projection,
+    wanted: &ResourceTarget,
+    values: &ResourceValues,
+    text: &str,
+) -> Result<Vec<(Range<usize>, String)>, String> {
+    let selection = wanted.selection.as_ref().ok_or("新链接选区缺失")?;
+    if p.new_link_target(selection.clone())? != *wanted {
+        return Err("链接选区已变化，请重新打开".into());
+    }
+    let destination = link_destination(values)?;
+    if selection.is_empty() {
+        if text.is_empty() || text.contains(['\n', '\r']) {
+            return Err("请输入单行链接文字".into());
+        }
+        return Ok(vec![(
+            wanted.source.clone(),
+            format!("[{}]({destination})", label(text)),
+        )]);
+    }
+    if text != wanted.visible {
+        return Err("选中文字保持原样；修改文字请先返回正文".into());
+    }
+    let (prefix, close, reopen) = link_edges(p, &wanted.source)?;
+    Ok(vec![
+        (wanted.source.start..wanted.source.start, prefix),
+        (
+            wanted.source.end..wanted.source.end,
+            format!("{close}({destination}){reopen}"),
+        ),
+    ])
 }
 fn targets(node: &mdast::Node, defs: &[&mdast::Definition], out: &mut Vec<ResourceTarget>) {
     if let Some(target) = target(node, defs) {
@@ -291,6 +470,186 @@ fn edits(
 }
 
 impl Projection {
+    fn new_link_target(&self, selection: Range<usize>) -> Result<ResourceTarget, String> {
+        if selection.start > selection.end || selection.end > self.doc.content().size() {
+            return Err("链接选区范围无效".into());
+        }
+        let a = self.doc.resolve(selection.start).map_err(message)?;
+        let z = self.doc.resolve(selection.end).map_err(message)?;
+        if !a.same_parent(&z) || !a.parent().is_textblock() || a.parent().ty().name() == "codeBlock"
+        {
+            return Err("请在同一正文段、标题或单元格内选择链接文字".into());
+        }
+        let ty = self
+            .doc
+            .ty()
+            .schema()
+            .mark_type("link")
+            .ok_or("链接格式尚未安装")?;
+        if !a.parent().ty().allows_mark_type(&ty) {
+            return Err("当前文字块不支持链接".into());
+        }
+        let mut base = 0;
+        let mut found = None;
+        for block in &self.blocks {
+            let end = base + block.node.node_size();
+            if selection.start > base && selection.end < end {
+                if block.opaque {
+                    return Err("原样块请使用该块的“编辑源码”".into());
+                }
+                found = Some((block, base));
+                break;
+            }
+            base = end;
+        }
+        let (block, base) = found.ok_or("链接选区不能映射到正文块")?;
+        let mut plain = true;
+        if selection.is_empty() {
+            plain = !a
+                .marks()
+                .iter()
+                .any(|m| matches!(m.ty.name(), "link" | "code"));
+        } else {
+            self.doc
+                .nodes_between(selection.start, selection.end, &mut |node, _, _, _| {
+                    if node.is_text() {
+                        plain &= !node
+                            .marks()
+                            .iter()
+                            .any(|m| matches!(m.ty.name(), "link" | "code"));
+                    } else if node.is_leaf() {
+                        plain = false;
+                    }
+                    true
+                });
+        }
+        if !plain {
+            return Err("请只选择普通或强调文字；已有链接、行内代码和图片请分别编辑".into());
+        }
+        let source = if selection.is_empty() {
+            let at = self
+                .source_position(selection.start)
+                .ok_or("此光标位置不能保真插入链接，请选择文字后重试")?;
+            at..at
+        } else {
+            let mut at = selection.start;
+            let mut range = None::<Range<usize>>;
+            for unit in &block.text_map.units {
+                let rich = base + unit.rich.start..base + unit.rich.end;
+                if rich.start < selection.end && rich.end > selection.start {
+                    if rich.start != at || rich.end > selection.end {
+                        return Err("链接选区不能拆分转义、实体或Unicode字符".into());
+                    }
+                    at = rich.end;
+                    match &mut range {
+                        Some(range) => range.end = unit.source.end,
+                        None => range = Some(unit.source.clone()),
+                    }
+                }
+            }
+            if at != selection.end {
+                return Err("链接选区的文字范围不能保真映射".into());
+            }
+            let mut range = range.ok_or("请先选择链接文字")?;
+            let tree = markdown::to_mdast(&self.source, &parse_options()).map_err(message)?;
+            fn widen(
+                node: &mdast::Node,
+                units: &[super::text_map::Unit],
+                selection: &Range<usize>,
+                base: usize,
+                range: &mut Range<usize>,
+            ) {
+                if format_node(node)
+                    && let Some(position) = node.position()
+                {
+                    let owned: Vec<_> = units
+                        .iter()
+                        .filter(|unit| {
+                            unit.source.start >= position.start.offset
+                                && unit.source.end <= position.end.offset
+                        })
+                        .collect();
+                    if !owned.is_empty()
+                        && owned.iter().all(|unit| {
+                            base + unit.rich.start >= selection.start
+                                && base + unit.rich.end <= selection.end
+                        })
+                    {
+                        range.start = range.start.min(position.start.offset);
+                        range.end = range.end.max(position.end.offset);
+                    }
+                }
+                if let Some(children) = node.children() {
+                    for child in children {
+                        widen(child, units, selection, base, range);
+                    }
+                }
+            }
+            widen(&tree, &block.text_map.units, &selection, base, &mut range);
+            range
+        };
+        Ok(ResourceTarget {
+            kind: ResourceKind::Link,
+            source,
+            values: ResourceValues {
+                url: String::new(),
+                title: None,
+                alt: String::new(),
+            },
+            reference: None,
+            visible: self
+                .doc
+                .text_between(selection.start, selection.end, None, None),
+            selection: Some(selection),
+        })
+    }
+    /// The same form edits an existing link or creates one over the exact
+    /// selected text. A selection crossing an existing link never edits just
+    /// whichever endpoint happens to have a link mark.
+    pub fn link_target(&self, state: &EditorState) -> Result<ResourceTarget, String> {
+        if state.doc() != &self.doc || state.selection().as_text().is_none() {
+            return Err("链接需要当前正文中的文字选区".into());
+        }
+        let selection = state.selection();
+        if let Ok(target) = self
+            .resource_at(selection.head(), ResourceKind::Link)
+            .or_else(|_| self.resource_at(selection.from(), ResourceKind::Link))
+        {
+            let a = self.source_position(selection.from());
+            let z = self.source_position(selection.to());
+            if selection.empty()
+                || a.zip(z)
+                    .is_some_and(|(a, z)| a >= target.source.start && z <= target.source.end)
+            {
+                return Ok(target);
+            }
+        }
+        self.new_link_target(selection.from()..selection.to())
+    }
+    pub fn insert_link_transaction(
+        &self,
+        state: &EditorState,
+        target: &ResourceTarget,
+        values: &ResourceValues,
+        text: &str,
+    ) -> Result<Transaction, String> {
+        if state.doc() != &self.doc {
+            return Err("属性面板版本已过期，请重新打开".into());
+        }
+        let changes = creation_edits(self, target, values, text)?;
+        let selection = target.selection.as_ref().ok_or("新链接选区缺失")?;
+        let mut tr = creation_transaction(state, selection, values, text)?;
+        let mut raw = self.source.clone();
+        for (range, text) in changes.iter().rev() {
+            raw.replace_range(range.clone(), text);
+        }
+        if Self::parse(state.schema(), raw)?.doc != *tr.doc() {
+            return Err("此格式边界不能保真插入链接，请调整选区或使用源码".into());
+        }
+        tr.set_origin(TransactionOrigin::User);
+        tr.set_meta(META,json!({"kind":"insertLink","from":target.source.start,"to":target.source.end,"richFrom":selection.start,"richTo":selection.end,"url":values.url,"title":values.title,"alt":"","text":text}));
+        Ok(tr)
+    }
     pub fn resource_at(&self, rich: usize, kind: ResourceKind) -> Result<ResourceTarget, String> {
         let byte = self
             .source_position(rich)
@@ -361,6 +720,54 @@ pub(super) fn transaction_edits(
     let Some(meta) = applied.iter().find_map(|tr| tr.get_meta(META)) else {
         return Ok(None);
     };
+    if applied
+        .iter()
+        .filter(|tr| tr.get_meta(META).is_some())
+        .count()
+        != 1
+    {
+        return Err("资源操作包含多个属性提交，原文未变".into());
+    }
+    if meta["kind"].as_str() == Some("insertLink") {
+        let position = |key: &str| {
+            meta[key]
+                .as_u64()
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or("新链接范围无效")
+        };
+        let selection = position("richFrom")?..position("richTo")?;
+        let target = p.new_link_target(selection.clone())?;
+        if target.source != (position("from")?..position("to")?) {
+            return Err("新链接源码范围与真实选区不一致".into());
+        }
+        let values = ResourceValues {
+            url: meta["url"].as_str().ok_or("链接地址无效")?.into(),
+            title: if meta["title"].is_null() {
+                None
+            } else {
+                Some(meta["title"].as_str().ok_or("链接标题无效")?.into())
+            },
+            alt: String::new(),
+        };
+        let text = meta["text"].as_str().ok_or("链接文字无效")?;
+        let changes = creation_edits(p, &target, &values, text)?;
+        let state = EditorState::create(
+            EditorStateConfig::new(p.doc.ty().schema().clone()).doc(p.doc.clone()),
+        )
+        .map_err(message)?;
+        let expected = creation_transaction(&state, &selection, &values, text)?;
+        if expected.doc() != next {
+            return Err("新链接操作包含非目标文字改动，原文未变".into());
+        }
+        let mut raw = p.source.clone();
+        for (range, text) in changes.iter().rev() {
+            raw.replace_range(range.clone(), text);
+        }
+        if Projection::parse(next.ty().schema(), raw)?.doc != *next {
+            return Err("新链接操作不能保真往返，原文未变".into());
+        }
+        return Ok(Some(changes));
+    }
     let kind = match meta["kind"].as_str() {
         Some("link") => ResourceKind::Link,
         Some("image") => ResourceKind::Image,
@@ -407,6 +814,58 @@ pub(super) fn transaction_edits(
 mod tests {
     use super::*;
     use nsh_base::rich_editor::state::{EditorState, EditorStateConfig};
+    #[test]
+    fn link_creation_guard_binds_real_text_range_and_refuses_metadata_plus_an_unrelated_edit() {
+        let manager = super::super::manager();
+        let p =
+            Projection::parse(manager.schema(), "plain\n\n<custom>stay</custom>\n".into()).unwrap();
+        let state = EditorState::create(
+            EditorStateConfig::new(manager.schema().clone())
+                .doc(p.doc.clone())
+                .selection(TextSelection::create(&p.doc, 1, Some(6))),
+        )
+        .unwrap();
+        let target = p.link_target(&state).unwrap();
+        let values = ResourceValues {
+            url: "./new".into(),
+            title: None,
+            alt: String::new(),
+        };
+        let tr = p
+            .insert_link_transaction(&state, &target, &values, "plain")
+            .unwrap();
+        let meta = tr.get_meta(META).unwrap().clone();
+        let requested = tr.doc().clone();
+        let (next, applied) = state.apply_transaction(tr).unwrap();
+        assert!(
+            p.verified_resource_transaction(next.doc(), &applied)
+                .unwrap()
+        );
+        let mut forged = state.tr();
+        forged
+            .replace_with(0, state.doc().content().size(), requested.content().clone())
+            .unwrap();
+        let at = forged.doc().content().size() - 2;
+        forged.insert_text("X", Some(at), Some(at));
+        forged.set_meta(META, meta.clone());
+        let (next, applied) = state.apply_transaction(forged).unwrap();
+        assert!(
+            p.verified_resource_transaction(next.doc(), &applied)
+                .is_err()
+        );
+        let mut wrong_range = state.tr();
+        wrong_range
+            .replace_with(0, state.doc().content().size(), requested.content().clone())
+            .unwrap();
+        let mut altered = meta;
+        altered["from"] = json!(1);
+        wrong_range.set_meta(META, altered);
+        let (next, applied) = state.apply_transaction(wrong_range).unwrap();
+        assert!(
+            p.verified_resource_transaction(next.doc(), &applied)
+                .is_err()
+        );
+    }
     #[test]
     fn resource_guard_requires_real_ast_target_and_the_complete_requested_tree() {
         let manager = super::super::manager();

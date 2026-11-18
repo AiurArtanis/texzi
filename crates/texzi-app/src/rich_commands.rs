@@ -3,7 +3,7 @@
 use crate::{
     editor_owner::NativeView,
     rich_owner::ModeGate,
-    rich_projection::{Projection, ResourceKind},
+    rich_projection::Projection,
     table_controls::{TableAction, action_transaction, cell_position},
 };
 use nsh_base::{
@@ -185,10 +185,7 @@ fn check_context(state: &EditorState, projection: &Projection, id: &str) -> Resu
             return Err("缩进代码块没有语言标记，请编辑源码".into());
         }
     } else if id == "texzi.markdown.insertLink" {
-        projection
-            .resource_at(state.selection().head(), ResourceKind::Link)
-            .or_else(|_| projection.resource_at(state.selection().from(), ResourceKind::Link))
-            .map_err(|_| "请先把光标放入已有链接；新建链接请暂用源码编辑".to_owned())?;
+        projection.link_target(state)?;
     }
     Ok(())
 }
@@ -680,13 +677,18 @@ mod tests {
                 "texzi.markdown.toggleTask",
                 "texzi.markdown.exitCodeBlock",
                 "texzi.markdown.table.deleteRow",
-                "texzi.markdown.insertLink",
                 "texzi.markdown.setCodeLanguage",
             ] {
                 assert!(availability(&gate, &source, id, true).is_err(), "{id}");
                 assert!(run(&gate, &source, id, true).is_err(), "{id}");
                 assert_eq!(audit(&source), before);
             }
+            assert!(availability(&gate, &source, "texzi.markdown.insertLink", true).is_ok());
+            assert_eq!(
+                run(&gate, &source, "texzi.markdown.insertLink", true).unwrap(),
+                Outcome::Form(FormRequest::Link)
+            );
+            assert_eq!(audit(&source), before, "new-link form routing is read-only");
             assert!(run(&gate, &source, "texzi.markdown.bold", false).is_err());
             source.set_composing(true);
             assert!(availability(&gate, &source, "texzi.markdown.bold", true).is_err());

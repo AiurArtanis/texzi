@@ -28,6 +28,9 @@ pub struct ResourceControls {
     pub alt: Signal<String>,
     pub kind: Signal<ResourceKind>,
     pub reference: Signal<bool>,
+    pub creating: Signal<bool>,
+    pub text: Signal<String>,
+    pub empty_selection: Signal<bool>,
 }
 impl ResourceControls {
     pub fn new(gate: Rc<ModeGate>, source: Rc<NativeView>) -> Rc<Self> {
@@ -41,6 +44,9 @@ impl ResourceControls {
             alt: signal(String::new()),
             kind: signal(ResourceKind::Link),
             reference: signal(false),
+            creating: signal(false),
+            text: signal(String::new()),
+            empty_selection: signal(false),
         })
     }
     pub fn begin(&self, kind: ResourceKind) -> Result<(), String> {
@@ -56,15 +62,27 @@ impl ResourceControls {
         if &projection.doc != state.doc() {
             return Err("正文版本已变化，请稍后重新打开属性".into());
         }
-        let target = projection
-            .resource_at(state.selection().head(), kind)
-            .or_else(|_| projection.resource_at(state.selection().from(), kind))?;
+        let target = if kind == ResourceKind::Link {
+            projection.link_target(&state)?
+        } else {
+            projection
+                .resource_at(state.selection().head(), kind)
+                .or_else(|_| projection.resource_at(state.selection().from(), kind))?
+        };
         self.url.set(target.values.url.clone());
         self.title
             .set(target.values.title.clone().unwrap_or_default());
         self.alt.set(target.values.alt.clone());
         self.kind.set(kind);
         self.reference.set(target.reference.is_some());
+        self.creating.set(target.selection.is_some());
+        self.empty_selection.set(
+            target
+                .selection
+                .as_ref()
+                .is_some_and(std::ops::Range::is_empty),
+        );
+        self.text.set(target.visible.clone());
         *self.draft.borrow_mut() = Some(Draft {
             revision: snapshot.revision,
             doc: state.doc().clone(),
@@ -100,7 +118,11 @@ impl ResourceControls {
             title: (!title.is_empty()).then_some(title),
             alt: self.alt.get(),
         };
-        let tr = projection.resource_transaction(&state, &draft.target, &values)?;
+        let tr = if draft.target.selection.is_some() {
+            projection.insert_link_transaction(&state, &draft.target, &values, &self.text.get())?
+        } else {
+            projection.resource_transaction(&state, &draft.target, &values)?
+        };
         self.gate.status.set(String::new());
         session.dispatch(tr).map_err(|e| e.to_string())?;
         let status = self.gate.status.get();
@@ -132,7 +154,7 @@ pub fn view(controls: Rc<ResourceControls>, focus: Rc<dyn Fn()>) -> impl IntoEle
                 .gap(px(6.0))
                 .child(
                     nsh_base::button()
-                        .child(text("链接属性"))
+                        .child(text("插入或编辑链接"))
                         .on_press(move |_: &()| link.report(link.begin(ResourceKind::Link))),
                 )
                 .child(
@@ -154,6 +176,9 @@ pub fn view(controls: Rc<ResourceControls>, focus: Rc<dyn Fn()>) -> impl IntoEle
             let url = modal.url;
             let title = modal.title;
             let alt = modal.alt;
+            let link_text = modal.text;
+            let create = modal.creating.get();
+            let empty_selection = modal.empty_selection.get();
             let image = modal.kind.get() == ResourceKind::Image;
             let status = modal.gate.status;
             Some(
@@ -161,7 +186,11 @@ pub fn view(controls: Rc<ResourceControls>, focus: Rc<dyn Fn()>) -> impl IntoEle
                     .label(if image {
                         "图片属性"
                     } else {
-                        "链接属性"
+                        if create {
+                            "插入链接"
+                        } else {
+                            "链接属性"
+                        }
                     })
                     .on_cancel(move |_: &()| {
                         dismiss.cancel();
@@ -177,7 +206,26 @@ pub fn view(controls: Rc<ResourceControls>, focus: Rc<dyn Fn()>) -> impl IntoEle
                             .child(text(if image {
                                 "图片属性"
                             } else {
-                                "链接属性"
+                                if create {
+                                    "插入链接"
+                                } else {
+                                    "链接属性"
+                                }
+                            }))
+                            .child(when(create, move || {
+                                let body = box_view().gap(px(4.0)).child(text("链接文字"));
+                                if empty_selection {
+                                    body.child(
+                                        input().value(move || link_text.get()).on_change(
+                                            move |value: &str| link_text.set(value.into()),
+                                        ),
+                                    )
+                                    .into_element()
+                                } else {
+                                    body.child(text(move || link_text.get()))
+                                        .child(text("所选文字及原格式保持不变。"))
+                                        .into_element()
+                                }
                             }))
                             .child(when(modal.reference, || {
                                 text("此修改会更新相应引用定义，并用于它的所有引用。")
@@ -232,6 +280,10 @@ pub fn view(controls: Rc<ResourceControls>, focus: Rc<dyn Fn()>) -> impl IntoEle
             )
         }))
 }
+
+#[cfg(test)]
+#[path = "rich_controls/link_insert_tests.rs"]
+mod link_insert_tests;
 
 #[cfg(test)]
 mod tests {

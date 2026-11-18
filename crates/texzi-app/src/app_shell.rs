@@ -47,10 +47,12 @@ struct Document {
     reference: ComponentRef<Editor>,
     rich_reference: ComponentRef<nsh_base::rich_editor::view::RichEditor>,
     controls: RichControlSet,
+    wrap: Signal<bool>,
 }
 // Toolbar and command-palette entries share the same per-view drafts and
 // confirmation methods. Neither surface owns a second editable document.
 struct RichControlSet {
+    blocks: Rc<crate::block_controls::BlockControls>,
     resources: Rc<crate::rich_controls::ResourceControls>,
     code: Rc<crate::code_controls::CodeControls>,
     table: Rc<crate::table_controls::TableControls>,
@@ -58,15 +60,20 @@ struct RichControlSet {
 impl RichControlSet {
     fn new(gate: &Rc<ModeGate>, source: &Rc<NativeView>) -> Self {
         Self {
+            blocks: crate::block_controls::BlockControls::new(gate.clone(), source.clone()),
             resources: crate::rich_controls::ResourceControls::new(gate.clone(), source.clone()),
             code: crate::code_controls::CodeControls::new(gate.clone(), source.clone()),
             table: crate::table_controls::TableControls::new(gate.clone(), source.clone()),
         }
     }
     fn open(&self) -> bool {
-        self.resources.open.get() || self.code.open.get() || self.table.is_open()
+        self.blocks.open.get()
+            || self.resources.open.get()
+            || self.code.open.get()
+            || self.table.is_open()
     }
     fn cancel(&self) {
+        self.blocks.cancel();
         self.resources.cancel();
         self.code.cancel();
         self.table.cancel();
@@ -104,7 +111,6 @@ struct Shell {
     panel: Signal<String>,
     query: Signal<String>,
     replacement: Signal<String>,
-    wrap: Signal<bool>,
     zen: Signal<bool>,
     chord: Signal<bool>,
     source_ref: Cell<Option<ComponentRef<Editor>>>,
@@ -165,7 +171,6 @@ impl Shell {
             panel: signal(String::new()),
             query: signal(String::new()),
             replacement: signal(String::new()),
-            wrap: signal(false),
             zen: signal(false),
             chord: signal(false),
             source_ref: Cell::new(None),
@@ -201,6 +206,9 @@ impl Shell {
             ("f3", "texzi.find.next"),
             ("shift+f3", "texzi.find.previous"),
             ("mod+shift+w", "texzi.window.close"),
+            ("f1", "texzi.commandPalette.open"),
+            ("mod+e", "texzi.navigation.quickOpen"),
+            ("mod+f4", "texzi.tab.close"),
         ] {
             let s = s.clone();
             on_key(key, move |_| s.run(id));
@@ -260,6 +268,7 @@ impl Shell {
             .owner
             .run(component_ref::<nsh_base::rich_editor::view::RichEditor>);
         let controls = self.owner.run(|| RichControlSet::new(&gate, &source));
+        let wrap = self.owner.run(|| signal(false));
         self.docs.update(|ds| {
             ds.push(Rc::new(Document {
                 id,
@@ -270,6 +279,7 @@ impl Shell {
                 reference,
                 rich_reference,
                 controls,
+                wrap,
             }))
         });
         self.active.set(id);
@@ -279,6 +289,10 @@ impl Shell {
     fn blocked(&self, id: &str) -> Option<String> {
         if self.current().is_some_and(|d| d.gate.busy()) {
             return Some("请先完成或取消中文组合".into());
+        }
+        if id == "texzi.editor.toggleWrap" && self.current().is_some_and(|d| d.gate.rich_mode.get())
+        {
+            return Some("自动换行开关作用于当前源码视图；正文按块排版。请先切换源码。".into());
         }
         if crate::rich_commands::handles(id) {
             let doc = match self.current() {
@@ -593,6 +607,7 @@ impl Shell {
         let reference = component_ref::<Editor>();
         let rich_reference = component_ref::<nsh_base::rich_editor::view::RichEditor>();
         let controls = RichControlSet::new(&gate, &source);
+        let wrap = signal(doc.wrap.get());
         self.split.set(Some(Rc::new(Document {
             id: doc.id,
             name: doc.name.clone(),
@@ -602,6 +617,7 @@ impl Shell {
             reference,
             rich_reference,
             controls,
+            wrap,
         })));
         self.split_down.set(down);
         self.second_active.set(true);
@@ -720,8 +736,8 @@ impl Shell {
             "texzi.group.splitRight"|"texzi.group.splitDown"=>self.split_editor(id.ends_with("Down")),
             "texzi.group.joinAll"=>{self.split.set(None);self.second_active.set(false);self.notice.set("已合并为单组；同一文档内容与历史保持不变".into());},
             "texzi.tab.reopenClosed"=>{let doc=self.closed.borrow_mut().pop();if let Some(doc)=doc{let id=doc.id;self.docs.update(|ds|ds.push(doc));self.second_active.set(false);self.active.set(id);self.restore_editor_focus();}else{self.notice.set("没有已关闭标签".into());}},
-            "texzi.tab.next"|"texzi.tab.previous"=>{self.second_active.set(false);self.docs.with(|ds|{if let Some(at)=ds.iter().position(|d|d.id==self.active.get()){self.active.set(ds[if id.ends_with("next"){(at+1)%ds.len()}else{(at+ds.len()-1)%ds.len()}].id);}});self.restore_editor_focus();},
-            "texzi.sidebar.toggle"=>self.sidebar.update(|v|*v=!*v),"texzi.editor.toggleWrap"=>self.wrap.update(|v|*v=!*v),
+            "texzi.tab.next"|"texzi.tab.previous"=>{if self.second_active.get(){self.notice.set("当前编辑组只有一个标签，已保持当前组".into());}else{self.docs.with(|ds|{if let Some(at)=ds.iter().position(|d|d.id==self.active.get()){self.active.set(ds[if id.ends_with("next"){(at+1)%ds.len()}else{(at+ds.len()-1)%ds.len()}].id);}});}self.restore_editor_focus();},
+            "texzi.sidebar.toggle"=>self.sidebar.update(|v|*v=!*v),"texzi.editor.toggleWrap"=>if let Some(doc)=self.current(){doc.wrap.update(|v|*v=!*v);self.notice.set(if doc.wrap.get(){"当前源码视图：自动换行已开启"}else{"当前源码视图：自动换行已关闭"}.into());},
             "texzi.view.toggleZen"=>self.zen.update(|v|*v=!*v),"texzi.view.exitZen"=>self.zen.set(false),
             "texzi.view.toggleFullScreen"=>self.window.set_mode(if self.window.state().is_some_and(|s|s.mode==WindowMode::FullScreen){WindowMode::Normal}else{WindowMode::FullScreen}),
             "texzi.commandPalette.open"|"texzi.navigation.quickOpen"=>{self.query.set(String::new());self.panel.set(if id.ends_with("quickOpen"){"files"}else{"commands"}.into());},
@@ -791,6 +807,15 @@ fn supported(id: &str) -> bool {
                 | "texzi.help.guide"
                 | "texzi.help.about"
         )
+}
+fn line_column(value: &str) -> Result<(usize, usize), String> {
+    let value = value.trim();
+    let (line, column) = value.split_once(':').map_or((value, "1"), |pair| pair);
+    let parse = |value: &str| value.trim().parse::<usize>().ok().filter(|n| *n > 0);
+    match (parse(line), parse(column)) {
+        (Some(line), Some(column)) => Ok((line, column)),
+        _ => Err("请输入从 1 开始的行或行:列，例如 12 或 12:8".into()),
+    }
 }
 fn source_command(id: &str) -> Option<EditorCommand> {
     use EditorCommand::*;
@@ -1011,13 +1036,14 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let rich = doc.gate.clone();
     let source = doc.gate.clone();
     let status = doc.gate.status;
-    let wrap = s.wrap;
+    let wrap = doc.wrap;
     let src = doc.gate.clone();
     let formatted = doc.gate.clone();
     let source_owner = s.owner;
     let rich_owner = s.owner;
     let source_focus = s.second_active;
     let rich_focus = s.second_active;
+    let block_controls = doc.controls.blocks.clone();
     let resource_controls = doc.controls.resources.clone();
     let table_controls = doc.controls.table.clone();
     let code_controls = doc.controls.code.clone();
@@ -1062,6 +1088,10 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             .min_w(px(0.0))
                             .gap(px(8.0))
                             .p(px(6.0))
+                            .child(crate::block_controls::view(
+                                block_controls.clone(),
+                                focus.clone(),
+                            ))
                             .child(crate::rich_controls::view(
                                 resource_controls.clone(),
                                 focus.clone(),
@@ -1537,32 +1567,34 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
             )));
     } else if mode == "line" {
         let run = s.clone();
-        panel = panel.child(text("源码行号（从 1 开始）")).child(
-            input()
-                .value(move || query.get())
-                .on_change(move |v: &str| query.set(v.into()))
-                .auto_focus(true)
-                .on_submit(move |_: &str| {
-                    let result = run
-                        .current()
-                        .ok_or("没有活动文档".to_owned())
-                        .and_then(|d| {
-                            let line = query.get().parse().map_err(|_| "请输入正整数行号")?;
-                            d.gate.to_source();
-                            if d.gate.rich_mode.get() {
-                                return Err(d.gate.status.get());
+        panel = panel
+            .child(text("源码行或行:列（从 1 开始；列按字素簇，Tab 算 1 列）"))
+            .child(
+                input()
+                    .value(move || query.get())
+                    .on_change(move |v: &str| query.set(v.into()))
+                    .auto_focus(true)
+                    .on_submit(move |_: &str| {
+                        let result = run
+                            .current()
+                            .ok_or("没有活动文档".to_owned())
+                            .and_then(|d| {
+                                let (line, column) = line_column(&query.get())?;
+                                d.gate.to_source();
+                                if d.gate.rich_mode.get() {
+                                    return Err(d.gate.status.get());
+                                }
+                                d.source.go_to_line_column(line, column)
+                            });
+                        match result {
+                            Ok(()) => {
+                                run.close_panel();
+                                run.notice.set("已定位源码行列".into());
                             }
-                            d.source.go_to_line(line)
-                        });
-                    match result {
-                        Ok(()) => {
-                            run.close_panel();
-                            run.notice.set("已定位源码行".into());
+                            Err(e) => run.notice.set(e),
                         }
-                        Err(e) => run.notice.set(e),
-                    }
-                }),
-        );
+                    }),
+            );
     } else {
         let find = s.clone();
         let scope = if s.current().is_some_and(|d| d.gate.rich_mode.get()) {

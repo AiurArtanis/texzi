@@ -22,6 +22,8 @@ static LOGGER: StderrLogger = StderrLogger;
 #[cfg(windows)]
 mod app_shell;
 #[cfg(windows)]
+mod block_controls;
+#[cfg(windows)]
 mod code_controls;
 #[cfg(all(test, windows))]
 mod code_controls_tests;
