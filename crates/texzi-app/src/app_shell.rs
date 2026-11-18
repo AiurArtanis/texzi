@@ -1323,13 +1323,22 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let name = doc.name.clone();
     view()
         .flex_1()
+        .min_w(px(0.0))
         .child(
             view()
                 .flex_row()
+                .flex_wrap()
+                .w_full()
+                .max_w(relative(1.0))
+                .min_w(px(0.0))
                 .gap(px(8.0))
                 .p(px(6.0))
                 .bg(frame)
-                .child(text(format!("组 {} · {name}", if second { 2 } else { 1 })))
+                .child(
+                    text(format!("组 {} · {name}", if second { 2 } else { 1 }))
+                        .flex_1()
+                        .min_w(px(0.0)),
+                )
                 .child(
                     nsh_base::button()
                         .child(text("源码"))
@@ -1340,7 +1349,11 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                         .child(text("富文本"))
                         .on_press(move |_: &()| rich_owner.run(|| formatted.to_rich())),
                 )
-                .child(text(move || status.get())),
+                .child(
+                    text(move || status.get())
+                        .max_w(relative(1.0))
+                        .min_w(px(0.0)),
+                ),
         )
         .child(
             when(rich_mode, move || {
@@ -1351,6 +1364,9 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 let raw_focus = focus.clone();
                 view()
                     .flex_1()
+                    .w_full()
+                    .max_w(relative(1.0))
+                    .min_w(px(0.0))
                     .child(
                         view()
                             .flex_row()
@@ -1385,7 +1401,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             .classes(crate::app::rich_classes())
                             .auto_focus(true)
                             .on_focus(move |_: &()| rich_focus.set(second))
-                            .flex_1(),
+                            .flex_1()
+                            .min_w(px(0.0)),
                     )
             })
             .otherwise(move || {
@@ -1410,6 +1427,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .font_size(px(16.0))
                     .line_height(px(24.0))
                     .size_full()
+                    .max_w(relative(1.0))
+                    .min_w(px(0.0))
             }),
         )
 }
@@ -1420,6 +1439,7 @@ fn groups(s: Rc<Shell>) -> AnyElement {
     let second = s.clone();
     (if down { view() } else { view().flex_row() })
         .flex_1()
+        .min_w(px(0.0))
         .child(dynamic(move || {
             primary
                 .primary()
