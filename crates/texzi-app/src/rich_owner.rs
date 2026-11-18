@@ -102,6 +102,7 @@ impl RichOwner {
             ("Mod-Shift-z".into(), redo),
         ])];
         plugins.extend(m.plugins());
+        plugins.push(crate::code_highlight::plugin());
         let mut config = EditorStateConfig::new(m.schema().clone())
             .doc(p.doc.clone())
             .plugins(plugins);
@@ -490,16 +491,24 @@ impl RichOwner {
                         self.epoch.set(u.snapshot.view_epoch);
                         *self.projection.borrow_mut() = p;
                         self.session.update_state(new);
-                        self.native.notify();
-                        if selection_matches(
+                        // Source history can restore a fence-syntax position.
+                        // Also synchronize this logical view to the nearest
+                        // visible position already chosen for its projection.
+                        let selection = if selection_matches(
                             &self.projection.borrow(),
                             &self.session.state(),
                             &u.snapshot.selections,
                         ) {
-                            self.status.set(String::new());
+                            Ok(())
                         } else {
-                            self.status
-                                .set("该版本的选区暂不能映射，请在源码中继续编辑".into());
+                            self.activate()
+                        };
+                        self.native.notify();
+                        match selection {
+                            Ok(()) => self.status.set(String::new()),
+                            Err(error) => self.status.set(format!(
+                                "撤销/重做已完成；无法恢复视图位置，请在源码中继续编辑：{error}"
+                            )),
                         }
                     }
                     Err(e) => {

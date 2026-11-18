@@ -12,6 +12,8 @@
 
 f66真实GUI任务行尾Enter拒绝另见[空任务投影决策](../decisions/2026-11-18-empty-task-projection.md)。精确反例及字面保留回归补齐后，`compile21/runtime17` 已实际101/101、exit0；不是用中间拆分测试代替空项。新GUI未测前该问题仍待关闭，不把完整矩阵批量改PASS。
 
+下一着色增量使用原生只读decorations，仅有限Rust/JSON词法，不增依赖或资源下载。6项组件核固定UTF16范围、两主题实际颜色类、缓存随内容/语言/块位移/Undo更新、取装饰不改Body/token/history/dirty；未知/无语言/原样/超限保持plain。性能计划正常块/长行阈值作为保护依据，2ms slice仅工程预算，不作性能达标声明。新增独立跨View历史回归核Source前插/编辑后在Rich Undo/Redo的最近可见位置与真实NativeView同步，0额外正文事务。运行与新GUI按候选证据分层，完整矩阵不批量通过。
+
 机器可读固定语料与分层状态在 [SYNTAX-MATRIX.json](SYNTAX-MATRIX.json)，执行代码在 [syntax_matrix_tests.rs](../../crates/texzi-app/src/syntax_matrix_tests.rs)。JSON 的每一行分别保留 original_bytes、formatted_display、direct_edit、source_reachable、component、gui、manual 和证据引用。
 
 | ID | PRD 原语法行 | 已编写的严格组件行为 | 仍须独立覆盖 |

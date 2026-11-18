@@ -26,6 +26,10 @@ mod code_controls;
 #[cfg(all(test, windows))]
 mod code_controls_tests;
 #[cfg(windows)]
+mod code_highlight;
+#[cfg(all(test, windows))]
+mod cross_view_history_tests;
+#[cfg(windows)]
 mod native_menu;
 #[cfg(all(test, windows))]
 mod syntax_matrix_tests;
