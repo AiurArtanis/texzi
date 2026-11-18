@@ -10,6 +10,8 @@
 
 代码块/表格按键的下一增量已在 `compile20/runtime15` 实际编译及运行99/99、native和wrapper均exit0。新增8项覆盖围栏语言词和额外info保留、取消、退出优先复用后续正文/文末补段、真实Tab/Shift+Tab混合EOL及Source Undo、原样/缩进/未闭围栏/IME/过期拒绝和伪meta；新增2项覆盖installed Enter向表格下一行同列导航、末行提示、零正文/history/token/dirty增量及已有Source Undo。完整代码高亮/所有导航与GUI不由此关闭。`runtime14`的97项原native0但wrapper沿用先前rg的exit1，原回执保留，不冒wrapper0或产品FAIL。
 
+f66真实GUI任务行尾Enter拒绝另见[空任务投影决策](../decisions/2026-11-18-empty-task-projection.md)。精确反例及字面保留回归补齐后，`compile21/runtime17` 已实际101/101、exit0；不是用中间拆分测试代替空项。新GUI未测前该问题仍待关闭，不把完整矩阵批量改PASS。
+
 机器可读固定语料与分层状态在 [SYNTAX-MATRIX.json](SYNTAX-MATRIX.json)，执行代码在 [syntax_matrix_tests.rs](../../crates/texzi-app/src/syntax_matrix_tests.rs)。JSON 的每一行分别保留 original_bytes、formatted_display、direct_edit、source_reachable、component、gui、manual 和证据引用。
 
 | ID | PRD 原语法行 | 已编写的严格组件行为 | 仍须独立覆盖 |

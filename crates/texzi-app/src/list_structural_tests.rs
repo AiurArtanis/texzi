@@ -180,6 +180,166 @@ fn list_structural_task_enter_keeps_original_checked_spelling_and_resets_new_ite
 }
 
 #[test]
+fn task_gui_done_end_enter_types_and_deletes_back_to_empty_with_source_step_history() {
+    runtime(|| {
+        // Exact round-lists-06 GUI failure: End on `done`, then Enter.
+        // A middle split with nonempty right text does not cover empty GFM tasks.
+        let raw = "- [x] done\n";
+        let after_enter = "- [x] done\n- [ ] \n";
+        let after_text = "- [x] done\n- [ ] next\n";
+        let (source, gate) = fixture(raw);
+        let original = identity(&source);
+        select_byte(&source, &gate, 10);
+        key(&gate, "Enter", false);
+        assert_eq!(identity(&source).bytes, after_enter.as_bytes());
+        let entered = identity(&source);
+        let session = gate.session();
+        let state = session.state();
+        let list = state.doc().child(0);
+        assert_eq!(list.ty().name(), "taskList");
+        assert_eq!(list.child_count(), 2);
+        assert_eq!(
+            list.child(0).attrs().get("checked"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            list.child(1).attrs().get("checked"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(list.child(1).child(0).content().size(), 0);
+        let p =
+            Projection::parse(state.schema(), source.snapshot().unwrap().rope.to_string()).unwrap();
+        assert_eq!(
+            p.rich_position(6),
+            Some(3),
+            "existing done leaf keeps its source map"
+        );
+        assert_eq!(p.rich_position(10), Some(7));
+        assert_eq!(p.source_position(state.selection().anchor()), Some(17));
+        assert_eq!(p.rich_position(17), Some(state.selection().anchor()));
+        let mut tr = state.tr();
+        tr.insert_text("next", None, None);
+        session.dispatch(tr).unwrap();
+        assert!(gate.status.get().is_empty(), "{}", gate.status.get());
+        assert_eq!(identity(&source).bytes, after_text.as_bytes());
+        let typed = identity(&source);
+        let state = session.state();
+        let p =
+            Projection::parse(state.schema(), source.snapshot().unwrap().rope.to_string()).unwrap();
+        let start = p.rich_position(17).unwrap();
+        let mut tr = state.tr();
+        tr.set_selection(TextSelection::create(state.doc(), start, Some(start + 4)));
+        session.dispatch(tr).unwrap();
+        key(&gate, "Backspace", false);
+        assert_eq!(identity(&source).bytes, after_enter.as_bytes());
+        let cleared = identity(&source);
+        assert_eq!(history(&source), (3, 0));
+        source.inspect(|store, id| {
+            let s = store.snapshot(store.view(id).unwrap().doc).unwrap();
+            let retained: Vec<_> = s
+                .body
+                .origins()
+                .into_iter()
+                .filter_map(|(_, origin)| origin)
+                .flat_map(|origin| origin.source.as_bytes()[origin.raw].to_vec())
+                .collect();
+            assert_eq!(
+                retained,
+                raw.as_bytes(),
+                "every original byte and terminal LF keeps its provenance"
+            );
+        });
+        gate.to_source();
+        assert!(!gate.rich_mode.get(), "{}", gate.status.get());
+        gate.source_mounted();
+        for (undo, expected, depth) in [
+            (true, &typed, (2, 1)),
+            (true, &entered, (1, 2)),
+            (true, &original, (0, 3)),
+            (false, &entered, (1, 2)),
+            (false, &typed, (2, 1)),
+            (false, &cleared, (3, 0)),
+        ] {
+            gate.shell_history(undo).unwrap();
+            assert_eq!(
+                &identity(&source),
+                expected,
+                "Source history restores bytes/token/EOL origins"
+            );
+            assert_eq!(history(&source), depth);
+        }
+        gate.to_rich();
+        assert!(gate.rich_mode.get(), "{}", gate.status.get());
+        assert_eq!(
+            gate.session()
+                .state()
+                .doc()
+                .child(0)
+                .child(1)
+                .child(0)
+                .content()
+                .size(),
+            0
+        );
+    });
+}
+
+#[test]
+fn task_empty_import_is_mapped_but_escaped_checkbox_and_real_placeholder_text_stay_literal() {
+    runtime(|| {
+        for (raw, list_kind, text) in [
+            ("- [ ] \n", "taskList", ""),
+            ("- \\[ \\]\n", "bulletList", "[ ]"),
+            ("- [x] \u{e000}\n- [ ] \n", "taskList", "\u{e000}"),
+        ] {
+            let source = NativeView::fixture(raw);
+            let original = identity(&source);
+            let gate = ModeGate::new(source.clone(), source.sibling().unwrap());
+            gate.to_rich();
+            assert!(gate.rich_mode.get(), "{raw:?}: {}", gate.status.get());
+            let state = gate.session().state();
+            assert_eq!(state.doc().child(0).ty().name(), list_kind);
+            assert_eq!(state.doc().child(0).text_content(), text);
+            if raw == "- [ ] \n" {
+                let p =
+                    Projection::parse(state.schema(), source.snapshot().unwrap().rope.to_string())
+                        .unwrap();
+                assert_eq!(p.rich_position(6), Some(3));
+                assert_eq!(p.source_position(3), Some(6));
+            }
+            assert_eq!(identity(&source), original);
+            assert_eq!(history(&source), (0, 0));
+            gate.to_source();
+            assert!(!gate.rich_mode.get(), "{}", gate.status.get());
+            gate.source_mounted();
+            assert_eq!(identity(&source), original);
+        }
+        for (raw, opaque, needle) in [
+            ("- [ ] \n- normal\n", false, "normal"),
+            ("- outer\n  > - [ ] \n", true, "outer"),
+        ] {
+            let (source, gate) = fixture(raw);
+            let original = identity(&source);
+            let state = gate.session().state();
+            let canonical = source.snapshot().unwrap().rope.to_string();
+            let p = Projection::parse(state.schema(), canonical.clone()).unwrap();
+            assert_eq!(p.blocks[0].opaque, opaque);
+            assert!(state.doc().text_content().contains(needle));
+            assert!(state.doc().text_content().contains("[ ]"));
+            assert!(!state.doc().text_content().contains('\u{e000}'));
+            let byte = canonical.find(needle).unwrap();
+            let pos = p
+                .rich_position(byte)
+                .expect("existing ordinary/raw leaf keeps its map");
+            assert_eq!(p.source_position(pos), Some(byte));
+            assert_eq!(gate.raw_blocks().len(), usize::from(opaque));
+            assert_eq!(identity(&source), original);
+            assert_eq!(history(&source), (0, 0));
+        }
+    });
+}
+
+#[test]
 fn list_structural_bullet_tab_and_shift_tab_keep_marker_body_and_opaque_neighbor() {
     runtime(|| {
         for (raw, expected, shift) in [

@@ -3,13 +3,167 @@
 use super::{Block, Projection};
 use markdown::{ParseOptions, mdast};
 use nsh_base::rich_editor::{
-    model::Node,
+    formats::{DocFormat, MarkdownFormat},
+    model::{Fragment, Node, Schema},
     state::Transaction,
     transform::{ReplaceAroundStep, ReplaceStep},
 };
 use std::ops::Range;
 
 type Edit = (Range<usize>, String);
+const EMPTY_TASK_IMPORT: &str = "\u{e000}";
+
+// GFM requires non-whitespace after a checkbox. The editor also needs its
+// transient, source-spelled empty task item. Bind that extension to one AST
+// paragraph and an exact unescaped checkbox prefix, never to decoded text alone.
+pub(super) fn recognize_empty_tasks(node: &mut mdast::Node, source: &str) {
+    fn value(item: &mdast::ListItem, source: &str) -> Option<bool> {
+        if item.checked.is_some() || item.children.len() != 1 {
+            return None;
+        }
+        let mdast::Node::Paragraph(p) = &item.children[0] else {
+            return None;
+        };
+        let [mdast::Node::Text(text)] = p.children.as_slice() else {
+            return None;
+        };
+        let checked = match text.value.as_str() {
+            "[ ]" => false,
+            "[x]" | "[X]" => true,
+            _ => return None,
+        };
+        let start = p.position.as_ref()?.start.offset;
+        let tail = source.get(start..)?;
+        let line = &tail[..tail.find(['\r', '\n']).unwrap_or(tail.len())];
+        let spaces = line.strip_prefix(text.value.as_str())?;
+        (!spaces.is_empty() && spaces.bytes().all(|b| matches!(b, b' ' | b'\t'))).then_some(checked)
+    }
+    if let mdast::Node::List(list) = node
+        && !list.ordered
+        && list.children.iter().all(|child| {
+            matches!(child,
+            mdast::Node::ListItem(item) if item.checked.is_some() || value(item, source).is_some())
+        })
+    {
+        for child in &mut list.children {
+            let mdast::Node::ListItem(item) = child else {
+                continue;
+            };
+            let Some(checked) = value(item, source) else {
+                continue;
+            };
+            let mdast::Node::Paragraph(p) = &mut item.children[0] else {
+                continue;
+            };
+            item.checked = Some(checked);
+            p.children.clear();
+        }
+    }
+    if let Some(children) = node.children_mut() {
+        for child in children {
+            recognize_empty_tasks(child, source);
+        }
+    }
+}
+
+pub(super) fn has_empty_tasks(node: &mdast::Node) -> bool {
+    matches!(node, mdast::Node::ListItem(item) if item.checked.is_some()
+        && matches!(item.children.as_slice(), [mdast::Node::Paragraph(p)] if p.children.is_empty()))
+        || node
+            .children()
+            .is_some_and(|children| children.iter().any(has_empty_tasks))
+}
+
+// The placeholder exists only in a disposable importer input. Remove it only
+// from the exact AST-empty paragraph at the same list-item path afterwards.
+pub(super) fn import_empty_tasks(
+    schema: &Schema,
+    ast: &mdast::Node,
+    source: &str,
+    definitions: &[&mdast::Definition],
+) -> Option<Node> {
+    const PLACEHOLDER: &str = "\u{e000}";
+    fn positions(node: &mdast::Node, source: &str, out: &mut Vec<usize>) -> Option<()> {
+        if let mdast::Node::ListItem(item) = node
+            && item.checked.is_some()
+            && matches!(item.children.as_slice(), [mdast::Node::Paragraph(p)] if p.children.is_empty())
+        {
+            let start = item.position.as_ref()?.start.offset;
+            let tail = source.get(start..)?;
+            out.push(start + tail.find(['\r', '\n']).unwrap_or(tail.len()));
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                positions(child, source, out)?;
+            }
+        }
+        Some(())
+    }
+    fn restore(ast: &mdast::Node, node: &Node, removed: &mut usize) -> Option<Node> {
+        match ast {
+            mdast::Node::List(_) | mdast::Node::ListItem(_) => {
+                let children = ast.children()?;
+                if children.len() != node.child_count() {
+                    return None;
+                }
+                let children = children
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ast)| restore(ast, node.child(i), removed))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(node.copy(Fragment::from(children)))
+            }
+            mdast::Node::Paragraph(p) if p.children.is_empty() => {
+                if node.ty().name() != "paragraph"
+                    || node.child_count() != 1
+                    || node.child(0).text() != Some(EMPTY_TASK_IMPORT)
+                    || !node.child(0).marks().is_empty()
+                {
+                    return None;
+                }
+                *removed += 1;
+                Some(node.copy(Fragment::empty()))
+            }
+            // An unhandled container may contain an injected item. Refuse
+            // the whole shim instead of cloning a derived placeholder out.
+            _ if has_empty_tasks(ast) => None,
+            _ => Some(node.clone()),
+        }
+    }
+    if !matches!(ast, mdast::Node::List(_)) {
+        return None;
+    }
+    let mut empty = Vec::new();
+    positions(ast, source, &mut empty)?;
+    if empty.is_empty() {
+        return None;
+    }
+    let span = ast.position()?;
+    let mut input = source.get(span.start.offset..span.end.offset)?.to_owned();
+    empty.sort_unstable();
+    empty.dedup();
+    let expected = empty.len();
+    for at in empty.into_iter().rev() {
+        let relative = at.checked_sub(span.start.offset)?;
+        input.get(relative..relative)?;
+        input.insert_str(relative, EMPTY_TASK_IMPORT);
+    }
+    let tree = markdown::to_mdast(&input, &super::parse_options()).ok()?;
+    let [import_ast] = tree.children()?.as_slice() else {
+        return None;
+    };
+    let input = super::references::import_source(import_ast, &input, definitions)?;
+    let imported = MarkdownFormat::default().parse(schema, &input).ok()?;
+    if imported.child_count() != 1 {
+        return None;
+    }
+    let mut removed = 0;
+    let node = restore(ast, imported.child(0), &mut removed)?;
+    if removed != expected {
+        return None;
+    }
+    Some(imported.copy(Fragment::from(vec![node])))
+}
 
 struct ItemSource {
     prefix: Range<usize>,
@@ -141,7 +295,8 @@ fn item_sources(block: &Block, source: &str) -> Option<Vec<ItemSource>> {
     if block.opaque || !list_name(&block.node) {
         return None;
     }
-    let tree = markdown::to_mdast(source, &ParseOptions::gfm()).ok()?;
+    let mut tree = markdown::to_mdast(source, &ParseOptions::gfm()).ok()?;
+    recognize_empty_tasks(&mut tree, source);
     let ast = tree.children()?.iter().find(|n| {
         n.position()
             .is_some_and(|p| p.start.offset == block.source.start)

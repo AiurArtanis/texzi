@@ -189,6 +189,11 @@ impl Projection {
                     .units
                     .iter()
                     .flat_map(|u| [(u.source.start, u.rich.start), (u.source.end, u.rich.end)])
+                    .chain(
+                        list_items::empty_positions(block, &self.source)
+                            .into_iter()
+                            .map(|(pos, byte)| (byte, pos)),
+                    )
                     .min_by_key(|(at, _)| at.abs_diff(byte));
                 return nearest
                     .map(|(_, pos)| base + pos)
@@ -467,7 +472,8 @@ impl Projection {
         Ok(edits)
     }
     pub fn parse(schema: &Schema, source: String) -> Result<Self, String> {
-        let tree = markdown::to_mdast(&source, &parse_options()).map_err(message)?;
+        let mut tree = markdown::to_mdast(&source, &parse_options()).map_err(message)?;
+        list_items::recognize_empty_tasks(&mut tree, &source);
         let mut blocks = Vec::new();
         let definitions: Vec<_> = tree
             .children()
@@ -511,6 +517,11 @@ impl Projection {
             let mut opaque = contains_opaque(child) || raw.trim_start().starts_with(":::");
             let parsed = if opaque {
                 None
+            } else if list_items::has_empty_tasks(child) {
+                // A recognized empty-task import must remove every owned
+                // placeholder by AST identity. Failure stays a complete raw
+                // block, with its original source map and local source entry.
+                list_items::import_empty_tasks(schema, child, &source, &definitions)
             } else {
                 references::import_source(child, &source, &definitions)
                     .and_then(|input| MarkdownFormat::default().parse(schema, &input).ok())
