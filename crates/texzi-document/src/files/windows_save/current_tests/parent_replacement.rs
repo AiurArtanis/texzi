@@ -40,6 +40,7 @@ fn replaced_unicode_parent_of_historical_source_is_not_an_independent_save_as() 
     let lower = lower_parent.join("source.txt");
     let upper = upper_parent.join("source.txt");
     let retained = retained_parent.join("source.txt");
+    let staged_source = root.join("retained-original-source-staging.txt");
     store.close_document(old_doc.doc).unwrap();
     drop(old_binding);
     fs::create_dir(&lower_parent)
@@ -102,9 +103,19 @@ fn replaced_unicode_parent_of_historical_source_is_not_an_independent_save_as() 
     assert_eq!(original_version.bytes.as_ref(), ORIGINAL);
     // FileBinding and Store retain only share-delete source-file attribute
     // anchors here. No ObservedTarget or BoundPrepared survives this point.
+    // Keep those anchors live while moving the leaf out of the parent so the
+    // directory rename does not move an open descendant on Windows.
+    assert!(
+        !staged_source.exists(),
+        "{PRECONDITION}source staging leaf already exists"
+    );
+    fs::rename(&lower, &staged_source)
+        .unwrap_or_else(|e| panic!("{PRECONDITION}cannot stage original source: {e}"));
     fs::rename(&lower_parent, &retained_parent).unwrap_or_else(|e| {
         panic!("{PRECONDITION}cannot retain the original parent by rename: {e}")
     });
+    fs::rename(&staged_source, &retained)
+        .unwrap_or_else(|e| panic!("{PRECONDITION}cannot restore retained original source: {e}"));
     fs::create_dir(&upper_parent)
         .unwrap_or_else(|e| panic!("{PRECONDITION}cannot create replacement parent: {e}"));
     fs::write(&upper, REPLACEMENT)

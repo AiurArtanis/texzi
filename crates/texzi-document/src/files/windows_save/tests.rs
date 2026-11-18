@@ -953,15 +953,25 @@ fn permit_counter_failure_unregisters_only_its_operation_and_keeps_failure_owner
     fs::create_dir(&overflow_dir).unwrap();
     let target = overflow_dir.join("never-published.txt");
     let raw = b"overflow\r\n";
-    let (n, binding) =
-        super::super::LoadedBytes::decode(Arc::from(&raw[..]), Some(super::super::Encoding::Utf8))
-            .unwrap()
-            .attach(&mut store)
-            .unwrap();
-    store.test_set_unbound_binding_epoch(n.doc, u64::MAX);
+    let source = overflow_dir.join("overflow-source.txt");
+    fs::write(&source, raw).unwrap();
+    let (n, mut binding) = match ObservedTarget::inspect(&source)
+        .unwrap()
+        .open_existing(None)
+        .unwrap()
+        .attach(&mut store)
+        .unwrap()
+    {
+        super::super::windows_identity::OpenOutcome::Imported { snapshot, binding } => {
+            (snapshot, binding)
+        }
+        _ => panic!("new overflow source import expected"),
+    };
+    store.test_set_binding_epoch(n.doc, u64::MAX);
+    binding.disk.as_mut().unwrap().epoch = u64::MAX;
     let ready = ObservedTarget::inspect(&target)
         .unwrap()
-        .prepare_bound(&binding, &mut store)
+        .prepare_save_as(&binding, &mut store)
         .unwrap()
         .begin(&mut store)
         .unwrap()

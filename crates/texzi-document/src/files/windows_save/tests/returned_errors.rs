@@ -78,14 +78,133 @@ fn assert_capture(actual: &SaveCapture, expected: &SaveCapture) {
     assert!(Arc::ptr_eq(&actual.snapshot.body, &expected.snapshot.body));
 }
 
-fn assert_parent_pinned(recovery: &BoundRecovery, dir: &Path, parent: FileIdentity) {
+fn assert_recovery_directory_with_open_children_rejects_rename(
+    recovery: &BoundRecovery,
+    dir: &Path,
+    parent: FileIdentity,
+) {
     assert_eq!(recovery.parent_identity(), parent);
     recovery.recheck_parent().unwrap();
     let moved = dir.with_file_name(format!(
         "{}-must-not-move",
         dir.file_name().unwrap().to_string_lossy()
     ));
-    assert_eq!(fs::rename(dir, moved).unwrap_err().raw_os_error(), Some(32));
+    // This recovery retains open child files. This assertion covers the whole
+    // recovery directory; it does not isolate its metadata-only parent handle.
+    let error = fs::rename(dir, &moved).unwrap_err();
+    assert!(
+        matches!(error.raw_os_error(), Some(5 | 32)),
+        "recovery directory with open children rename: {error}"
+    );
+    assert!(dir.try_exists().unwrap());
+    assert!(!moved.try_exists().unwrap());
+    recovery.recheck_parent().unwrap();
+}
+
+#[test]
+fn metadata_parent_handle_tracks_identity_without_pinning_name() {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "texzi-t07-parent-rename-control-{}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).unwrap();
+    eprintln!(
+        "T07 generated parent rename control retained: {}",
+        root.display()
+    );
+    let dir = root.join("parent");
+    let moved = root.join("renamed-parent");
+    fs::create_dir(&dir).unwrap();
+    let leaf = "unchanged.txt";
+    let bytes = b"directory rename control\r\n";
+    fs::write(dir.join(leaf), bytes).unwrap();
+    let identities = |path: &Path| {
+        let observed = ObservedTarget::inspect(&path.join(leaf)).unwrap();
+        (
+            observed.parent_identity(),
+            observed.version().unwrap().identity,
+        )
+    };
+    let original = identities(&dir);
+
+    // No fixture handles are open: the inherited directory permissions permit
+    // this same-volume operation, including moving the directory back.
+    fs::rename(&dir, &moved).unwrap();
+    assert!(!dir.try_exists().unwrap());
+    assert_eq!(identities(&moved), original);
+    assert_eq!(fs::read(moved.join(leaf)).unwrap(), bytes);
+    fs::rename(&moved, &dir).unwrap();
+
+    let parent = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&dir)
+        .unwrap();
+    assert_eq!(windows_identity::identity(&parent).unwrap(), original.0);
+    let original_parent_path = windows_identity::volume_path(&parent).unwrap();
+    let moved_parent_path = original_parent_path.with_file_name(moved.file_name().unwrap());
+    // At this attempt only the explicit parent handle is open; in particular,
+    // there are no open descendants. Metadata-only access tracks the directory
+    // object across this rename even without FILE_SHARE_DELETE.
+    fs::rename(&dir, &moved).unwrap();
+    assert!(!dir.try_exists().unwrap());
+    assert!(moved.try_exists().unwrap());
+    assert_eq!(windows_identity::identity(&parent).unwrap(), original.0);
+    assert_eq!(
+        windows_identity::volume_path(&parent).unwrap(),
+        moved_parent_path
+    );
+    assert_eq!(identities(&moved), original);
+    assert_eq!(fs::read(moved.join(leaf)).unwrap(), bytes);
+
+    drop(parent);
+    fs::rename(&moved, &dir).unwrap();
+    assert!(!moved.try_exists().unwrap());
+    assert_eq!(identities(&dir), original);
+    assert_eq!(fs::read(dir.join(leaf)).unwrap(), bytes);
+
+    // The production staging handle additionally requests FILE_ADD_FILE and
+    // FILE_TRAVERSE. An absent target keeps this control free of open children:
+    // only that handle and the metadata observation's parent handle remain.
+    let absent = dir.join("never-created.txt");
+    let observed = ObservedTarget::inspect(&absent).unwrap();
+    assert!(observed.version().is_none());
+    let data_parent = observed.parent_for_new_file().unwrap();
+    let error = fs::rename(&dir, &moved).unwrap_err();
+    assert!(
+        matches!(error.raw_os_error(), Some(5 | 32)),
+        "production staging parent directory rename: {error}"
+    );
+    assert!(dir.try_exists().unwrap());
+    assert!(!moved.try_exists().unwrap());
+    assert_eq!(
+        windows_identity::identity(&data_parent).unwrap(),
+        original.0
+    );
+    assert_eq!(
+        windows_identity::volume_path(&data_parent).unwrap(),
+        original_parent_path
+    );
+    observed.recheck_parent().unwrap();
+    assert_eq!(identities(&dir), original);
+    assert_eq!(fs::read(dir.join(leaf)).unwrap(), bytes);
+
+    drop(data_parent);
+    drop(observed);
+    fs::rename(&dir, &moved).unwrap();
+    assert!(!dir.try_exists().unwrap());
+    assert_eq!(identities(&moved), original);
+    assert_eq!(fs::read(moved.join(leaf)).unwrap(), bytes);
 }
 
 fn deny_copy_after_successful_duplicate(work: &mut BoundWork) -> Arc<AtomicUsize> {
@@ -148,7 +267,7 @@ fn returned_native_copy_error_retains_original_create_handle_and_parent() {
     assert_eq!(temporary.expected_bytes(), b"NA\r\n");
     assert!(temporary.read_created_bytes().unwrap().is_empty());
     assert_separate_reader_denied(temporary.temp_hint());
-    assert_parent_pinned(&recovery, &dir, parent);
+    assert_recovery_directory_with_open_children_rejects_rename(&recovery, &dir, parent);
     let (after, _) = store
         .observe_and_subscribe(capture.snapshot.doc, ObserverScope::new(vec![]), 8)
         .unwrap();
@@ -204,7 +323,7 @@ fn returned_outer_changed_error_retains_the_completed_captured_temporary() {
         capture.snapshot.body.profile.file_format.unwrap()
     );
     assert_separate_reader_denied(temporary.temp_hint());
-    assert_parent_pinned(&recovery, &dir, parent);
+    assert_recovery_directory_with_open_children_rejects_rename(&recovery, &dir, parent);
     let (after, _) = store
         .observe_and_subscribe(capture.snapshot.doc, ObserverScope::new(vec![]), 8)
         .unwrap();
@@ -262,7 +381,7 @@ fn cancelled_old_worker_error_and_readonly_recovery_preserve_the_new_reservation
     assert_eq!(temporary.current_path().unwrap(), temporary.temp_hint());
     temporary.current_version().unwrap();
     assert_separate_reader_denied(temporary.temp_hint());
-    assert_parent_pinned(&recovery, &dir, parent);
+    assert_recovery_directory_with_open_children_rejects_rename(&recovery, &dir, parent);
     assert_eq!(
         store.finish_save_failure(
             recovery.capture(),

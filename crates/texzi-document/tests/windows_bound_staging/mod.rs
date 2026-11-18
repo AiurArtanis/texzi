@@ -163,9 +163,12 @@ fn bound_creation_handle_blocks_same_byte_substitution_before_lock_validation() 
             .raw_os_error(),
         Some(32)
     );
-    assert_eq!(
-        fs::rename(&substitute, &temp).unwrap_err().raw_os_error(),
-        Some(32)
+    // Replacing an already-open destination can report ACCESS_DENIED rather
+    // than the SHARING_VIOLATION required by the source move/open checks above.
+    let error = fs::rename(&substitute, &temp).unwrap_err();
+    assert!(
+        matches!(error.raw_os_error(), Some(5 | 32)),
+        "replace open creation temporary: {error}"
     );
     assert!(
         matches!(ObservedTarget::inspect(&temp), Err(IdentityError::Io(e)) if e.raw_os_error() == Some(32))
@@ -183,6 +186,119 @@ fn bound_creation_handle_blocks_same_byte_substitution_before_lock_validation() 
     drop(staged);
     fs::write(&temp, b"fixture after creation handle closes").unwrap();
     assert_eq!(fs::read(&target).unwrap(), b"A");
+}
+
+#[test]
+fn exclusive_target_handle_denies_replacement_until_it_is_closed() {
+    use std::{
+        io::{Read, Seek},
+        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
+        GetFileInformationByHandleEx,
+    };
+
+    fn handle_identity(file: &fs::File) -> FileIdentity {
+        let mut info = FILE_ID_INFO::default();
+        // SAFETY: this live fixture File owns the handle; info is writable for
+        // exactly the documented FILE_ID_INFO buffer size.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileIdInfo,
+                (&mut info as *mut FILE_ID_INFO).cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            )
+        };
+        assert_ne!(
+            ok,
+            0,
+            "fixture identity: {}",
+            std::io::Error::last_os_error()
+        );
+        FileIdentity {
+            volume: info.VolumeSerialNumber,
+            id: info.FileId.Identifier,
+        }
+    }
+    fn path_identity(path: &std::path::Path) -> FileIdentity {
+        ObservedTarget::inspect(path)
+            .unwrap()
+            .version()
+            .unwrap()
+            .identity
+    }
+    fn handle_bytes(file: &mut fs::File) -> Vec<u8> {
+        file.rewind().unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        bytes
+    }
+
+    let dir = fixture();
+    let source = dir.join("rename-control-source.txt");
+    let target = dir.join("rename-control-target.txt");
+    fs::write(&source, b"unlocked replacement\r\n").unwrap();
+    fs::write(&target, b"original destination\r\n").unwrap();
+    let first_source_id = path_identity(&source);
+    assert_ne!(path_identity(&target), first_source_id);
+    // With no handles open, replacing this destination is permitted by the
+    // inherited permissions; retain the resulting file as the locked target.
+    fs::rename(&source, &target).unwrap();
+    assert!(!source.try_exists().unwrap());
+    assert_eq!(path_identity(&target), first_source_id);
+    assert_eq!(fs::read(&target).unwrap(), b"unlocked replacement\r\n");
+
+    fs::write(&source, b"replacement after holder closes\r\n").unwrap();
+    let source_id = path_identity(&source);
+    assert_ne!(source_id, first_source_id);
+    let mut holder = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(&target)
+        .unwrap();
+    assert_eq!(handle_identity(&holder), first_source_id);
+    assert_eq!(handle_bytes(&mut holder), b"unlocked replacement\r\n");
+    // The explicit DELETE open is a separate operation and must retain the
+    // precise sharing violation even if MoveFileEx replacement reports 5.
+    assert_eq!(
+        fs::OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&target)
+            .unwrap_err()
+            .raw_os_error(),
+        Some(32)
+    );
+    let error = fs::rename(&source, &target).unwrap_err();
+    eprintln!(
+        "T07 open-target replacement control raw_os_error: {:?}",
+        error.raw_os_error()
+    );
+    assert!(
+        matches!(error.raw_os_error(), Some(5 | 32)),
+        "replace exclusive target: {error}"
+    );
+    assert!(source.try_exists().unwrap());
+    assert!(target.try_exists().unwrap());
+    assert_eq!(path_identity(&source), source_id);
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        b"replacement after holder closes\r\n"
+    );
+    assert_eq!(handle_identity(&holder), first_source_id);
+    assert_eq!(handle_bytes(&mut holder), b"unlocked replacement\r\n");
+
+    drop(holder);
+    fs::rename(&source, &target).unwrap();
+    assert!(!source.try_exists().unwrap());
+    assert_eq!(path_identity(&target), source_id);
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        b"replacement after holder closes\r\n"
+    );
 }
 
 #[test]

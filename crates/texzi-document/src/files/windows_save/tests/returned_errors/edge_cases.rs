@@ -112,7 +112,7 @@ fn returned_precreation_changed_keeps_bound_context_without_a_temporary() {
     );
     assert!(recovery._historical_source.is_some());
     assert!(recovery._source_anchor.is_some());
-    assert_parent_pinned(recovery, &dir, parent);
+    assert_recovery_directory_with_open_children_rejects_rename(recovery, &dir, parent);
     assert_eq!(directory_bytes(&dir), expected_files);
     assert_frozen_store(&mut store, &capture, &frozen);
 }
@@ -205,7 +205,7 @@ fn returned_first_creation_read_denied_keeps_private_capture_and_empty_original(
         Some(temporary.temp_hint())
     );
     assert_separate_reader_denied(temporary.temp_hint());
-    assert_parent_pinned(recovery, &dir, parent);
+    assert_recovery_directory_with_open_children_rejects_rename(recovery, &dir, parent);
     assert_frozen_store(&mut store, &capture, &frozen);
     assert_eq!(fs::read(target).unwrap(), b"A\r\n");
 }
@@ -280,7 +280,7 @@ fn returned_outer_prefix_changed_reports_actual_prefix_separately_from_expected_
     assert!(recovery._historical_source.is_some());
     assert!(recovery._source_anchor.is_some());
     assert_separate_reader_denied(temporary.temp_hint());
-    assert_parent_pinned(recovery, &dir, parent);
+    assert_recovery_directory_with_open_children_rejects_rename(recovery, &dir, parent);
     assert_frozen_store(&mut store, &capture, &frozen);
     assert_eq!(fs::read(target).unwrap(), b"A\r\n");
 }
@@ -341,7 +341,7 @@ fn returned_bound_recovery_clones_unlock_only_after_the_last_holder_drops() {
         );
         assert_eq!(temporary.current_path().unwrap(), temp_path);
     }
-    assert_parent_pinned(&last_clone, &dir, parent);
+    assert_recovery_directory_with_open_children_rejects_rename(&last_clone, &dir, parent);
     assert_frozen_store(&mut store, &capture, &frozen);
     drop(last_clone);
     // Closing the final Arc releases the share denial, but does not remove the
