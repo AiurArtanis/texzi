@@ -12,6 +12,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 mod list_items;
+mod table_rows;
 
 pub fn manager() -> ExtensionManager {
     ExtensionManager::with_core(vec![
@@ -65,6 +66,7 @@ impl Projection {
             }
             if let Some((pos, _)) = list_items::empty_positions(block, &self.source)
                 .into_iter()
+                .chain(table_rows::empty_positions(block, &self.source))
                 .find(|(_, at)| *at == byte)
             {
                 return Some(base + pos);
@@ -91,6 +93,14 @@ impl Projection {
         let steps: Vec<_> = applied.iter().flat_map(|t| t.steps.iter()).collect();
         if steps.len() == 1 {
             if let Some(step) = steps[0].as_any().downcast_ref::<ReplaceStep>() {
+                if let Some((range, text)) = table_rows::append_edit(self, next, step)? {
+                    let mut raw = self.source.clone();
+                    raw.replace_range(range.clone(), &text);
+                    if Self::parse(next.ty().schema(), raw).is_ok_and(|p| &p.doc == next) {
+                        return Ok(vec![(range, text)]);
+                    }
+                    return Err("新增表格行暂不能保真往返，原文未变".into());
+                }
                 if step.structure
                     && step.from == step.to
                     && step.slice.open_start == 2
@@ -137,6 +147,20 @@ impl Projection {
                                     .is_ok_and(|p| &p.doc == next)
                             {
                                 return Ok(vec![(a..h, text)]);
+                            }
+                            if step.from == step.to {
+                                let mut base = 0;
+                                let empty_container = self.blocks.iter().any(|block| {
+                                    let empty = list_items::empty_positions(block, &self.source)
+                                        .into_iter()
+                                        .chain(table_rows::empty_positions(block, &self.source))
+                                        .any(|(pos, _)| base + pos == step.from);
+                                    base += block.node.node_size();
+                                    empty
+                                });
+                                if empty_container {
+                                    return Err("该空结构中的输入暂不能保真写回，原文未变".into());
+                                }
                             }
                         }
                     }
@@ -324,6 +348,7 @@ impl Projection {
                 if found.is_none() {
                     found = list_items::empty_positions(b, &self.source)
                         .into_iter()
+                        .chain(table_rows::empty_positions(b, &self.source))
                         .find_map(|(at, byte)| (pos == base + at).then_some(byte));
                 }
                 if found.is_none() && b.node.content().size() == 0 && pos == base + 1 {

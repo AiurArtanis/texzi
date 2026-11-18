@@ -532,6 +532,207 @@ mod tests {
         });
     }
     #[test]
+    fn table_last_cell_tab_adds_empty_row_through_installed_keymap() {
+        run(|| {
+            // Read-only reconstruction of round-table-01/trace.jsonl, driven
+            // by its driver.ps1: the existing cell edit/redo precedes End+Tab.
+            let raw = "| name | value |\n| --- | --- |\n| apple乙 | 10 |";
+            assert_table_tab_source_roundtrip(
+                raw,
+                &format!("{raw}\n|  |  |"),
+                &format!("{raw}\n| 甲 |  |"),
+            );
+        });
+    }
+    #[test]
+    fn table_tab_empty_cells_accept_text_and_preserve_source_history_eols_and_origins() {
+        run(|| {
+            for eol in ["\n", "\r\n"] {
+                let raw = format!("| name | value |{eol}| --- | --- |{eol}| apple乙 | 10 |{eol}");
+                let after_tab = format!("{raw}|  |  |{eol}");
+                let after_text = format!("{raw}| 甲 |  |{eol}");
+                assert_table_tab_source_roundtrip(&raw, &after_tab, &after_text);
+            }
+            // CRLF dominates, while the last original row's LF must retain
+            // its identity before the inserted row. Delimiter widths, cell
+            // padding and the opaque neighbor are original bytes throughout.
+            let raw = "| name   | value |\r\n| -------- | ----- |\r\n| apple乙  | 10 |\n\r\n<custom>keep</custom>\n";
+            let after_tab = "| name   | value |\r\n| -------- | ----- |\r\n| apple乙  | 10 |\n|  |  |\r\n\r\n<custom>keep</custom>\n";
+            let after_text = "| name   | value |\r\n| -------- | ----- |\r\n| apple乙  | 10 |\n| 甲 |  |\r\n\r\n<custom>keep</custom>\n";
+            assert_table_tab_source_roundtrip(raw, after_tab, after_text);
+        });
+    }
+    fn assert_table_tab_source_roundtrip(raw: &str, after_tab: &str, after_text: &str) {
+        let source = NativeView::fixture(raw);
+        let rich = source.sibling().unwrap();
+        let owner = RichOwner::new(rich.clone(), signal(String::new())).unwrap();
+        owner.activate().unwrap();
+        let identity = || {
+            source.inspect(|store, id| {
+                let snapshot = store.snapshot(store.view(id).unwrap().doc).unwrap();
+                (
+                    snapshot.token,
+                    snapshot.body.eols(),
+                    format!("{:?}", snapshot.body.origins()),
+                )
+            })
+        };
+        let original_identity = identity();
+        let normalized = source.snapshot().unwrap().rope.to_string();
+        let end = owner
+            .projection
+            .borrow()
+            .rich_position(normalized.find("10").unwrap() + 2)
+            .unwrap();
+        select(&owner, end);
+        key(&owner, "Tab");
+        assert_eq!(bytes(&source), after_tab.as_bytes(), "fixture {raw:?}");
+        assert_eq!(bytes(&rich), after_tab.as_bytes());
+        let tab_identity = identity();
+        let state = owner.session.state();
+        let table = state.doc().child(0);
+        assert_eq!(table.ty().name(), "table");
+        assert_eq!(table.child_count(), 3);
+        let row = table.child(2);
+        assert_eq!(row.child_count(), 2);
+        for column in 0..2 {
+            let cell = row.child(column);
+            assert_eq!(cell.ty().name(), "tableCell");
+            assert_eq!(cell.child_count(), 1);
+            assert_eq!(cell.child(0).ty().name(), "paragraph");
+            assert_eq!(cell.child(0).content().size(), 0);
+        }
+        let mut empty_cells = Vec::new();
+        state.doc().descendants(&mut |node, pos, parent, _| {
+            if node.ty().name() == "paragraph"
+                && node.content().size() == 0
+                && parent.is_some_and(|parent| parent.ty().name() == "tableCell")
+            {
+                empty_cells.push(pos + 1);
+            }
+            true
+        });
+        assert_eq!(empty_cells.len(), 2);
+        let row_start = source
+            .snapshot()
+            .unwrap()
+            .rope
+            .to_string()
+            .find("|  |  |")
+            .unwrap();
+        {
+            let projection = owner.projection.borrow();
+            for (rich_pos, source_pos) in empty_cells.iter().zip([row_start + 2, row_start + 5]) {
+                assert_eq!(projection.source_position(*rich_pos), Some(source_pos));
+                assert_eq!(projection.rich_position(source_pos), Some(*rich_pos));
+            }
+        }
+        assert_eq!(state.selection().anchor(), empty_cells[0]);
+        assert_eq!(state.selection().head(), empty_cells[0]);
+        assert_eq!(
+            rich.snapshot().unwrap().selections.ranges,
+            vec![(row_start + 2, row_start + 2)]
+        );
+        // Move across both empty cells through the same installed Tab binding,
+        // then return to the first cell without creating another history edit.
+        key(&owner, "Tab");
+        assert_eq!(owner.session.state().selection().anchor(), empty_cells[1]);
+        assert_eq!(
+            rich.snapshot().unwrap().selections.ranges,
+            vec![(row_start + 5, row_start + 5)]
+        );
+        select(&owner, empty_cells[0]);
+        let mut tr = owner.session.state().tr();
+        tr.insert_text("甲", None, None);
+        owner.session.dispatch(tr).unwrap();
+        assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+        assert_eq!(bytes(&source), after_text.as_bytes());
+        assert_eq!(bytes(&rich), after_text.as_bytes());
+        let text_identity = identity();
+        source.inspect(|store, id| {
+            let snapshot = store.snapshot(store.view(id).unwrap().doc).unwrap();
+            let mut kept_original = Vec::new();
+            for (_, origin) in snapshot.body.origins() {
+                if let Some(origin) = origin {
+                    assert_eq!(origin.source.as_ref(), raw);
+                    kept_original.extend_from_slice(&origin.source.as_bytes()[origin.raw]);
+                }
+            }
+            assert_eq!(kept_original, raw.as_bytes());
+            assert_eq!(store.history_depth(snapshot.doc).unwrap(), (2, 0));
+            assert_eq!(
+                snapshot.doc,
+                rich.inspect(|other, id| other.view(id).unwrap().doc)
+            );
+        });
+        assert!(
+            nsh_base::rich_editor::extensions::history::history_state(&owner.session.state())
+                .is_none()
+        );
+        let final_doc = owner.session.state().doc().clone();
+        // Undo/redo through the Source view alone: the rich sibling sees the
+        // same Store body, EOL provenance, token and two-entry history.
+        for (undo, expected, expected_identity, depth) in [
+            (true, after_tab, &tab_identity, (1, 1)),
+            (true, raw, &original_identity, (0, 2)),
+            (false, after_tab, &tab_identity, (1, 1)),
+            (false, after_text, &text_identity, (2, 0)),
+        ] {
+            let snapshot = source.snapshot().unwrap();
+            source
+                .history(snapshot.revision, snapshot.view_epoch, undo)
+                .unwrap();
+            assert_eq!(bytes(&source), expected.as_bytes());
+            assert_eq!(bytes(&rich), expected.as_bytes());
+            assert_eq!(&identity(), expected_identity);
+            source.inspect(|store, id| {
+                assert_eq!(
+                    store.history_depth(store.view(id).unwrap().doc).unwrap(),
+                    depth
+                );
+            });
+        }
+        let reopened = RichOwner::new(rich, signal(String::new())).unwrap();
+        reopened.activate().unwrap();
+        // A reopened editor owns a fresh Schema/NodeType identity. Compare
+        // complete serialized node types, attrs, marks and content instead.
+        assert_eq!(
+            reopened.session.state().doc().to_json(),
+            final_doc.to_json()
+        );
+    }
+    #[test]
+    fn empty_container_input_cannot_bind_escaped_text_to_another_code_leaf() {
+        run(|| {
+            for raw in [
+                "| name   | value |\r\n| -------- | ----- |\r\n| `*a*` | 10 |\r\n|  |  |\r\n",
+                "+ `*a*`\r\n+ \r\n",
+            ] {
+                let source = NativeView::fixture(raw);
+                let owner =
+                    RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+                owner.activate().unwrap();
+                let normalized = source.snapshot().unwrap().rope.to_string();
+                let at = if raw.starts_with('|') {
+                    normalized.find("|  |  |").unwrap() + 2
+                } else {
+                    normalized.rfind("+ ").unwrap() + 2
+                };
+                let rich_pos = owner.projection.borrow().rich_position(at).unwrap();
+                select(&owner, rich_pos);
+                let before = audit(&source);
+                let old = owner.session.state();
+                let mut tr = old.tr();
+                tr.insert_text("*a*", None, None);
+                owner.session.dispatch(tr).unwrap();
+                assert_eq!(bytes(&source), raw.as_bytes());
+                assert_eq!(audit(&source), before);
+                assert!(!owner.status.get().is_empty());
+                assert_eq!(owner.session.state().doc(), old.doc());
+            }
+        });
+    }
+    #[test]
     fn empty_fenced_code_and_language_duplicate_map_to_body_not_fence() {
         run(|| {
             for raw in ["```\r\n\r\n```\r\n", "~~~ rust\r\nrust\r\n~~~\r\n"] {
@@ -667,6 +868,21 @@ mod tests {
         tr.set_selection(TextSelection::create(state.doc(), pos, None));
         owner.session.dispatch(tr).unwrap();
         assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+    }
+    fn key(owner: &RichOwner, name: &str) {
+        let state = owner.session.state();
+        let event = nsh_base::rich_editor::state::KeyEvent::new(name);
+        let handled = state.plugins().iter().any(|plugin| {
+            plugin.handle_key_down(&state, &event, &mut |tr| {
+                owner.session.dispatch(tr).unwrap();
+            })
+        });
+        assert!(handled, "installed keymap did not handle {name}");
+        assert!(
+            owner.status.get().is_empty(),
+            "{name}: {}",
+            owner.status.get()
+        );
     }
     fn split(owner: &RichOwner) {
         let state = owner.session.state();
