@@ -209,6 +209,13 @@ impl Shell {
         let source = self.owner.run(|| NativeView::from_text(text));
         let rich = self.owner.run(|| source.sibling().expect("rich view"));
         let gate = self.owner.run(|| ModeGate::new(source.clone(), rich));
+        if path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+        {
+            self.owner.run(|| gate.to_rich());
+        }
         let reference = self.owner.run(component_ref::<Editor>);
         let rich_reference = self
             .owner
