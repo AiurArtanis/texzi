@@ -5,11 +5,13 @@
   "candidate": {
     "worktree": "tx05-8ae-local-20261118",
     "commit": null,
-    "executable_sha256": null
+    "executable_sha256": null,
+    "identity_source": "包内build-identity.txt与SHA256SUMS.txt；本文件随源码提交，不硬编码自身未来commit或把历史exe hash当当前包身份",
+    "scope": "下面component_run是独立标识的已完成组件基线，不等于当前包GUI或整体验收"
   },
   "status_policy": "每项每层独立取证；编写测试不等于运行；组件 PASS 不升级 GUI/人工；原样显示/源码可达不等于直接编辑；既有32-suite结果不继承。",
   "command": "cargo test -p texzi-app --bin texzi-app --release --locked --offline --target x86_64-pc-windows-msvc -- --nocapture --test-threads=1",
-  "gui_and_manual": "NOT_RUN；本文件不触发 GUI/安装/剪贴板/网络图片加载/T07/提交",
+  "gui_and_manual": "本JSON的固定混合EOL语料GUI/人工NOT_RUN；其它语料有限GUI按独立报告及固定版本另列，不批量改变每行覆盖状态。剪贴板暂停，T07保存BLOCKED。",
   "cases": [
     {
       "id": "MD01",
@@ -2127,11 +2129,13 @@
     }
   ],
   "component_run": {
-    "identity": "uncommitted integration runtime03, not final candidate",
-    "registered": 52,
-    "passed": 52,
+    "identity": "125cd46 local attempt1, package build-evidence/command-014 (full app component suite)",
+    "registered": 108,
+    "passed": 108,
     "failed": 0,
     "exit_code": 0,
-    "boundary": "16 fixed rows and 8 combinations, selected model/byte/history assertions only; GUI/manual remain NOT_RUN"
+    "boundary": "16 fixed rows and 8 combinations plus other named app components; selected model/byte/history assertions only; exact JSON fixtures GUI/manual remain NOT_RUN",
+    "evidence": "D:/Work/texzi/evidence/local-menu-markdown-20261118/125cd46-package/REPORT.md",
+    "historical_runtime03": {"registered": 52, "passed": 52, "failed": 0, "exit_code": 0, "identity": "original uncommitted integration, preserve historical scope"}
   }
 }

@@ -300,6 +300,9 @@ impl TableControls {
         self.draft.borrow_mut().take();
         self.open.set(false);
     }
+    pub(crate) fn is_open(&self) -> bool {
+        self.open.get()
+    }
     pub(crate) fn apply(&self, action: TableAction) -> Result<(), String> {
         if self.gate.busy() {
             return Err("请先完成或取消中文组合，再应用表格操作".into());
@@ -333,12 +336,7 @@ impl TableControls {
     }
 }
 
-pub fn view(
-    gate: Rc<ModeGate>,
-    source: Rc<NativeView>,
-    return_focus: Rc<dyn Fn()>,
-) -> impl IntoElement {
-    let controls = TableControls::new(gate, source);
+pub fn view(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl IntoElement {
     let open = controls.clone();
     box_view()
         .child(

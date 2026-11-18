@@ -46,7 +46,46 @@ struct Document {
     gate: Rc<ModeGate>,
     reference: ComponentRef<Editor>,
     rich_reference: ComponentRef<nsh_base::rich_editor::view::RichEditor>,
+    controls: RichControlSet,
 }
+// Toolbar and command-palette entries share the same per-view drafts and
+// confirmation methods. Neither surface owns a second editable document.
+struct RichControlSet {
+    resources: Rc<crate::rich_controls::ResourceControls>,
+    code: Rc<crate::code_controls::CodeControls>,
+    table: Rc<crate::table_controls::TableControls>,
+}
+impl RichControlSet {
+    fn new(gate: &Rc<ModeGate>, source: &Rc<NativeView>) -> Self {
+        Self {
+            resources: crate::rich_controls::ResourceControls::new(gate.clone(), source.clone()),
+            code: crate::code_controls::CodeControls::new(gate.clone(), source.clone()),
+            table: crate::table_controls::TableControls::new(gate.clone(), source.clone()),
+        }
+    }
+    fn open(&self) -> bool {
+        self.resources.open.get() || self.code.open.get() || self.table.is_open()
+    }
+    fn cancel(&self) {
+        self.resources.cancel();
+        self.code.cancel();
+        self.table.cancel();
+    }
+    fn begin(&self, request: crate::rich_commands::FormRequest) -> Result<(), String> {
+        self.cancel();
+        match request {
+            crate::rich_commands::FormRequest::Link => self
+                .resources
+                .begin(crate::rich_projection::ResourceKind::Link),
+            crate::rich_commands::FormRequest::CodeLanguage => self.code.begin(),
+            crate::rich_commands::FormRequest::TableAlignment
+            | crate::rich_commands::FormRequest::Table => self.table.begin(),
+        }
+    }
+}
+#[cfg(test)]
+#[path = "shell_markdown_tests.rs"]
+mod shell_markdown_tests;
 impl PartialEq for Document {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && Rc::ptr_eq(&self.source, &other.source)
@@ -220,6 +259,7 @@ impl Shell {
         let rich_reference = self
             .owner
             .run(component_ref::<nsh_base::rich_editor::view::RichEditor>);
+        let controls = self.owner.run(|| RichControlSet::new(&gate, &source));
         self.docs.update(|ds| {
             ds.push(Rc::new(Document {
                 id,
@@ -229,6 +269,7 @@ impl Shell {
                 gate,
                 reference,
                 rich_reference,
+                controls,
             }))
         });
         self.active.set(id);
@@ -238,6 +279,13 @@ impl Shell {
     fn blocked(&self, id: &str) -> Option<String> {
         if self.current().is_some_and(|d| d.gate.busy()) {
             return Some("请先完成或取消中文组合".into());
+        }
+        if crate::rich_commands::handles(id) {
+            let doc = match self.current() {
+                Some(doc) => doc,
+                None => return Some("没有活动文档".into()),
+            };
+            return crate::rich_commands::availability(&doc.gate, &doc.source, id, true).err();
         }
         if matches!(
             id,
@@ -481,18 +529,24 @@ impl Shell {
                 | EditorCommand::DuplicateLinesDown
                 | EditorCommand::SingleSelection
         ) {
+            let transferred = doc.gate.rich_mode.get();
             if doc.gate.rich_mode.get() {
                 doc.gate.to_source();
                 if doc.gate.rich_mode.get() {
                     return Err(doc.gate.status.get());
                 }
             }
-            return match command {
+            let result = match command {
                 EditorCommand::SelectNextOccurrence => doc.source.select_next_match(false),
                 EditorCommand::SelectAllOccurrences => doc.source.select_next_match(true),
                 EditorCommand::DuplicateLinesDown => doc.source.duplicate_line(),
                 _ => doc.source.clear_extra_selections(),
             };
+            if transferred && result.is_ok() {
+                self.notice
+                    .set("此操作已切换到源码；继续使用同一正文和撤销历史。".into());
+            }
+            return result;
         }
         if doc.gate.rich_mode.get() {
             return Err("此源码操作请先切换源码；当前富文本与选区已保留。".into());
@@ -538,6 +592,7 @@ impl Shell {
         let gate = ModeGate::new(source.clone(), rich);
         let reference = component_ref::<Editor>();
         let rich_reference = component_ref::<nsh_base::rich_editor::view::RichEditor>();
+        let controls = RichControlSet::new(&gate, &source);
         self.split.set(Some(Rc::new(Document {
             id: doc.id,
             name: doc.name.clone(),
@@ -546,6 +601,7 @@ impl Shell {
             gate,
             reference,
             rich_reference,
+            controls,
         })));
         self.split_down.set(down);
         self.second_active.set(true);
@@ -651,6 +707,10 @@ impl Shell {
         self.owner.run(|| self.run_ready(id));
     }
     fn run_ready(self: &Rc<Self>, id: &str) {
+        if crate::rich_commands::handles(id) {
+            self.markdown_command(id);
+            return;
+        }
         match id {
             "texzi.find.inFolder"=>{self.query.set(String::new());self.panel.set("folder".into());},
             "texzi.file.new"=>self.add("",None),"texzi.file.open"=>self.pick(false),"texzi.folder.open"=>self.pick(true),
@@ -677,9 +737,27 @@ impl Shell {
             _=>if let Some(command)=source_command(id){if let Err(e)=self.source_action(command){self.notice.set(e);}},
         }
     }
+    fn markdown_command(self: &Rc<Self>, id: &str) {
+        let Some(doc) = self.current() else { return };
+        let outcome = crate::rich_commands::run(&doc.gate, &doc.source, id, true);
+        let result = match outcome {
+            Ok(crate::rich_commands::Outcome::Applied { .. }) => {
+                self.notice.set(String::new());
+                self.restore_editor_focus();
+                Ok(())
+            }
+            Ok(crate::rich_commands::Outcome::Form(request)) => doc.controls.begin(request),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            doc.gate.status.set(error.clone());
+            self.notice.set(error);
+        }
+    }
 }
 fn supported(id: &str) -> bool {
-    source_command(id).is_some()
+    crate::rich_commands::handles(id)
+        || source_command(id).is_some()
         || matches!(
             id,
             "texzi.file.new"
@@ -940,7 +1018,9 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let rich_owner = s.owner;
     let source_focus = s.second_active;
     let rich_focus = s.second_active;
-    let controls_source = doc.source.clone();
+    let resource_controls = doc.controls.resources.clone();
+    let table_controls = doc.controls.table.clone();
+    let code_controls = doc.controls.code.clone();
     let image_document_path = doc.path.clone();
     let controls_owner = s.owner;
     let controls_shell = s.clone();
@@ -983,20 +1063,14 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             .gap(px(8.0))
                             .p(px(6.0))
                             .child(crate::rich_controls::view(
-                                rich.clone(),
-                                controls_source.clone(),
+                                resource_controls.clone(),
                                 focus.clone(),
                             ))
                             .child(crate::table_controls::view(
-                                rich.clone(),
-                                controls_source.clone(),
+                                table_controls.clone(),
                                 focus.clone(),
                             ))
-                            .child(crate::code_controls::view(
-                                rich.clone(),
-                                controls_source.clone(),
-                                focus,
-                            )),
+                            .child(crate::code_controls::view(code_controls.clone(), focus)),
                     )
                     .child(crate::raw_block_controls::raw_block_controls(
                         rich.clone(),
@@ -1299,11 +1373,22 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
             .on_press(move |_: &()| close.close_panel()),
     );
     if mode == "commands" || mode == "files" {
+        let markdown = if mode == "commands" {
+            s.current()
+                .map(|doc| crate::rich_commands::availability_all(&doc.gate, &doc.source, true))
+        } else {
+            None
+        };
         let entries = if mode == "commands" {
             crate::native_menu::commands()
                 .into_iter()
                 .map(|c| {
-                    let blocked = s.blocked(&c.id).is_some();
+                    // One immutable source projection per palette build, not
+                    // one full parse for every Markdown command row.
+                    let blocked = markdown
+                        .as_ref()
+                        .and_then(|results| results.get(&c.id))
+                        .map_or_else(|| s.blocked(&c.id).is_some(), Result::is_err);
                     let keys = if c.keys.is_empty() {
                         String::new()
                     } else {
@@ -1356,7 +1441,9 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                         run.restore_editor_focus();
                     } else {
                         run.run(id);
-                        if run.panel.get().is_empty() {
+                        if run.panel.get().is_empty()
+                            && !run.current().is_some_and(|d| d.controls.open())
+                        {
                             run.restore_editor_focus();
                         }
                     }

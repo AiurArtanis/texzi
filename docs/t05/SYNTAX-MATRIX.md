@@ -2,7 +2,7 @@
 
 依据 [PRD 第 8 节](../design-v1/docs/PRD.md#8-原生-markdown-所见即所得)，保留首版 16 行语法矩阵与 FR-MD-04–13 全部要求。原设计文件未修改。
 
-本轮固定组件语料已实际执行：`runtime03` 的52项全部通过，包含本清单16行、8组合的所列断言；整体仍 **PARTIAL**，GUI/人工 **NOT_RUN**。原32-suite、构建成功和其他候选GUI不能替代本轮证据。原样展示、源码可达、直接编辑分别取证。
+固定组件基线 `125cd46e17476ffe07dde5dcc0c3461679754878` 的同包富文本测试 108/108、exit0，包含本清单16行、8组合的所列断言；整体仍 **PARTIAL**。原 `runtime03` 的52项是历史组件记录。JSON 中各项 GUI NOT_RUN 指其固定混合EOL原文尚未逐项运行，不表示其它语料的GUI从未执行；有限GUI证据按版本另列，不能批量升级整行或人工验收。
 
 界面入口增量的 `runtime12` 已实际执行89/89、exit0（2026-11-18，本地未提交整合反馈，固定身份以随后包内 build-identity 与实际重跑为准）。新增真实 Owner/Store 断言包括：链接/图片属性与引用定义、原样块局部源码和明确整块删除、图片占位/地址解析策略、列表 Enter/空项退出/普通列表缩进、表格行列/对齐/表头与未编辑单元格字节、表内行内代码转义管道。它们是组件通过，不代表这些新界面入口已由 GUI 验收。runtime05–11的实际失败全部保留。
 
@@ -10,7 +10,7 @@
 
 代码块/表格按键的下一增量已在 `compile20/runtime15` 实际编译及运行99/99、native和wrapper均exit0。新增8项覆盖围栏语言词和额外info保留、取消、退出优先复用后续正文/文末补段、真实Tab/Shift+Tab混合EOL及Source Undo、原样/缩进/未闭围栏/IME/过期拒绝和伪meta；新增2项覆盖installed Enter向表格下一行同列导航、末行提示、零正文/history/token/dirty增量及已有Source Undo。完整代码高亮/所有导航与GUI不由此关闭。`runtime14`的97项原native0但wrapper沿用先前rg的exit1，原回执保留，不冒wrapper0或产品FAIL。
 
-f66真实GUI任务行尾Enter拒绝另见[空任务投影决策](../decisions/2026-11-18-empty-task-projection.md)。精确反例及字面保留回归补齐后，`compile21/runtime17` 已实际101/101、exit0；不是用中间拆分测试代替空项。新GUI未测前该问题仍待关闭，不把完整矩阵批量改PASS。
+f66真实GUI任务行尾Enter拒绝另见[空任务投影决策](../decisions/2026-11-18-empty-task-projection.md)。精确反例及字面保留回归补齐后，`1330df6` 同包101/101，并取得原Steamy三轮GUI自然exit0；原Rusty已在 `evidence/TX-next-portable-1330df6-stage-review.md` 有限关闭 TASK-ENTER-01。它不批量放行完整列表/任务矩阵；旧f66失败和fixture大小写准备错误均保留。
 
 下一着色增量使用原生只读decorations，仅有限Rust/JSON词法，不增依赖或资源下载。6项组件核固定UTF16范围、两主题实际颜色类、缓存随内容/语言/块位移/Undo更新、取装饰不改Body/token/history/dirty；未知/无语言/原样/超限保持plain。性能计划正常块/长行阈值作为保护依据，2ms slice仅工程预算，不作性能达标声明。新增独立跨View历史回归核Source前插/编辑后在Rich Undo/Redo的最近可见位置与真实NativeView同步，0额外正文事务。运行与新GUI按候选证据分层，完整矩阵不批量通过。
 
@@ -35,7 +35,7 @@ f66真实GUI任务行尾Enter拒绝另见[空任务投影决策](../decisions/20
 | MD15 | Mermaid 围栏 | 代码块展示、代码文本改字 | 原生键盘编辑；不承诺图形渲染 |
 | MD16 | 脚注/自定义容器/未知方言 | 三种原样块完整内容、顺序与源码可达 | 局部源码动作、整块选择删除/剪切 |
 
-以上“已编写”已取得本轮固定组件运行证据，但各行完整行为仍为 **PARTIAL / GUI NOT_RUN / 人工 NOT_RUN**。MD13、MD14、MD16 按 PRD 走源码编辑，不以原样块显示或源码可达宣称结构直接编辑完成。链接/图片属性通过程序事务调用也不证明浮层入口已实现。
+以上固定字节断言已取得组件运行证据，但各行完整行为仍为 **PARTIAL**；固定JSON语料GUI及人工仍 **NOT_RUN**。MD13、MD14、MD16 按 PRD 走源码编辑，不以原样块显示或源码可达宣称结构直接编辑完成。其它语料的链接/图片浮层、原样块、表格结构和代码控件有限GUI分别见 `evidence/steamy/independent-f66a7a0/REPORT.md` 与 `independent-1330df6/REPORT.md`，不套用到未测候选或完整组合。
 
 每项固定原文都同时包含 CRLF、LF、CR 与独立未知 HTML 邻块。单个改字的预期由人工指定的 before/after 范围生成完整原始字节预期，未使用 serializer/parser 的输出作为期望值。断言还核对范围外原始 provenance，不仅比对渲染文本。
 
@@ -54,7 +54,9 @@ ModeGate 测试对 16 项及 8 种组合分别执行 100 次真实组件 source�
 - COMBO07：围栏语言、代码首行与后行同文，定位正文而非语言。
 - COMBO08：BOM 与中英/emoji 组合、混合换行和未知邻块。
 
-FR-MD-04–13 在 JSON rules 中逐条保留，包含现有矩阵未实际执行的块结构操作、IME、表格全部动作、代码块退出、并排与同步滚动、多光标回源码、剪贴板、拖放及后台 revision/预算。它们保持 NOT_RUN；此任务未访问剪贴板、未下载远程图片、未执行 T07、未安装、未启动 GUI、未提交。
+FR-MD-04–13 在 JSON rules 中逐条保留。完整块结构、IME、所有表格动作、代码导航、并排与同步滚动、多光标、剪贴板、拖放及后台预算尚未批量关闭。有限已测GUI与JSON固定语料/未覆盖行为分开，不以整条 NOT_RUN 抹掉历史运行，也不把子项PASS冒充整条通过。剪贴板验证持续暂停；保存仍受T07审批边界阻塞。
+
+下一命令接线增量复用当前逻辑视图常驻的属性表单；格式/任务/表格/退出命令执行后核Owner状态，不把dispatch函数返回代替实际提交。多选区仅在纯模式往返且revision及两逻辑视图位置代次未变时恢复；导航/正文变化优先当前位置并提示，原样块精确源码入口不恢复旧多选。新增14组件在 `compile29/runtime22` 实际122/122、exit0，默认表格插行/列遵守原命令表的after；最终以新固定包复跑和GUI记录为准。JSON不嵌入自身未来commit，当前包身份取 `build-identity.txt` 和 `SHA256SUMS.txt`，历史组件基线另记，避免套用旧exe hash。
 
 运行本候选后才可补证据：
 

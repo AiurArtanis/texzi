@@ -120,8 +120,7 @@ impl ResourceControls {
 
 /// Mount this beside the rich editor. The optional focus callback is invoked
 /// after Apply/Cancel so the application can restore its existing editor ref.
-pub fn view(gate: Rc<ModeGate>, source: Rc<NativeView>, focus: Rc<dyn Fn()>) -> impl IntoElement {
-    let controls = ResourceControls::new(gate, source);
+pub fn view(controls: Rc<ResourceControls>, focus: Rc<dyn Fn()>) -> impl IntoElement {
     let link = controls.clone();
     let image = controls.clone();
     let modal = controls.clone();

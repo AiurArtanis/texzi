@@ -43,6 +43,8 @@ mod raw_block_controls;
 #[cfg(all(test, windows))]
 mod raw_block_delete_tests;
 #[cfg(windows)]
+mod rich_commands;
+#[cfg(windows)]
 mod rich_controls;
 #[cfg(windows)]
 mod rich_images;

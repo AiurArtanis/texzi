@@ -70,9 +70,6 @@ impl CodeControls {
         if !target.fenced {
             return Err("缩进代码块没有语言标记，请保留原形式并在源码编辑".into());
         }
-        if !target.fenced {
-            return Err("缩进代码块没有语言声明，请保留原形式并编辑源码".into());
-        }
         self.language.set(target.language.unwrap_or_default());
         self.info.set(target.info.unwrap_or_default());
         *self.draft.borrow_mut() = Some(Draft {
@@ -141,8 +138,7 @@ impl CodeControls {
     }
 }
 
-pub fn view(gate: Rc<ModeGate>, source: Rc<NativeView>, focus: Rc<dyn Fn()>) -> impl IntoElement {
-    let controls = CodeControls::new(gate, source);
+pub fn view(controls: Rc<CodeControls>, focus: Rc<dyn Fn()>) -> impl IntoElement {
     let language = controls.clone();
     let exit = controls.clone();
     let indent = controls.clone();

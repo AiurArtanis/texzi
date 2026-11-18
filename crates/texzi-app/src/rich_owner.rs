@@ -633,10 +633,17 @@ pub struct RawBlockAction {
 }
 
 /// The visible mode changes only after a complete destination was prepared.
+struct SourceMultiSelection {
+    revision: u64,
+    source_epoch: u64,
+    rich_epoch: u64,
+    selections: ExternalSelections,
+}
 pub struct ModeGate {
     source: Rc<NativeView>,
     rich: Rc<NativeView>,
     active: RefCell<Option<Rc<RichOwner>>>,
+    source_multi: RefCell<Option<SourceMultiSelection>>,
     pub rich_mode: Signal<bool>,
     pub status: Signal<String>,
 }
@@ -646,6 +653,7 @@ impl ModeGate {
             source,
             rich,
             active: RefCell::new(None),
+            source_multi: RefCell::new(None),
             rich_mode: signal(false),
             status: signal(String::new()),
         })
@@ -767,6 +775,7 @@ impl ModeGate {
         )?;
         self.source.fence();
         self.source.trace_state("raw_block_source");
+        self.source_multi.borrow_mut().take();
         self.rich_mode.set(false);
         self.status.set(String::new());
         Ok(())
@@ -797,9 +806,27 @@ impl ModeGate {
         next.activate()?;
         self.source.fence();
         self.source.trace_state("mode_rich");
+        // Revision equality is necessary but not sufficient: real navigation
+        // in either logical view invalidates the saved multi-selection, even
+        // if the user later returns to the same coordinates. Freeze actual
+        // epochs after successful activation/fencing; pure rendering and
+        // selecting the same position do not change those epochs.
+        let source = self.source.snapshot()?;
+        let rich = self.rich.snapshot()?;
+        let multiple = source.selections.ranges.len() > 1;
+        *self.source_multi.borrow_mut() = multiple.then_some(SourceMultiSelection {
+            revision: source.revision,
+            source_epoch: source.view_epoch,
+            rich_epoch: rich.view_epoch,
+            selections: source.selections,
+        });
         *self.active.borrow_mut() = Some(next);
         self.rich_mode.set(true);
-        self.status.set(String::new());
+        self.status.set(if multiple {
+            "排版视图使用主选区".into()
+        } else {
+            String::new()
+        });
         Ok(())
     }
     pub fn to_rich(&self) {
@@ -821,18 +848,38 @@ impl ModeGate {
             if rich.revision != source.revision {
                 return Err("视图版本不一致，已保留正文模式".into());
             }
-            self.source
-                .select(source.revision, source.view_epoch, rich.selections)?;
-            Ok::<_, String>(())
+            let saved = self.source_multi.borrow();
+            let restore = saved.as_ref().filter(|saved| {
+                saved.revision == source.revision
+                    && saved.source_epoch == source.view_epoch
+                    && saved.rich_epoch == rich.view_epoch
+                    && saved.selections == source.selections
+            });
+            let invalidated = saved.is_some() && restore.is_none();
+            // The independent Source view still owns its original complete
+            // multi-selection. Do not recreate its anchors on a pure roundtrip.
+            if restore.is_none() {
+                self.source
+                    .select(source.revision, source.view_epoch, rich.selections)?;
+            }
+            Ok::<_, String>(invalidated)
         })();
-        if let Err(e) = transferred {
-            self.status.set(e);
-            return;
-        }
+        let invalidated = match transferred {
+            Ok(invalidated) => invalidated,
+            Err(e) => {
+                self.status.set(e);
+                return;
+            }
+        };
         self.source.fence();
         self.source.trace_state("mode_source");
+        self.source_multi.borrow_mut().take();
         self.rich_mode.set(false);
-        self.status.set(String::new());
+        self.status.set(if invalidated {
+            "原多选已因正文或光标变化失效，已按当前选区返回源码".into()
+        } else {
+            String::new()
+        });
     }
     pub fn session(&self) -> EditorSession {
         self.active
@@ -877,8 +924,13 @@ impl ModeGate {
     }
     pub fn source_mounted(&self) {
         self.active.borrow_mut().take();
+        self.source_multi.borrow_mut().take();
     }
 }
+
+#[cfg(test)]
+#[path = "mode_selection_tests.rs"]
+mod mode_selection_tests;
 
 #[cfg(test)]
 mod tests {
