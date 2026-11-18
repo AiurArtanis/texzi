@@ -110,8 +110,10 @@ struct Shell {
     notice: Signal<String>,
     panel: Signal<String>,
     query: Signal<String>,
+    palette_query: Signal<String>,
     replacement: Signal<String>,
     zen: Signal<bool>,
+    zen_exit: Rc<crate::zen_state::ZenState>,
     chord: Signal<bool>,
     source_ref: Cell<Option<ComponentRef<Editor>>>,
     modal: Cell<bool>,
@@ -123,6 +125,12 @@ struct Shell {
     search_notice: Signal<String>,
     searching: Signal<bool>,
     search_cancel: RefCell<Option<Arc<AtomicBool>>>,
+    recent: Signal<Vec<PathBuf>>,
+    quick_files: Signal<Vec<crate::quick_open::Candidate>>,
+    quick_origin: Signal<Option<PathBuf>>,
+    quick_notice: Signal<String>,
+    quick_scanning: Signal<bool>,
+    quick_cancel: RefCell<Option<Arc<AtomicBool>>>,
 }
 pub(crate) fn foreground() -> Hsla {
     if dark() {
@@ -170,8 +178,10 @@ impl Shell {
             notice: signal(String::new()),
             panel: signal(String::new()),
             query: signal(String::new()),
+            palette_query: signal(String::new()),
             replacement: signal(String::new()),
             zen: signal(false),
+            zen_exit: crate::zen_state::ZenState::new(),
             chord: signal(false),
             source_ref: Cell::new(None),
             modal: Cell::new(false),
@@ -183,6 +193,31 @@ impl Shell {
             search_notice: signal(String::new()),
             searching: signal(false),
             search_cancel: RefCell::new(None),
+            recent: signal(vec![]),
+            quick_files: signal(vec![]),
+            quick_origin: signal(None),
+            quick_notice: signal(String::new()),
+            quick_scanning: signal(false),
+            quick_cancel: RefCell::new(None),
+        });
+        // Notify observers must precede actual Shell bindings: NSH chooses
+        // one newest match, so later registration could shadow a real command.
+        let reset = s.zen_exit.clone();
+        crate::zen_state::bind_reset_on_other_keys(reset.armed, Rc::new(move || reset.reset()));
+        let window = s.clone();
+        effect(move || {
+            if !window.window.state().is_some_and(|state| state.focused) {
+                window.zen_exit.reset();
+            }
+        });
+        let quick = s.clone();
+        effect(move || {
+            let root = quick.root.get();
+            if quick.panel.get() == "files" {
+                quick.start_quick(root);
+            } else {
+                quick.cancel_quick(false);
+            }
         });
         s.add("", None);
         let mut attributes = WindowAttributes::default();
@@ -233,14 +268,30 @@ impl Shell {
         }
         let escape = s.clone();
         on_key("escape", move |_| {
-            if escape.current().is_some_and(|d| d.gate.busy()) {
+            if escape.modal.get()
+                || escape
+                    .current()
+                    .is_some_and(|d| d.gate.busy() || d.controls.open())
+            {
+                escape.zen_exit.escape(None, true);
                 return;
             }
             if !escape.panel.get().is_empty() {
+                escape.zen_exit.escape(None, true);
                 escape.close_panel();
-            } else if escape.zen.get() {
-                escape.zen.set(false);
-                escape.restore_editor_focus();
+            } else {
+                let stamp = escape.zen.get().then(|| escape.zen_stamp()).flatten();
+                match escape.zen_exit.escape(stamp, false) {
+                    crate::zen_state::EscapeAction::Exit => {
+                        escape.zen.set(false);
+                        escape.notice.set(String::new());
+                        escape.restore_editor_focus();
+                    }
+                    crate::zen_state::EscapeAction::Armed => {
+                        escape.notice.set("再按一次 Esc 退出 Zen".into())
+                    }
+                    crate::zen_state::EscapeAction::Ignored => {}
+                }
             }
         });
         s
@@ -293,6 +344,14 @@ impl Shell {
         if id == "texzi.editor.toggleWrap" && self.current().is_some_and(|d| d.gate.rich_mode.get())
         {
             return Some("自动换行开关作用于当前源码视图；正文按块排版。请先切换源码。".into());
+        }
+        if matches!(id, "texzi.group.splitRight" | "texzi.group.splitDown")
+            && self.split.get().is_some()
+        {
+            return Some(
+                "当前实现只有两个编辑组，继续新建组尚未完成；本次未新增组，也不改变原分屏方向。"
+                    .into(),
+            );
         }
         if crate::rich_commands::handles(id) {
             let doc = match self.current() {
@@ -353,6 +412,87 @@ impl Shell {
             s.modal.set(false);
         });
     }
+    fn zen_stamp(&self) -> Option<crate::zen_state::Stamp> {
+        let doc = self.current()?;
+        let snapshot = doc.source.snapshot().ok()?;
+        let rich_mode = doc.gate.rich_mode.get();
+        Some(crate::zen_state::Stamp {
+            document: doc.id,
+            group: if self.second_active.get() { 2 } else { 1 },
+            rich_mode,
+            revision: snapshot.revision,
+            view_epoch: snapshot.view_epoch,
+            rich_state_revision: rich_mode.then(|| doc.gate.session().state().revision()),
+        })
+    }
+    fn remember(&self, path: &Path) {
+        self.recent.update(|paths| {
+            paths.retain(|old| !old.as_os_str().eq_ignore_ascii_case(path.as_os_str()));
+            paths.insert(0, path.to_path_buf());
+            paths.truncate(50);
+        });
+    }
+    fn cancel_quick(&self, explain: bool) {
+        if let Some(cancel) = self.quick_cancel.borrow_mut().take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.quick_scanning.set(false);
+        if explain {
+            self.quick_notice
+                .set("已取消目录扫描；已打开和最近文件仍可选择".into());
+        }
+    }
+    fn start_quick(self: &Rc<Self>, root: Option<PathBuf>) {
+        self.cancel_quick(false);
+        self.quick_files.set(vec![]);
+        self.quick_origin.set(root.clone());
+        let Some(root) = root else {
+            self.quick_notice
+                .set("未打开文件夹；可搜索已打开和本次会话最近文件".into());
+            return;
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.quick_cancel.borrow_mut() = Some(cancel.clone());
+        self.quick_scanning.set(true);
+        self.quick_notice
+            .set("正在列出当前文件夹的文件；可以先搜索已打开和最近文件".into());
+        let worker_root = root.clone();
+        let worker_cancel = cancel.clone();
+        let work = blocking(move || {
+            crate::quick_open::scan(
+                worker_root,
+                crate::quick_open::ScanLimits::default(),
+                worker_cancel,
+            )
+        });
+        let shell = self.clone();
+        spawn(async move {
+            let result = work.await;
+            let current = shell
+                .quick_cancel
+                .borrow()
+                .as_ref()
+                .is_some_and(|active| Arc::ptr_eq(active, &cancel));
+            if !current || shell.root.get() != Some(root) || shell.panel.get() != "files" {
+                return;
+            }
+            shell.quick_scanning.set(false);
+            match result {
+                Ok(report) => {
+                    shell.quick_notice.set(format!(
+                        "{}：{} 个文件候选，检查 {} 项，跳过 {} 项{}。单次最多 2000 项；不跟随链接。{}{}",
+                        if report.cancelled { "扫描已取消" } else { "扫描结束" },
+                        report.files.len(), report.scanned, report.skipped,
+                        if report.limited { "；结果不完整，已达扫描预算" } else { "" },
+                        report.errors.join("\n"),
+                        if report.errors_omitted > 0 { format!("；另有 {} 个错误未展开", report.errors_omitted) } else { String::new() },
+                    ));
+                    shell.quick_files.set(report.files);
+                }
+                Err(error) => shell.quick_notice.set(format!("目录候选扫描失败：{error}")),
+            }
+        });
+    }
     fn open(self: &Rc<Self>, path: &Path) {
         let path = match path.canonicalize() {
             Ok(p) => p,
@@ -370,6 +510,7 @@ impl Shell {
                 })
                 .cloned()
         }) {
+            self.remember(&path);
             self.active.set(doc.id);
             self.second_active.set(false);
             return;
@@ -381,7 +522,7 @@ impl Shell {
                 return;
             }
         };
-        match std::str::from_utf8(&bytes){Ok(raw) if !raw.contains('\0')=>self.add(raw,Some(path)),_=>self.explain("编码不支持","当前仅支持严格 UTF-8 文本；未使用替换字符解码，原文件未改变。完整编码与保存验收仍受阻。")}
+        match std::str::from_utf8(&bytes){Ok(raw) if !raw.contains('\0')=>{self.remember(&path);self.add(raw,Some(path));},_=>self.explain("编码不支持","当前仅支持严格 UTF-8 文本；未使用替换字符解码，原文件未改变。完整编码与保存验收仍受阻。")}
     }
     fn pick(self: &Rc<Self>, folder: bool) {
         self.modal.set(true);
@@ -398,8 +539,13 @@ impl Shell {
                 Ok(Some(paths)) => {
                     for path in paths {
                         if folder {
-                            s.root.set(Some(path));
-                            s.sidebar.set(true);
+                            match path.canonicalize() {
+                                Ok(path) => {
+                                    s.root.set(Some(path));
+                                    s.sidebar.set(true);
+                                }
+                                Err(error) => s.explain("无法打开文件夹", &error.to_string()),
+                            }
                         } else {
                             s.open(&path);
                         }
@@ -575,8 +721,8 @@ impl Shell {
     }
     fn split_editor(self: &Rc<Self>, down: bool) {
         if self.split.get().is_some() {
-            self.split_down.set(down);
-            self.focus_group(2);
+            self.notice
+                .set("继续新建编辑组尚未完成，已保留当前两组和原布局".into());
             return;
         }
         let Some(doc) = self.current() else {
@@ -625,6 +771,7 @@ impl Shell {
             .set("同一文档已拆分为两个独立视图，共享正文与撤销历史".into());
     }
     fn focus_group(&self, index: u8) {
+        self.zen_exit.reset();
         if index > 2 {
             self.notice
                 .set(format!("编辑组 {index} 不存在，未创建新文档"));
@@ -659,6 +806,8 @@ impl Shell {
         });
     }
     fn close_panel(self: &Rc<Self>) {
+        self.zen_exit.reset();
+        self.cancel_quick(false);
         self.panel.set(String::new());
         self.restore_editor_focus();
     }
@@ -709,6 +858,7 @@ impl Shell {
         });
     }
     fn run(self: &Rc<Self>, id: &str) {
+        self.zen_exit.reset();
         if self.modal.get() {
             return;
         }
@@ -738,9 +888,9 @@ impl Shell {
             "texzi.tab.reopenClosed"=>{let doc=self.closed.borrow_mut().pop();if let Some(doc)=doc{let id=doc.id;self.docs.update(|ds|ds.push(doc));self.second_active.set(false);self.active.set(id);self.restore_editor_focus();}else{self.notice.set("没有已关闭标签".into());}},
             "texzi.tab.next"|"texzi.tab.previous"=>{if self.second_active.get(){self.notice.set("当前编辑组只有一个标签，已保持当前组".into());}else{self.docs.with(|ds|{if let Some(at)=ds.iter().position(|d|d.id==self.active.get()){self.active.set(ds[if id.ends_with("next"){(at+1)%ds.len()}else{(at+ds.len()-1)%ds.len()}].id);}});}self.restore_editor_focus();},
             "texzi.sidebar.toggle"=>self.sidebar.update(|v|*v=!*v),"texzi.editor.toggleWrap"=>if let Some(doc)=self.current(){doc.wrap.update(|v|*v=!*v);self.notice.set(if doc.wrap.get(){"当前源码视图：自动换行已开启"}else{"当前源码视图：自动换行已关闭"}.into());},
-            "texzi.view.toggleZen"=>self.zen.update(|v|*v=!*v),"texzi.view.exitZen"=>self.zen.set(false),
+            "texzi.view.toggleZen"|"texzi.view.exitZen"=>{if id.ends_with("exitZen"){self.zen.set(false);}else{self.zen.update(|v|*v=!*v);}if self.notice.get()=="再按一次 Esc 退出 Zen"{self.notice.set(String::new());}},
             "texzi.view.toggleFullScreen"=>self.window.set_mode(if self.window.state().is_some_and(|s|s.mode==WindowMode::FullScreen){WindowMode::Normal}else{WindowMode::FullScreen}),
-            "texzi.commandPalette.open"|"texzi.navigation.quickOpen"=>{self.query.set(String::new());self.panel.set(if id.ends_with("quickOpen"){"files"}else{"commands"}.into());},
+            "texzi.commandPalette.open"|"texzi.navigation.quickOpen"=>{self.palette_query.set(String::new());let files=id.ends_with("quickOpen");let already=self.panel.get()=="files";if files{self.quick_files.set(vec![]);self.quick_notice.set("正在准备文件候选".into());}self.panel.set(if files{"files"}else{"commands"}.into());if files&&already{self.start_quick(self.root.get());}},
             "texzi.navigation.gotoLine"=>{if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}}self.query.set(String::new());self.panel.set("line".into());self.notice.set("转到行的范围已切换为源码".into());},
             "texzi.group.focusIndex"=>self.panel.set("groups".into()),
             "texzi.markdown.toggleSource"=>if let Some(doc)=self.current(){if doc.gate.rich_mode.get(){doc.gate.to_source();}else{doc.gate.to_rich();}},
@@ -863,6 +1013,7 @@ const CHORDS: &[(&str, &str)] = &[
 fn bind_chords(s: Rc<Shell>) {
     let prefix = s.clone();
     on_key("mod+k", move |_| {
+        prefix.zen_exit.reset();
         if prefix.modal.get() || prefix.current().is_some_and(|d| d.gate.busy()) {
             return;
         }
@@ -870,8 +1021,10 @@ fn bind_chords(s: Rc<Shell>) {
         prefix.notice.set("Ctrl+K：等待第二个按键…".into());
         let chord = prefix.chord;
         let notice = prefix.notice;
+        let zen = prefix.zen_exit.clone();
         set_timeout(std::time::Duration::from_millis(1500), move || {
             if chord.get() {
+                zen.reset();
                 chord.set(false);
                 if notice.get() == "Ctrl+K：等待第二个按键…" {
                     notice.set("Ctrl+K 组合已超时取消".into());
@@ -919,6 +1072,7 @@ fn bind_chords(s: Rc<Shell>) {
                     .map(|(_, id)| *id);
                 let s = s.clone();
                 on_key(&stroke, move |_| {
+                    s.zen_exit.reset();
                     s.chord.set(false);
                     if s.notice.get() == "Ctrl+K：等待第二个按键…" {
                         s.notice.set(String::new());
@@ -1174,6 +1328,8 @@ pub fn view_shell() -> impl IntoElement {
     let zen = s.zen;
     let docs = s.docs;
     let active = s.active;
+    let exit_zen = s.clone();
+    let zen_armed = s.zen_exit.armed;
     view()
         .size_full()
         .bg(background)
@@ -1194,6 +1350,37 @@ pub fn view_shell() -> impl IntoElement {
                         toolbar.clone(),
                         "texzi.navigation.quickOpen",
                     ))
+            },
+        ))
+        .child(when(
+            move || zen.get(),
+            move || {
+                let exit = exit_zen.clone();
+                view()
+                    .group_named("zen-exit")
+                    .h(px(32.0))
+                    .w_full()
+                    .flex_row()
+                    .justify_end()
+                    .items_center()
+                    .child(text(move || {
+                        if zen_armed.get() {
+                            "再按一次 Esc 退出 Zen"
+                        } else {
+                            ""
+                        }
+                    }))
+                    .child(
+                        nsh_base::button()
+                            .opacity(0.0)
+                            .group_hover_named("zen-exit", |style| style.opacity(1.0))
+                            .group_focus_within_named("zen-exit", |style| style.opacity(1.0))
+                            .child(text("退出 Zen"))
+                            .on_press(move |_: &()| {
+                                exit.run("texzi.view.exitZen");
+                                exit.restore_editor_focus();
+                            }),
+                    )
             },
         ))
         .child(
@@ -1220,65 +1407,75 @@ pub fn view_shell() -> impl IntoElement {
                 .child(
                     view()
                         .flex_1()
-                        .child(
-                            view()
-                                .flex_row()
-                                .gap(px(4.0))
-                                .p(px(4.0))
-                                .bg(frame)
-                                .child(each(
-                                    move || docs.get(),
-                                    |d: &Rc<Document>| d.id,
-                                    move |doc, _| {
-                                        let doc = doc.get_untracked();
-                                        let s = tabs.clone();
-                                        let close = tabs.clone();
-                                        let id = doc.id;
-                                        view()
-                                            .flex_row()
-                                            .child(
-                                                nsh_base::button()
-                                                    .child(text(move || {
-                                                        doc.source.track();
-                                                        format!(
-                                                            "{}{}{}",
-                                                            if active.get() == id {
-                                                                "▎"
-                                                            } else {
-                                                                ""
-                                                            },
-                                                            doc.name,
-                                                            if doc.source.is_dirty().unwrap_or(true)
-                                                            {
-                                                                " ●"
-                                                            } else {
-                                                                ""
-                                                            }
-                                                        )
-                                                    }))
-                                                    .on_press(move |_: &()| {
-                                                        s.active.set(id);
-                                                        s.second_active.set(false);
-                                                    }),
-                                            )
-                                            .child(
-                                                nsh_base::button()
-                                                    .child(text("×"))
-                                                    .on_press(move |_: &()| close.close_tab(id)),
-                                            )
-                                    },
-                                )),
-                        )
+                        .child(when(
+                            move || !zen.get(),
+                            move || {
+                                let tabs = tabs.clone();
+                                view()
+                                    .flex_row()
+                                    .gap(px(4.0))
+                                    .p(px(4.0))
+                                    .bg(frame)
+                                    .child(each(
+                                        move || docs.get(),
+                                        |d: &Rc<Document>| d.id,
+                                        move |doc, _| {
+                                            let doc = doc.get_untracked();
+                                            let s = tabs.clone();
+                                            let close = tabs.clone();
+                                            let id = doc.id;
+                                            view()
+                                                .flex_row()
+                                                .child(
+                                                    nsh_base::button()
+                                                        .child(text(move || {
+                                                            doc.source.track();
+                                                            format!(
+                                                                "{}{}{}",
+                                                                if active.get() == id {
+                                                                    "▎"
+                                                                } else {
+                                                                    ""
+                                                                },
+                                                                doc.name,
+                                                                if doc
+                                                                    .source
+                                                                    .is_dirty()
+                                                                    .unwrap_or(true)
+                                                                {
+                                                                    " ●"
+                                                                } else {
+                                                                    ""
+                                                                }
+                                                            )
+                                                        }))
+                                                        .on_press(move |_: &()| {
+                                                            s.active.set(id);
+                                                            s.second_active.set(false);
+                                                        }),
+                                                )
+                                                .child(
+                                                    nsh_base::button().child(text("×")).on_press(
+                                                        move |_: &()| close.close_tab(id),
+                                                    ),
+                                                )
+                                        },
+                                    ))
+                            },
+                        ))
                         .child(dynamic(move || groups(content.clone())))
                         .child(dynamic(move || panel(panels.clone()))),
                 ),
         )
-        .child(
-            view()
-                .h(px(24.0))
-                .bg(frame)
-                .child(text(move || notice.get())),
-        )
+        .child(when(
+            move || !zen.get(),
+            move || {
+                view()
+                    .h(px(24.0))
+                    .bg(frame)
+                    .child(text(move || notice.get()))
+            },
+        ))
 }
 
 fn tree_rows(
@@ -1394,7 +1591,11 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
     if mode.is_empty() {
         return None;
     }
-    let query = s.query;
+    let query = if mode == "commands" || mode == "files" {
+        s.palette_query
+    } else {
+        s.query
+    };
     let replacement = s.replacement;
     let close = s.clone();
     let mut panel = view().p(px(8.0)).gap(px(8.0)).bg(frame).child(
@@ -1409,6 +1610,7 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
         } else {
             None
         };
+        let mut quick_paths: Vec<PathBuf> = vec![];
         let entries = if mode == "commands" {
             crate::native_menu::commands()
                 .into_iter()
@@ -1438,36 +1640,93 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                 })
                 .collect::<Vec<_>>()
         } else {
-            s.docs.with(|ds| {
-                ds.iter()
-                    .map(|d| nsh_base::CommandItem::new(format!("file:{}", d.id), d.name.clone()))
-                    .collect()
-            })
+            let docs = s.docs.get();
+            let mut known = docs
+                .iter()
+                .filter_map(|d| d.path.clone())
+                .collect::<Vec<_>>();
+            let mut entries = docs
+                .iter()
+                .map(|d| {
+                    nsh_base::CommandItem::new(format!("file:{}", d.id), d.name.clone())
+                        .group("已打开")
+                })
+                .collect::<Vec<_>>();
+            let mut add = |path: PathBuf, display: String, group: &'static str| {
+                if known
+                    .iter()
+                    .any(|old| old.as_os_str().eq_ignore_ascii_case(path.as_os_str()))
+                {
+                    return;
+                }
+                known.push(path.clone());
+                let id = format!("quick:{}", quick_paths.len());
+                let keyword = path.to_string_lossy().into_owned();
+                quick_paths.push(path);
+                entries.push(
+                    nsh_base::CommandItem::new(id, display)
+                        .keywords([keyword])
+                        .group(group),
+                );
+            };
+            for path in s.recent.get() {
+                add(path.clone(), path.display().to_string(), "最近打开");
+            }
+            if s.quick_origin.get() == s.root.get() {
+                for file in s.quick_files.get() {
+                    add(file.path, file.display, "当前文件夹");
+                }
+            }
+            entries
         };
         let run = s.clone();
         let cancel = s.clone();
         let search = s.clone();
         let files = mode == "files";
+        if files {
+            let notice = s.quick_notice;
+            let scanning = s.quick_scanning;
+            let stop = s.clone();
+            panel = panel
+                .child(text(move || notice.get()))
+                .child(when(scanning, move || {
+                    let stop = stop.clone();
+                    nsh_base::button()
+                        .child(text("取消目录扫描"))
+                        .on_press(move |_: &()| stop.cancel_quick(true))
+                }));
+        }
         panel = panel.child(
             nsh_base::command()
                 .items(entries)
+                .query(move || Some(query.get().into()))
                 .placeholder(if files {
-                    "搜索已打开文件，输入 > 查找命令"
+                    "搜索已打开、最近和当前文件夹；输入 > 查找命令"
                 } else {
                     "搜索命令名称或 ID"
                 })
                 .auto_focus(true)
                 .list_class("max-h-64")
                 .on_query_change(move |q: &SharedString| {
+                    query.set(q.to_string());
                     if files && q.starts_with('>') {
+                        query.set(String::new());
                         search.panel.set("commands".into());
                     }
                 })
                 .on_select(move |id: &SharedString| {
+                    run.cancel_quick(false);
                     run.panel.set(String::new());
                     if let Some(id) = id.strip_prefix("file:").and_then(|s| s.parse::<u64>().ok()) {
                         run.active.set(id);
                         run.second_active.set(false);
+                        run.restore_editor_focus();
+                    } else if let Some(path) = id
+                        .strip_prefix("quick:")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .and_then(|i| quick_paths.get(i))
+                    {
+                        run.open(path);
                         run.restore_editor_focus();
                     } else {
                         run.run(id);

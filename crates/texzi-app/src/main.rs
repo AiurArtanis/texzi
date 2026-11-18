@@ -33,8 +33,12 @@ mod code_highlight;
 mod cross_view_history_tests;
 #[cfg(windows)]
 mod native_menu;
+#[cfg(windows)]
+mod quick_open;
 #[cfg(all(test, windows))]
 mod syntax_matrix_tests;
+#[cfg(windows)]
+mod zen_state;
 
 #[cfg(windows)]
 mod editor_owner;
