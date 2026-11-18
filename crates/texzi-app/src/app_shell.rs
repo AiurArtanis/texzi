@@ -96,6 +96,29 @@ mod shell_markdown_tests;
 #[cfg(test)]
 #[path = "shell_task_tests.rs"]
 mod shell_task_tests;
+#[cfg(test)]
+#[path = "shortcut_regression_tests.rs"]
+mod shortcut_regression_tests;
+
+const SHELL_SHORTCUTS: &[(&str, &str)] = &[
+    ("mod+o", "texzi.file.open"),
+    ("f3", "texzi.find.next"),
+    ("shift+f3", "texzi.find.previous"),
+    ("mod+shift+w", "texzi.window.close"),
+    ("f1", "texzi.commandPalette.open"),
+    ("mod+e", "texzi.navigation.quickOpen"),
+    ("mod+f4", "texzi.tab.close"),
+];
+
+// Keep application shortcuts in the engine keymap as well as the native menu.
+// A consumed command stops the Windows menu-shortcut fallback, so this does
+// not dispatch a second Open request. The later chord bindings keep priority.
+fn bind_shell_shortcuts(run: Rc<dyn Fn(&str)>) {
+    for &(key, id) in SHELL_SHORTCUTS {
+        let run = run.clone();
+        on_key(key, move |_| run(id));
+    }
+}
 
 // Command rows and other transient views may dispose their own owner before
 // their listener returns. A modal's creation and completion belong to Shell,
@@ -261,17 +284,8 @@ impl Shell {
             );
         });
         bind_chords(s.clone());
-        for (key, id) in [
-            ("f3", "texzi.find.next"),
-            ("shift+f3", "texzi.find.previous"),
-            ("mod+shift+w", "texzi.window.close"),
-            ("f1", "texzi.commandPalette.open"),
-            ("mod+e", "texzi.navigation.quickOpen"),
-            ("mod+f4", "texzi.tab.close"),
-        ] {
-            let s = s.clone();
-            on_key(key, move |_| s.run(id));
-        }
+        let shortcuts = s.clone();
+        bind_shell_shortcuts(Rc::new(move |id| shortcuts.run(id)));
         let source_sidebar = s.clone();
         effect(move || {
             if source_sidebar
@@ -920,6 +934,9 @@ impl Shell {
     }
     fn run(self: &Rc<Self>, id: &str) {
         self.zen_exit.reset();
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!("TX_SHELL_COMMAND id={id} modal={}", self.modal.get());
+        }
         if self.modal.get() {
             return;
         }
