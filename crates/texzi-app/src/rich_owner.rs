@@ -33,6 +33,8 @@ pub struct RichOwner {
     epoch: Cell<u64>,
     session: EditorSession,
     pub status: Signal<String>,
+    #[cfg(test)]
+    input_rule_checkpoint: RefCell<Option<Box<dyn Fn(&NativeView)>>>,
 }
 impl Drop for RichOwner {
     fn drop(&mut self) {
@@ -94,6 +96,8 @@ impl RichOwner {
             epoch: Cell::new(s.view_epoch),
             session: session.clone(),
             status,
+            #[cfg(test)]
+            input_rule_checkpoint: RefCell::new(None),
         });
         OWNERS.with(|x| {
             x.borrow_mut().insert(id, Rc::downgrade(&this));
@@ -266,6 +270,9 @@ impl RichOwner {
         if old.doc() != &p.doc {
             return Err("富文本视图已过期，请切回源码后重新打开富文本".into());
         }
+        if !p.verified_resource_transaction(next.doc(), &applied)? {
+            protect_raw_blocks(&p, &applied)?;
+        }
         let mut edits = p.transaction_edits(next.doc(), &applied)?;
         if edits.is_empty() && old.doc() != next.doc() {
             return Err("该结构变更不能映射到原文，已保留原状态".into());
@@ -362,6 +369,12 @@ impl RichOwner {
                     )?;
                     current = accepted.snapshot;
                     self.native.fence();
+                    // Test-only observation of the actual accepted typing
+                    // state, before the separate formatting transaction.
+                    #[cfg(test)]
+                    if let Some(observe) = self.input_rule_checkpoint.borrow().as_ref() {
+                        observe(&self.native);
+                    }
                     typed_fallback = Some((typed_state, typed_applied, typed_projection));
                     projected = final_projection;
                     edits = vec![(range, text)];
@@ -492,6 +505,102 @@ fn selection_matches(p: &Projection, state: &EditorState, s: &ExternalSelections
     }
 }
 
+/// Guard the actual steps, including appended plugin steps, before Store gets
+/// any edit. Mapping each protected span avoids mistaking a preceding edit for
+/// a change to an opaque block. Selection-only transactions have no steps.
+fn protect_raw_blocks(p: &Projection, transactions: &[Transaction]) -> Result<(), String> {
+    use nsh_base::rich_editor::transform::{Mappable, ReplaceStep};
+    let mut offset = 0;
+    let mut protected = Vec::new();
+    for block in &p.blocks {
+        let end = offset + block.node.node_size();
+        if block.opaque {
+            protected.push((offset..end, block));
+        }
+        offset = end;
+    }
+    if protected.is_empty() {
+        return Ok(());
+    }
+    for transaction in transactions {
+        for (step_index, step) in transaction.steps.iter().enumerate() {
+            let map = step.get_map();
+            let after = step
+                .apply(&transaction.docs[step_index])
+                .map_err(|e| e.to_string())?;
+            let mut removed = Vec::new();
+            for (index, (span, block)) in protected.iter_mut().enumerate() {
+                if step
+                    .as_any()
+                    .downcast_ref::<ReplaceStep>()
+                    .is_some_and(|step| {
+                        let before = &transaction.docs[step_index];
+                        let empty_document = before.child_count() == 1
+                            && span.start == 0
+                            && span.end == before.content().size()
+                            && step.slice.content.child_count() == 1
+                            && before
+                                .ty()
+                                .schema()
+                                .node(
+                                    "paragraph",
+                                    None,
+                                    nsh_base::rich_editor::model::Fragment::empty(),
+                                    vec![],
+                                )
+                                .is_ok_and(|empty| step.slice.content.child(0) == &empty)
+                            && after.child_count() == 1
+                            && after.child(0) == step.slice.content.child(0);
+                        step.from == span.start
+                            && step.to == span.end
+                            && (step.slice.content.size() == 0 || empty_document)
+                            && step.slice.open_start == 0
+                            && step.slice.open_end == 0
+                    })
+                {
+                    removed.push(index);
+                    continue;
+                }
+                let mut touches = false;
+                map.for_each(|a, z, _, _| {
+                    touches |= if a == z {
+                        a > span.start && a < span.end
+                    } else {
+                        a < span.end && z > span.start
+                    };
+                });
+                let mapped = map.map(span.start, 1)..map.map(span.end, -1);
+                if touches
+                    || after.node_at(mapped.start).as_ref() != Some(&block.node)
+                    || mapped.len() != block.node.node_size()
+                {
+                    let line = p.source[..block.source.start]
+                        .bytes()
+                        .filter(|b| *b == b'\n')
+                        .count()
+                        + 1;
+                    return Err(format!(
+                        "第 {line} 行的原样块请使用该块的“编辑源码”；原文未变"
+                    ));
+                }
+                *span = mapped;
+            }
+            for index in removed.into_iter().rev() {
+                protected.remove(index);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawBlockAction {
+    pub revision: u64,
+    pub source: std::ops::Range<usize>,
+    pub line: usize,
+    pub preview: String,
+}
+
 /// The visible mode changes only after a complete destination was prepared.
 pub struct ModeGate {
     source: Rc<NativeView>,
@@ -512,6 +621,124 @@ impl ModeGate {
     }
     pub fn busy(&self) -> bool {
         self.source.is_composing() || self.rich.is_composing()
+    }
+    pub fn raw_blocks(&self) -> Vec<RawBlockAction> {
+        if !self.rich_mode.get() {
+            return vec![];
+        }
+        let active = self.active.borrow();
+        let Some(owner) = active.as_ref() else {
+            return vec![];
+        };
+        owner.native.track();
+        let p = owner.projection.borrow();
+        p.blocks
+            .iter()
+            .filter(|block| block.opaque)
+            .map(|block| RawBlockAction {
+                revision: owner.revision.get(),
+                source: block.source.clone(),
+                line: p.source[..block.source.start]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count()
+                    + 1,
+                preview: p.source[block.source.clone()]
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(60)
+                    .collect(),
+            })
+            .collect()
+    }
+    /// A local source entry is view state only. Its captured revision and exact
+    /// opaque span must still match; a stale control never selects newer text.
+    pub fn select_raw_block(&self, action: &RawBlockAction) -> Result<(), String> {
+        if self.busy() {
+            return Err("请先完成或取消中文组合，再选择原样块".into());
+        }
+        if !self.rich_mode.get() {
+            return Err("该原样块入口已过期，请重新打开富文本".into());
+        }
+        let owner = self
+            .active
+            .borrow()
+            .as_ref()
+            .cloned()
+            .ok_or("正文视图尚未准备完成")?;
+        let rich = self.rich.snapshot()?;
+        let source = self.source.snapshot()?;
+        if action.revision != owner.revision.get()
+            || action.revision != rich.revision
+            || action.revision != source.revision
+        {
+            return Err("该原样块入口已过期，请重新选择".into());
+        }
+        let mut base = 0;
+        let projection = owner.projection.borrow();
+        let position = projection
+            .blocks
+            .iter()
+            .find_map(|block| {
+                let at = base;
+                base += block.node.node_size();
+                (block.opaque && block.source == action.source).then_some(at)
+            })
+            .ok_or("该原样块入口已过期，请重新选择")?;
+        drop(projection);
+        let state = owner.session.state();
+        let mut tr = state.tr();
+        tr.set_selection(nsh_base::rich_editor::state::NodeSelection::create(
+            state.doc(),
+            position,
+        ));
+        self.status.set(String::new());
+        owner.session.dispatch(tr).map_err(|e| e.to_string())?;
+        if self.status.get().is_empty() {
+            Ok(())
+        } else {
+            Err(self.status.get())
+        }
+    }
+    pub fn edit_raw_block(&self, action: &RawBlockAction) -> Result<(), String> {
+        if self.busy() {
+            return Err("请先完成或取消中文组合，再编辑此块源码".into());
+        }
+        if !self.rich_mode.get() {
+            return Err("该原样块入口已过期，请重新打开富文本".into());
+        }
+        let active = self.active.borrow();
+        let owner = active.as_ref().ok_or("正文视图尚未准备完成")?;
+        let rich = self.rich.snapshot()?;
+        let source = self.source.snapshot()?;
+        if action.revision != owner.revision.get()
+            || action.revision != rich.revision
+            || action.revision != source.revision
+            || !owner
+                .projection
+                .borrow()
+                .blocks
+                .iter()
+                .any(|block| block.opaque && block.source == action.source)
+        {
+            return Err("该原样块入口已过期，请使用更新后的“编辑源码”".into());
+        }
+        drop(active);
+        self.source.select(
+            source.revision,
+            source.view_epoch,
+            ExternalSelections {
+                primary: 0,
+                ranges: vec![(action.source.start, action.source.end)],
+            },
+        )?;
+        self.source.fence();
+        self.source.trace_state("raw_block_source");
+        self.rich_mode.set(false);
+        self.status.set(String::new());
+        Ok(())
     }
     fn prepare_and_switch(
         &self,
@@ -650,6 +877,29 @@ mod tests {
     }
     fn bytes(n: &NativeView) -> Vec<u8> {
         n.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().body.to_utf8())
+    }
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ExactBodyState {
+        bytes: Vec<u8>,
+        token: texzi_document::StateToken,
+        profile: texzi_document::Profile,
+        eols: Vec<texzi_document::Eol>,
+        origins: String,
+        dirty: bool,
+    }
+    fn exact_body(n: &NativeView) -> ExactBodyState {
+        n.inspect(|store, id| {
+            let doc = store.view(id).unwrap().doc;
+            let snapshot = store.snapshot(doc).unwrap();
+            ExactBodyState {
+                bytes: snapshot.body.to_utf8(),
+                token: snapshot.token,
+                profile: snapshot.body.profile,
+                eols: snapshot.body.eols(),
+                origins: format!("{:?}", snapshot.body.origins()),
+                dirty: store.dirty(doc).unwrap(),
+            }
+        })
     }
     #[test]
     fn external_source_view_updates_live_rich_projection_without_a_second_history() {
@@ -1691,38 +1941,204 @@ mod tests {
         });
     }
     #[test]
-    fn owner_opaque_single_letter_preserves_mixed_eols_origins_and_undo() {
+    fn owner_opaque_single_letter_requires_local_source_entry_without_store_changes() {
         run(|| {
+            // PRD8 upgrades the editable-opaque behavior covered at 8889bee:
+            // raw syntax is retained here and edited only through Source.
             let raw = "<custom>\r\nalpha\nbeta\r\n</custom>\n";
             let source = NativeView::fixture(raw);
             let rich = source.sibling().unwrap();
             let owner = RichOwner::new(rich.clone(), signal(String::new())).unwrap();
+            let before = audit(&source);
+            let rich_before = audit(&rich);
             let state = owner.session.state();
             let mut tr = state.tr();
             tr.insert_text("A", Some(10), Some(11));
             owner.session.dispatch(tr).unwrap();
-            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
-            assert_eq!(bytes(&source), raw.replacen("alpha", "Alpha", 1).as_bytes());
-            source.inspect(|s, id| {
-                let p = s.snapshot(s.view(id).unwrap().doc).unwrap();
-                let mut original_bytes = 0;
-                let mut inserted = 0;
-                for (logical, origin) in p.body.origins() {
-                    match origin {
-                        Some(o) => {
-                            assert_eq!(o.source.as_ref(), raw);
-                            original_bytes += o.raw.len();
-                        }
-                        None => inserted += logical.len(),
-                    }
+            assert!(
+                owner.status.get().contains("编辑源码"),
+                "{}",
+                owner.status.get()
+            );
+            assert_eq!(audit(&source), before);
+            assert_eq!(audit(&rich), rich_before);
+            assert_eq!(owner.session.state().doc(), state.doc());
+            assert_eq!(bytes(&source), raw.as_bytes());
+        });
+    }
+    #[test]
+    fn local_raw_source_entry_preserves_body_and_source_undo_restores_bom_eols_and_origins() {
+        run(|| {
+            for block in [
+                "<custom>\r\nalpha\nbeta\r\n</custom>",
+                "$alpha + beta$",
+                "$$\r\nalpha + beta\n$$",
+                "text[^note]\r\n\r\n[^note]: alpha body",
+                "::: custom\r\nalpha\nbeta\r\n:::",
+            ] {
+                let raw = format!("\u{feff}anchor\r\n\r\n{block}\n\nend\r\n");
+                let source = NativeView::fixture(&raw);
+                let gate = ModeGate::new(source.clone(), source.sibling().unwrap());
+                let identity = || {
+                    source.inspect(|store, id| {
+                        let p = store.snapshot(store.view(id).unwrap().doc).unwrap();
+                        format!(
+                            "{:?}|{:?}|{:?}|{:?}|{:?}",
+                            p.token,
+                            p.body.to_utf8(),
+                            p.body.profile,
+                            p.body.eols(),
+                            p.body.origins()
+                        )
+                    })
+                };
+                let before = identity();
+                for _ in 0..2 {
+                    gate.to_rich();
+                    assert!(gate.rich_mode.get(), "{block:?}: {}", gate.status.get());
+                    let normalized = source.snapshot().unwrap().rope.to_string();
+                    let action = gate
+                        .raw_blocks()
+                        .into_iter()
+                        .find(|action| normalized[action.source.clone()].contains("alpha"))
+                        .expect("raw block must have a local source entry");
+                    let owner = gate.active.borrow().as_ref().unwrap().clone();
+                    let at = owner
+                        .projection
+                        .borrow()
+                        .rich_position(normalized.find("alpha").unwrap())
+                        .unwrap();
+                    select(&owner, at);
+                    let source_view = audit(&source);
+                    let rich_view = audit(&gate.rich);
+                    let mut tr = owner.session.state().tr();
+                    tr.insert_text("A", Some(at), Some(at + 1));
+                    owner.session.dispatch(tr).unwrap();
+                    assert!(
+                        gate.status.get().contains("编辑源码"),
+                        "{block:?}: {}",
+                        gate.status.get()
+                    );
+                    assert_eq!(audit(&source), source_view);
+                    assert_eq!(audit(&gate.rich), rich_view);
+                    gate.edit_raw_block(&action).unwrap();
+                    assert!(!gate.rich_mode.get());
+                    assert_eq!(
+                        source.snapshot().unwrap().selections.ranges,
+                        vec![(action.source.start, action.source.end)]
+                    );
+                    assert_eq!(identity(), before);
+                    assert_eq!(
+                        source.inspect(|s, id| s.history_depth(s.view(id).unwrap().doc).unwrap()),
+                        (0, 0)
+                    );
+                    gate.source_mounted();
                 }
-                assert_eq!(original_bytes, raw.len() - 1);
-                assert_eq!(inserted, 1);
-            });
+                let current = source.snapshot().unwrap();
+                let at = current.rope.to_string().find("alpha").unwrap();
+                source
+                    .edit(
+                        current.revision,
+                        current.view_epoch,
+                        vec![(at..at + 1, "A".into())],
+                        ExternalSelections {
+                            primary: 0,
+                            ranges: vec![(at + 1, at + 1)],
+                        },
+                        ExternalEditKind::Other,
+                    )
+                    .unwrap();
+                source.notify();
+                assert_eq!(bytes(&source), raw.replacen("alpha", "Alpha", 1).as_bytes());
+                gate.shell_history(true).unwrap();
+                assert_eq!(identity(), before);
+                assert_eq!(bytes(&source), raw.as_bytes());
+                assert!(!source.inspect(|s, id| s.dirty(s.view(id).unwrap().doc).unwrap()));
+            }
+        });
+    }
+    #[test]
+    fn raw_source_control_rejects_stale_span_revision_and_composition_without_view_changes() {
+        run(|| {
+            let source = NativeView::fixture("anchor\r\n\r\n<custom>alpha</custom>\n");
+            let gate = ModeGate::new(source.clone(), source.sibling().unwrap());
+            gate.to_rich();
+            let stale = gate.raw_blocks().remove(0);
+            let external = source.sibling_source().unwrap();
+            let current = external.snapshot().unwrap();
+            external
+                .edit(
+                    current.revision,
+                    current.view_epoch,
+                    vec![(0..1, "A".into())],
+                    ExternalSelections {
+                        primary: 0,
+                        ranges: vec![(1, 1)],
+                    },
+                    ExternalEditKind::Other,
+                )
+                .unwrap();
+            external.notify();
+            let source_before = audit(&source);
+            let rich_before = audit(&gate.rich);
+            assert!(gate.edit_raw_block(&stale).unwrap_err().contains("过期"));
+            let mut fresh = gate.raw_blocks().remove(0);
+            assert_eq!(fresh.revision, source.snapshot().unwrap().revision);
+            fresh.source.end -= 1;
+            assert!(gate.edit_raw_block(&fresh).unwrap_err().contains("过期"));
+            gate.rich.set_composing(true);
+            assert!(
+                gate.edit_raw_block(&gate.raw_blocks()[0])
+                    .unwrap_err()
+                    .contains("组合")
+            );
+            gate.rich.set_composing(false);
+            assert!(gate.rich_mode.get());
+            assert_eq!(audit(&source), source_before);
+            assert_eq!(audit(&gate.rich), rich_before);
+        });
+    }
+    #[test]
+    fn opaque_guard_rejects_partial_crossing_and_mapped_multi_step_but_allows_adjacent_text() {
+        run(|| {
+            let raw = "before\r\n\r\n<custom>alpha</custom>\n\nend\r\n";
+            let source = NativeView::fixture(raw);
+            let rich = source.sibling().unwrap();
+            let owner = RichOwner::new(rich.clone(), signal(String::new())).unwrap();
+            owner.activate().unwrap();
+            let p = owner.projection.borrow();
+            let at = p.rich_position(p.source.find("alpha").unwrap()).unwrap();
+            drop(p);
+            select(&owner, at);
+            let source_before = audit(&source);
+            let rich_before = audit(&rich);
+            let original_doc = owner.session.state().doc().clone();
+            for multi_step in [false, true] {
+                let mut tr = owner.session.state().tr();
+                if multi_step {
+                    tr.insert_text("X", Some(1), Some(1));
+                    tr.insert_text("A", Some(at + 1), Some(at + 2));
+                } else {
+                    tr.delete(2, at + 1).unwrap();
+                }
+                owner.session.dispatch(tr).unwrap();
+                assert!(
+                    owner.status.get().contains("编辑源码"),
+                    "{}",
+                    owner.status.get()
+                );
+                assert_eq!(audit(&source), source_before);
+                assert_eq!(audit(&rich), rich_before);
+                assert_eq!(owner.session.state().doc(), &original_doc);
+            }
+            select(&owner, 1);
+            let mut tr = owner.session.state().tr();
+            tr.insert_text("X", Some(1), Some(1));
+            owner.session.dispatch(tr).unwrap();
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            assert_eq!(bytes(&source), format!("X{raw}").as_bytes());
             owner.history(true);
             assert_eq!(bytes(&source), raw.as_bytes());
-            owner.history(false);
-            assert_eq!(bytes(&source), raw.replacen("alpha", "Alpha", 1).as_bytes());
         });
     }
     #[test]
@@ -1891,7 +2307,39 @@ mod tests {
                     );
                 }
                 let hashes = bytes(&source);
+                let checkpoint = Rc::new(RefCell::new(Vec::new()));
+                let captured = checkpoint.clone();
+                *owner.input_rule_checkpoint.borrow_mut() = Some(Box::new(move |native| {
+                    let depth = native.inspect(|store, id| {
+                        store.history_depth(store.view(id).unwrap().doc).unwrap()
+                    });
+                    captured.borrow_mut().push((
+                        exact_body(native),
+                        depth,
+                        native.snapshot().unwrap(),
+                    ));
+                }));
                 type_text(&owner, " ");
+                let checkpoints = checkpoint.borrow();
+                assert_eq!(
+                    checkpoints.len(),
+                    1,
+                    "observe the actual accepted trigger-space typing before formatting"
+                );
+                let (typed, typed_depth, typed_view) = &checkpoints[0];
+                assert!(typed.bytes.starts_with(&hashes));
+                assert_eq!(
+                    Projection::parse(owner.session.state().schema(), typed_view.rope.to_string())
+                        .unwrap()
+                        .doc
+                        .child(1)
+                        .text_content(),
+                    "### "
+                );
+                let converted = exact_body(&source);
+                let converted_view = owner.native.snapshot().unwrap();
+                let converted_depth = source
+                    .inspect(|store, id| store.history_depth(store.view(id).unwrap().doc).unwrap());
                 assert_eq!(owner.session.state().doc().child(1).ty().name(), "heading");
                 assert_eq!(
                     owner.session.state().doc().child(1).attrs()["level"],
@@ -1899,16 +2347,115 @@ mod tests {
                 );
                 owner.history(true);
                 assert!(owner.status.get().is_empty(), "{}", owner.status.get());
-                assert!(bytes(&source).starts_with(&hashes));
-                assert!(
-                    bytes(&source).len() > hashes.len(),
-                    "Undo keeps the trigger space spelling"
+                assert_eq!(
+                    &exact_body(&source),
+                    typed,
+                    "Undo restores the full accepted typing body/token/profile/EOL/origins/dirty"
                 );
+                assert_eq!(
+                    owner.native.snapshot().unwrap().selections,
+                    typed_view.selections
+                );
+                assert_eq!(
+                    source.inspect(|store, id| store
+                        .history_depth(store.view(id).unwrap().doc)
+                        .unwrap()),
+                    (typed_depth.0, 1)
+                );
+                assert!(owner.native.snapshot().unwrap().revision > converted_view.revision);
                 assert_eq!(owner.session.state().doc().child(1).text_content(), "### ");
                 owner.history(false);
                 assert!(owner.status.get().is_empty());
+                assert_eq!(
+                    exact_body(&source),
+                    converted,
+                    "Redo restores the exact converted state"
+                );
+                assert_eq!(
+                    owner.native.snapshot().unwrap().selections,
+                    converted_view.selections
+                );
+                assert_eq!(
+                    source.inspect(|store, id| store
+                        .history_depth(store.view(id).unwrap().doc)
+                        .unwrap()),
+                    converted_depth
+                );
                 assert_eq!(owner.session.state().doc().child(1).ty().name(), "heading");
             }
+        });
+    }
+    #[test]
+    fn heading_conversion_undo_source_roundtrip_preserves_exact_typing_state_and_redo() {
+        run(|| {
+            let raw = "\u{feff}# 天命难违的眼镜框\r\n\r\n\r\n\r\n<custom>neighbor &amp; \\*keep\\*</custom>\n";
+            let source = NativeView::fixture(raw);
+            let gate = ModeGate::new(source.clone(), source.sibling().unwrap());
+            gate.to_rich();
+            assert!(gate.rich_mode.get(), "{}", gate.status.get());
+            let owner = gate.active.borrow().as_ref().unwrap().clone();
+            let paragraph = owner.session.state().doc().child(0).node_size() + 1;
+            assert_eq!(
+                owner.session.state().doc().child(1).ty().name(),
+                "paragraph"
+            );
+            select(&owner, paragraph);
+            for _ in 0..3 {
+                type_text(&owner, "#");
+            }
+            let checkpoint = Rc::new(RefCell::new(None));
+            let observed = checkpoint.clone();
+            *owner.input_rule_checkpoint.borrow_mut() = Some(Box::new(move |native| {
+                let history = native
+                    .inspect(|store, id| store.history_depth(store.view(id).unwrap().doc).unwrap());
+                *observed.borrow_mut() = Some((
+                    exact_body(native),
+                    history,
+                    native.snapshot().unwrap().selections,
+                ));
+            }));
+            type_text(&owner, " ");
+            let converted = exact_body(&source);
+            assert!(
+                converted
+                    .bytes
+                    .starts_with("\u{feff}# 天命难违的眼镜框\r\n\r\n".as_bytes())
+            );
+            assert!(
+                converted
+                    .bytes
+                    .ends_with("\r\n\r\n<custom>neighbor &amp; \\*keep\\*</custom>\n".as_bytes())
+            );
+            gate.shell_history(true).unwrap();
+            let (typed, depth, selection) = checkpoint.borrow().as_ref().unwrap().clone();
+            assert_eq!(exact_body(&source), typed);
+            assert_eq!(gate.rich.snapshot().unwrap().selections, selection);
+            let history = source
+                .inspect(|store, id| store.history_depth(store.view(id).unwrap().doc).unwrap());
+            assert_eq!(history, (depth.0, 1));
+            assert_eq!(gate.session().state().doc().child(1).text_content(), "### ");
+            drop(owner);
+            gate.to_source();
+            assert!(!gate.rich_mode.get(), "{}", gate.status.get());
+            gate.source_mounted();
+            assert_eq!(exact_body(&source), typed);
+            assert_eq!(
+                source
+                    .inspect(|store, id| store.history_depth(store.view(id).unwrap().doc).unwrap()),
+                history
+            );
+            gate.to_rich();
+            assert!(gate.rich_mode.get(), "{}", gate.status.get());
+            assert_eq!(exact_body(&source), typed);
+            assert_eq!(
+                source
+                    .inspect(|store, id| store.history_depth(store.view(id).unwrap().doc).unwrap()),
+                history
+            );
+            assert_eq!(gate.session().state().doc().child(1).text_content(), "### ");
+            gate.shell_history(false).unwrap();
+            assert_eq!(exact_body(&source), converted);
+            assert_eq!(gate.session().state().doc().child(1).ty().name(), "heading");
         });
     }
     #[test]

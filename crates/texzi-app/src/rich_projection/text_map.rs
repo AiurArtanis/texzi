@@ -33,12 +33,22 @@ fn entity(raw: &str) -> Option<String> {
 
 // A token owns all of its original bytes. An entity that expands to several
 // scalars has only two exact source boundaries, not invented interior offsets.
-fn decoded_atom(raw: &str, expected: &str, start: usize, code: bool) -> Option<Atom> {
+fn decoded_atom(
+    raw: &str,
+    expected: &str,
+    start: usize,
+    code: bool,
+    table_code_pipe: bool,
+) -> Option<Atom> {
     let mut units = Vec::new();
     let (mut a, mut b) = (0, 0);
     while a < raw.len() && b < expected.len() {
         let tail = &raw[a..];
-        let (length, value) = if !code
+        let (length, value) = if table_code_pipe && tail.starts_with("\\|") {
+            // GFM removes a pipe's escape before interpreting a code span in
+            // a table cell. This exception does not apply to ordinary code.
+            (2, "|".into())
+        } else if !code
             && tail.starts_with('\\')
             && tail.as_bytes().get(1).is_some_and(u8::is_ascii_punctuation)
         {
@@ -73,9 +83,13 @@ fn decoded_atom(raw: &str, expected: &str, start: usize, code: bool) -> Option<A
                     break;
                 }
                 if skip > 0 && expected[b..].starts_with(tail[skip..].chars().next()?) {
-                    if let Some(rest) =
-                        decoded_atom(&tail[skip..], &expected[b..], start + a + skip, code)
-                    {
+                    if let Some(rest) = decoded_atom(
+                        &tail[skip..],
+                        &expected[b..],
+                        start + a + skip,
+                        code,
+                        table_code_pipe,
+                    ) {
                         found = Some((skip, rest));
                         break;
                     }
@@ -101,7 +115,7 @@ fn decoded_atom(raw: &str, expected: &str, start: usize, code: bool) -> Option<A
     })
 }
 
-fn atoms(node: &mdast::Node, source: &str, out: &mut Vec<Atom>) -> Option<()> {
+fn atoms(node: &mdast::Node, source: &str, out: &mut Vec<Atom>, in_table_cell: bool) -> Option<()> {
     let p = node.position();
     let atom = match node {
         mdast::Node::Text(t) => {
@@ -110,6 +124,7 @@ fn atoms(node: &mdast::Node, source: &str, out: &mut Vec<Atom>) -> Option<()> {
                 source.get(p.start.offset..p.end.offset)?,
                 &t.value,
                 p.start.offset,
+                false,
                 false,
             )?)
         }
@@ -132,10 +147,10 @@ fn atoms(node: &mdast::Node, source: &str, out: &mut Vec<Atom>) -> Option<()> {
             } else {
                 (body, p.start.offset + run)
             };
-            let mut atom = decoded_atom(body, &c.value, at, true);
+            let mut atom = decoded_atom(body, &c.value, at, true, in_table_cell);
             if atom.is_none() && !body.contains('\r') {
                 let flattened = body.replace('\n', " ");
-                atom = decoded_atom(&flattened, &c.value, at, true);
+                atom = decoded_atom(&flattened, &c.value, at, true, in_table_cell);
             }
             Some(atom?)
         }
@@ -160,7 +175,7 @@ fn atoms(node: &mdast::Node, source: &str, out: &mut Vec<Atom>) -> Option<()> {
                 let body = raw.get(body_start..body_end.max(body_start))?;
                 let body = body.strip_suffix('\r').unwrap_or(body);
                 let at = p.start.offset + body_start;
-                Some(decoded_atom(body, &c.value, at, true)?)
+                Some(decoded_atom(body, &c.value, at, true, false)?)
             } else {
                 // Indented code owns only the content after each line's
                 // indentation. Bind lines independently to retain indentation.
@@ -175,8 +190,13 @@ fn atoms(node: &mdast::Node, source: &str, out: &mut Vec<Atom>) -> Option<()> {
                     let body = &line[indent..];
                     let remaining = &c.value[visible..];
                     let length = body.len().min(remaining.len());
-                    let atom =
-                        decoded_atom(&body[..length], &remaining[..length], offset + indent, true)?;
+                    let atom = decoded_atom(
+                        &body[..length],
+                        &remaining[..length],
+                        offset + indent,
+                        true,
+                        false,
+                    )?;
                     units.extend(
                         atom.units
                             .into_iter()
@@ -199,7 +219,12 @@ fn atoms(node: &mdast::Node, source: &str, out: &mut Vec<Atom>) -> Option<()> {
         _ => {
             if let Some(children) = node.children() {
                 for child in children {
-                    atoms(child, source, out)?;
+                    atoms(
+                        child,
+                        source,
+                        out,
+                        in_table_cell || matches!(node, mdast::Node::TableCell(_)),
+                    )?;
                 }
             }
             None
@@ -222,10 +247,10 @@ impl TextMap {
         let mut parsed = Vec::new();
         if opaque {
             let raw = &source[span.clone()];
-            if let Some(atom) = decoded_atom(raw, raw, span.start, true) {
+            if let Some(atom) = decoded_atom(raw, raw, span.start, true, false) {
                 parsed.push(atom);
             }
-        } else if atoms(ast, source, &mut parsed).is_none() {
+        } else if atoms(ast, source, &mut parsed, false).is_none() {
             return Self::default();
         }
         let visible: String = parsed.iter().map(|a| a.text.as_str()).collect();
@@ -323,5 +348,138 @@ impl TextMap {
                 None
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        editor_owner::NativeView,
+        rich_owner::ModeGate,
+        rich_projection::{Projection, manager},
+    };
+    use nsh_base::{editor::ExternalDocument, rich_editor::state::TextSelection};
+    use nsh_core::prelude::*;
+
+    #[test]
+    fn gfm_code_cell_escaped_pipe_has_fixed_source_and_utf16_boundaries() {
+        let manager = manager();
+        let raw = "| h | v |\n| --- | --- |\n| `a\\|b` | x |";
+        let p = Projection::parse(manager.schema(), raw.into()).unwrap();
+        assert_eq!(p.doc.child(0).ty().name(), "table");
+        assert_eq!(p.doc.child(0).child(1).child(0).text_content(), "a|b");
+        // Fixed byte positions, independent of the source mapper: third line
+        // starts at byte 24, code content at 27, and \| owns bytes 28..30.
+        assert_eq!(raw.get(27..31), Some("a\\|b"));
+        for (source, rich) in [
+            (2, 4),
+            (6, 9),
+            (27, 16),
+            (28, 17),
+            (30, 18),
+            (31, 19),
+            (35, 23),
+        ] {
+            assert_eq!(p.rich_position(source), Some(rich), "source {source}");
+            assert_eq!(p.source_position(rich), Some(source), "rich {rich}");
+        }
+        assert_eq!(
+            p.rich_position(29),
+            None,
+            "no invented boundary inside the source escape"
+        );
+    }
+
+    #[test]
+    fn ordinary_code_keeps_backslash_pipe_and_table_code_keeps_other_literal_escapes() {
+        let manager = manager();
+        let ordinary = Projection::parse(manager.schema(), "`a\\|b`".into()).unwrap();
+        assert_eq!(ordinary.doc.child(0).text_content(), "a\\|b");
+        for (source, rich) in [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)] {
+            assert_eq!(ordinary.rich_position(source), Some(rich));
+            assert_eq!(ordinary.source_position(rich), Some(source));
+        }
+        let raw = "| h |\n| --- |\n| `a\\|b &amp; \\*x\\*` |";
+        let table = Projection::parse(manager.schema(), raw.into()).unwrap();
+        assert_eq!(
+            table.doc.child(0).child(1).child(0).text_content(),
+            "a|b &amp; \\*x\\*"
+        );
+        let literal_amp = raw.find("&amp;").unwrap();
+        let pos = table.rich_position(literal_amp).unwrap();
+        assert_eq!(
+            table.source_position(pos + 1),
+            Some(literal_amp + 1),
+            "entity spelling remains literal in code"
+        );
+        let literal_slash = raw.find("\\*x").unwrap();
+        let pos = table.rich_position(literal_slash).unwrap();
+        assert_eq!(
+            table.source_position(pos + 1),
+            Some(literal_slash + 1),
+            "only a table pipe loses its escape"
+        );
+    }
+
+    #[test]
+    fn owner_gfm_code_cell_edit_patches_escape_only_and_shared_undo_restores_raw_eols() {
+        let runtime = nsh_core::element::Runtime::default();
+        let _entered = runtime.enter();
+        let raw = "| h | v |\r\n| --- | --- |\n| `a\\|b` | x |\r\n\r\n<custom>keep</custom>\n";
+        let source = NativeView::fixture(raw);
+        let gate = ModeGate::new(source.clone(), source.sibling().unwrap());
+        let before =
+            source.inspect(|store, id| store.snapshot(store.view(id).unwrap().doc).unwrap().token);
+        gate.to_rich();
+        assert!(gate.rich_mode.get(), "{}", gate.status.get());
+        let session = gate.session();
+        let state = session.state();
+        let mut select = state.tr();
+        select.set_selection(TextSelection::create(state.doc(), 17, Some(18)));
+        session.dispatch(select).unwrap();
+        assert!(gate.status.get().is_empty(), "{}", gate.status.get());
+        let mut tr = session.state().tr();
+        tr.insert_text("/", Some(17), Some(18));
+        session.dispatch(tr).unwrap();
+        assert!(gate.status.get().is_empty(), "{}", gate.status.get());
+        let expected = raw.replacen("\\|", "/", 1);
+        source.inspect(|store, id| {
+            let doc = store.view(id).unwrap().doc;
+            let snapshot = store.snapshot(doc).unwrap();
+            assert_eq!(snapshot.body.to_utf8(), expected.as_bytes());
+            assert_eq!(store.history_depth(doc).unwrap(), (1, 0));
+            assert!(store.dirty(doc).unwrap());
+            let retained: usize = snapshot
+                .body
+                .origins()
+                .into_iter()
+                .filter_map(|(_, origin)| origin.map(|origin| origin.raw.len()))
+                .sum();
+            assert_eq!(
+                retained,
+                raw.len() - 2,
+                "every byte outside the replaced \\| keeps its original provenance"
+            );
+        });
+        gate.to_source();
+        assert!(!gate.rich_mode.get(), "{}", gate.status.get());
+        gate.shell_history(true).unwrap();
+        source.inspect(|store, id| {
+            let doc = store.view(id).unwrap().doc;
+            let snapshot = store.snapshot(doc).unwrap();
+            assert_eq!(snapshot.body.to_utf8(), raw.as_bytes());
+            assert_eq!(snapshot.token, before);
+            assert!(!store.dirty(doc).unwrap());
+            assert_eq!(store.history_depth(doc).unwrap(), (0, 1));
+        });
+        gate.shell_history(false).unwrap();
+        assert_eq!(
+            source.inspect(|store, id| store
+                .snapshot(store.view(id).unwrap().doc)
+                .unwrap()
+                .body
+                .to_utf8()),
+            expected.as_bytes()
+        );
     }
 }

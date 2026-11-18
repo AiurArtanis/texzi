@@ -41,9 +41,11 @@ pub(super) fn import_source(
             let title = def
                 .title
                 .as_ref()
-                .map(|t| format!(" \"{}\"", t.replace('\\', "\\\\").replace('"', "\\\"")))
+                .map(|t| format!(" \"{}\"", super::resources::title(t)))
                 .unwrap_or_default();
-            let url = def.url.replace('<', "%3C").replace('>', "%3E");
+            let url = super::resources::destination(&def.url)
+                .replace('<', "%3C")
+                .replace('>', "%3E");
             edits.push((
                 position.start.offset..position.end.offset,
                 format!("{}[{label}](<{url}>{title})", if image { "!" } else { "" }),

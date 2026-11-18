@@ -14,8 +14,12 @@ use unicode_segmentation::UnicodeSegmentation;
 mod list_items;
 mod local_patch;
 mod references;
+mod resources;
 mod table_rows;
+mod table_structures;
 mod text_map;
+
+pub use resources::{ResourceKind, ResourceTarget, ResourceValues};
 
 pub fn manager() -> ExtensionManager {
     ExtensionManager::with_core(vec![
@@ -47,12 +51,54 @@ fn parse_options() -> ParseOptions {
     options.constructs.math_text = true;
     options
 }
+fn list_content_end(node: &mdast::Node, source: &str) -> Option<usize> {
+    match node {
+        mdast::Node::List(list) => list
+            .children
+            .last()
+            .and_then(|n| list_content_end(n, source)),
+        mdast::Node::ListItem(item) => {
+            if let Some(last) = item.children.last()
+                && !matches!(last, mdast::Node::Paragraph(p) if p.children.is_empty())
+            {
+                return list_content_end(last, source);
+            }
+            // An empty item has syntax but no content child. Its complete
+            // first-line prefix, including trailing spaces, remains source.
+            let start = item.position.as_ref()?.start.offset;
+            Some(
+                start
+                    + source
+                        .get(start..)?
+                        .find(['\r', '\n'])
+                        .unwrap_or(source.len() - start),
+            )
+        }
+        _ => node.position().map(|p| p.end.offset),
+    }
+}
 fn root(schema: &Schema, nodes: Vec<Node>) -> Result<Node, String> {
     schema
         .node("doc", None, Fragment::from(nodes), vec![])
         .map_err(message)
 }
 impl Projection {
+    /// The raw-block edit gate may admit this explicit resource form only
+    /// after its AST target, values and complete resulting tree were checked.
+    pub fn verified_resource_transaction(
+        &self,
+        next: &Node,
+        applied: &[Transaction],
+    ) -> Result<bool, String> {
+        Ok(resources::transaction_edits(self, next, applied)?.is_some())
+    }
+    pub fn verified_table_transaction(
+        &self,
+        next: &Node,
+        applied: &[Transaction],
+    ) -> Result<bool, String> {
+        Ok(table_structures::transaction_edits(self, next, applied)?.is_some())
+    }
     /// Replacing the selected visible label keeps its existing resource. The
     /// upstream non-inclusive link mark deliberately does not extend at a
     /// cursor, but its generic marks_across also drops a whole selected label.
@@ -175,12 +221,24 @@ impl Projection {
         next: &Node,
         applied: &[Transaction],
     ) -> Result<Vec<(Range<usize>, String)>, String> {
+        if let Some(edits) = resources::transaction_edits(self, next, applied)? {
+            return Ok(edits);
+        }
+        if let Some(edits) = table_structures::transaction_edits(self, next, applied)? {
+            return Ok(edits);
+        }
+        if let Some(edits) = list_items::transaction_edits(self, next, applied)? {
+            return Ok(edits);
+        }
         if &self.doc == next {
             return Ok(vec![]);
         }
         let steps: Vec<_> = applied.iter().flat_map(|t| t.steps.iter()).collect();
         if steps.len() == 1 {
             if let Some(step) = steps[0].as_any().downcast_ref::<ReplaceStep>() {
+                if let Some(edit) = self.delete_opaque_block(next, step)? {
+                    return Ok(vec![edit]);
+                }
                 if let Some((range, text)) = table_rows::append_edit(self, next, step)? {
                     let mut raw = self.source.clone();
                     raw.replace_range(range.clone(), &text);
@@ -282,6 +340,78 @@ impl Projection {
         }
         self.source_edits(next)
     }
+    /// Only an exact, closed deletion of one parser-owned raw block enters
+    /// this seam. Remove separator trivia only when the complete projection
+    /// requires it; retained bytes never pass through a serializer or diff.
+    fn delete_opaque_block(
+        &self,
+        next: &Node,
+        step: &ReplaceStep,
+    ) -> Result<Option<(Range<usize>, String)>, String> {
+        if step.slice.open_start != 0 || step.slice.open_end != 0 {
+            return Ok(None);
+        }
+        let mut base = 0;
+        let target = self.blocks.iter().enumerate().find_map(|(index, block)| {
+            let end = base + block.node.node_size();
+            let exact = block.opaque && step.from == base && step.to == end;
+            base = end;
+            exact.then_some((index, block))
+        });
+        let Some((index, block)) = target else {
+            return Ok(None);
+        };
+        let sole_empty_paragraph = if self.doc.child_count() == 1
+            && next.child_count() == 1
+            && step.slice.content.child_count() == 1
+        {
+            let empty = next
+                .ty()
+                .schema()
+                .node("paragraph", None, Fragment::empty(), vec![])
+                .map_err(message)?;
+            step.slice.content.child(0) == &empty && next.child(0) == &empty
+        } else {
+            false
+        };
+        if step.slice.content.size() != 0 && !sole_empty_paragraph {
+            return Ok(None);
+        }
+        let before = index
+            .checked_sub(1)
+            .map(|i| self.blocks[i].source.end)
+            .unwrap_or(0);
+        let after = self
+            .blocks
+            .get(index + 1)
+            .map(|b| b.source.start)
+            .unwrap_or(self.source.len());
+        let eols = |range: Range<usize>| {
+            self.source[range]
+                .bytes()
+                .all(|b| matches!(b, b'\r' | b'\n'))
+        };
+        let mut candidates = vec![block.source.clone()];
+        if eols(block.source.end..after) {
+            candidates.push(block.source.start..after);
+        }
+        if eols(before..block.source.start) {
+            candidates.push(before..block.source.end);
+        }
+        if eols(before..block.source.start) && eols(block.source.end..after) {
+            candidates.push(before..after);
+        }
+        candidates.sort_by_key(|range| range.len());
+        candidates.dedup();
+        for range in candidates {
+            let mut raw = self.source.clone();
+            raw.replace_range(range.clone(), "");
+            if Self::parse(next.ty().schema(), raw).is_ok_and(|p| &p.doc == next) {
+                return Ok(Some((range, String::new())));
+            }
+        }
+        Err("该原样块删除暂不能保真往返，原文未变".into())
+    }
     /// Split a semantic block replacement into grapheme edits. Matched source
     /// spans (including every existing EOL) stay in Store's provenance tree.
     /// This first bridge rejects changes to line breaks inside multiline blocks
@@ -348,6 +478,15 @@ impl Projection {
         for child in tree.children().ok_or("missing Markdown root")? {
             let p = child.position().ok_or("missing source span")?;
             let mut span = p.start.offset..p.end.offset;
+            // A list container includes terminal separator EOLs beyond its
+            // last actual item. Keep these parser-owned trivia bytes outside
+            // the block so the existing empty-paragraph projection can see
+            // them. The source itself, including every EOL, stays unchanged.
+            if matches!(child, mdast::Node::List(_))
+                && let Some(end) = list_content_end(child, &source)
+            {
+                span.end = end;
+            }
             // The parser includes a footnote definition's terminating EOL in
             // its container span. It remains source trivia, like the terminal
             // EOL of a paragraph, rather than part of the literal block text.

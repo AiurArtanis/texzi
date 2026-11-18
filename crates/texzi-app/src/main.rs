@@ -28,12 +28,26 @@ mod syntax_matrix_tests;
 
 #[cfg(windows)]
 mod editor_owner;
+#[cfg(all(test, windows))]
+mod list_structural_tests;
+#[cfg(windows)]
+mod raw_block_controls;
+#[cfg(all(test, windows))]
+mod raw_block_delete_tests;
+#[cfg(windows)]
+mod rich_controls;
+#[cfg(windows)]
+mod rich_images;
 #[cfg(windows)]
 mod rich_owner;
 #[cfg(windows)]
 mod rich_projection;
 #[cfg(windows)]
 mod startup_fault;
+#[cfg(windows)]
+mod table_controls;
+#[cfg(all(test, windows))]
+mod table_controls_tests;
 
 #[cfg(windows)]
 mod app {

@@ -4,6 +4,10 @@
 
 本轮固定组件语料已实际执行：`runtime03` 的52项全部通过，包含本清单16行、8组合的所列断言；整体仍 **PARTIAL**，GUI/人工 **NOT_RUN**。原32-suite、构建成功和其他候选GUI不能替代本轮证据。原样展示、源码可达、直接编辑分别取证。
 
+界面入口增量的 `runtime12` 已实际执行89/89、exit0（2026-11-18，本地未提交整合反馈，固定身份以随后包内 build-identity 与实际重跑为准）。新增真实 Owner/Store 断言包括：链接/图片属性与引用定义、原样块局部源码和明确整块删除、图片占位/地址解析策略、列表 Enter/空项退出/普通列表缩进、表格行列/对齐/表头与未编辑单元格字节、表内行内代码转义管道。它们是组件通过，不代表这些新界面入口已由 GUI 验收。runtime05–11的实际失败全部保留。
+
+标题自动转换另捕获触发空格已提交、结构转换尚未发生的真实 Store 状态，比较 Undo/Redo 的完整字节、token、Profile、EOL、provenance、dirty 及历史深度；源码往返不清 redo。富文本字面标记允许在新增局部用 Markdown 转义/实体编码，例 `\###&#32;` 显示为 `### `，不是承诺把字面标记裸写源码后仍作为普通段落。
+
 机器可读固定语料与分层状态在 [SYNTAX-MATRIX.json](SYNTAX-MATRIX.json)，执行代码在 [syntax_matrix_tests.rs](../../crates/texzi-app/src/syntax_matrix_tests.rs)。JSON 的每一行分别保留 original_bytes、formatted_display、direct_edit、source_reachable、component、gui、manual 和证据引用。
 
 | ID | PRD 原语法行 | 已编写的严格组件行为 | 仍须独立覆盖 |

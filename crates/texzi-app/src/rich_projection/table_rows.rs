@@ -139,14 +139,25 @@ pub(super) fn empty_positions(block: &Block, source: &str) -> Vec<(usize, usize)
         let Some(line) = source.get(row.line.clone()) else {
             return vec![];
         };
-        // Escaped or code-span pipes need a separate inline grammar. An
-        // explicit pair of outer pipes keeps empty-cell padding unambiguous.
+        // GFM splits on unescaped pipes even inside code spans. Count the
+        // immediately preceding backslashes so an escaped content pipe never
+        // steals the source seam of a later empty cell in the same row.
         let plain = line.trim_matches(|c| c == ' ' || c == '\t');
-        if line.contains(['\\', '`']) || !plain.starts_with('|') || !plain.ends_with('|') {
+        if !plain.starts_with('|') || !plain.ends_with('|') {
             before_row += rich_row.node_size();
             continue;
         }
-        let pipes: Vec<_> = line.match_indices('|').map(|(at, _)| at).collect();
+        let pipes: Vec<_> = line
+            .match_indices('|')
+            .filter_map(|(at, _)| {
+                let escapes = line.as_bytes()[..at]
+                    .iter()
+                    .rev()
+                    .take_while(|b| **b == b'\\')
+                    .count();
+                (escapes % 2 == 0).then_some(at)
+            })
+            .collect();
         if pipes.len() != table.columns + 1 {
             before_row += rich_row.node_size();
             continue;

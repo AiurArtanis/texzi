@@ -79,14 +79,14 @@ struct Shell {
     searching: Signal<bool>,
     search_cancel: RefCell<Option<Arc<AtomicBool>>>,
 }
-fn foreground() -> Hsla {
+pub(crate) fn foreground() -> Hsla {
     if dark() {
         rgb(0xe5e9f0).into()
     } else {
         rgb(0x20242b).into()
     }
 }
-fn background() -> Hsla {
+pub(crate) fn background() -> Hsla {
     if dark() {
         rgb(0x191d23).into()
     } else {
@@ -931,6 +931,10 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let rich_owner = s.owner;
     let source_focus = s.second_active;
     let rich_focus = s.second_active;
+    let controls_source = doc.source.clone();
+    let image_document_path = doc.path.clone();
+    let controls_owner = s.owner;
+    let controls_shell = s.clone();
     let name = doc.name.clone();
     view()
         .flex_1()
@@ -955,13 +959,43 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
         )
         .child(
             when(rich_mode, move || {
-                nsh_base::rich_editor::view::rich_editor()
-                    .component_ref(&rich_reference)
-                    .editor(rich.session())
-                    .classes(crate::app::rich_classes())
-                    .auto_focus(true)
-                    .on_focus(move |_: &()| rich_focus.set(second))
-                    .size_full()
+                crate::rich_images::install(&rich.session(), image_document_path.clone());
+                let shell = controls_shell.clone();
+                let focus: Rc<dyn Fn()> =
+                    Rc::new(move || shell.focus_group(if second { 2 } else { 1 }));
+                let raw_focus = focus.clone();
+                view()
+                    .flex_1()
+                    .child(
+                        view()
+                            .flex_row()
+                            .gap(px(8.0))
+                            .p(px(6.0))
+                            .child(crate::rich_controls::view(
+                                rich.clone(),
+                                controls_source.clone(),
+                                focus.clone(),
+                            ))
+                            .child(crate::table_controls::view(
+                                rich.clone(),
+                                controls_source.clone(),
+                                focus,
+                            )),
+                    )
+                    .child(crate::raw_block_controls::raw_block_controls(
+                        rich.clone(),
+                        controls_owner,
+                        move || raw_focus(),
+                    ))
+                    .child(
+                        nsh_base::rich_editor::view::rich_editor()
+                            .component_ref(&rich_reference)
+                            .editor(rich.session())
+                            .classes(crate::app::rich_classes())
+                            .auto_focus(true)
+                            .on_focus(move |_: &()| rich_focus.set(second))
+                            .flex_1(),
+                    )
             })
             .otherwise(move || {
                 source.source_mounted();
