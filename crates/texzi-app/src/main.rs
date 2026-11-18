@@ -43,6 +43,10 @@ mod zen_state;
 #[cfg(windows)]
 mod editor_owner;
 #[cfg(all(test, windows))]
+mod entity_position_tests;
+#[cfg(all(test, windows))]
+mod heading_input_regression_tests;
+#[cfg(all(test, windows))]
 mod list_structural_tests;
 #[cfg(windows)]
 mod raw_block_controls;
