@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--probe", required=True)
     parser.add_argument("--trace", required=True)
     args = parser.parse_args()
+    # CreateProcess does not normalize forward-slash relative executable paths.
+    args.probe = str(pathlib.Path(args.probe).resolve(strict=True))
     trace = pathlib.Path(args.trace)
     if trace.exists():
         raise RuntimeError("preserve existing trace: " + str(trace))

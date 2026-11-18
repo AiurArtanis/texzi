@@ -11,6 +11,8 @@ import threading
 
 class Worker:
     def __init__(self, exe, directory):
+        # Keep Windows process launch independent of the caller's path spelling.
+        exe = str(pathlib.Path(exe).resolve(strict=True))
         self.directory = pathlib.Path(directory)
         self.directory.mkdir()  # never overwrite a previous round
         self.p = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
