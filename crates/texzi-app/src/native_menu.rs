@@ -5,6 +5,16 @@ use nsh_core::{
 };
 use std::rc::Rc;
 
+pub(super) const SHELL_SHORTCUTS: &[(&str, &str)] = &[
+    ("mod+o", "texzi.file.open"),
+    ("f3", "texzi.find.next"),
+    ("shift+f3", "texzi.find.previous"),
+    ("mod+shift+w", "texzi.window.close"),
+    ("f1", "texzi.commandPalette.open"),
+    ("mod+e", "texzi.navigation.quickOpen"),
+    ("mod+f4", "texzi.tab.close"),
+];
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Command {
     pub id: String,
@@ -67,6 +77,14 @@ fn key(text: &str) -> Option<String> {
     // the application keymap, preserving the second stroke's modifiers.
     (!text.contains(' ') && !text.contains("Drag"))
         .then(|| text.to_ascii_lowercase().replace("ctrl", "mod"))
+}
+
+fn displayed_key(command: &Command) -> Option<&str> {
+    match command.id.as_str() {
+        "texzi.sidebar.toggle" => Some("Ctrl+K Ctrl+B"),
+        "texzi.group.focusIndex" => Some("Ctrl+1 / Ctrl+2"),
+        _ => command.keys.first().map(String::as_str),
+    }
 }
 
 const MENU_GROUPS: &[(&str, &[&str])] = &[
@@ -148,6 +166,35 @@ const MENU_GROUPS: &[(&str, &[&str])] = &[
     ("帮助(&H)", &["texzi.help.guide", "texzi.help.about"]),
 ];
 
+/// Window commands belong to the host rather than the rich text model. The
+/// native menu and engine aliases use this same list; text-edit roles stay in
+/// the currently focused input, and Ctrl+B remains rich bold.
+pub fn application_shortcuts() -> Vec<nsh_core::prelude::SharedString> {
+    let commands = commands();
+    let mut shortcuts = std::collections::BTreeSet::new();
+    for (_, ids) in MENU_GROUPS {
+        for id in *ids {
+            if id.is_empty() || role(id).is_some() {
+                continue;
+            }
+            let command = commands.iter().find(|c| c.id == *id).expect("menu command");
+            if let Some(stroke) = displayed_key(command).and_then(key) {
+                shortcuts.insert(stroke);
+            }
+        }
+    }
+    shortcuts.extend(
+        SHELL_SHORTCUTS
+            .iter()
+            .map(|(stroke, _)| (*stroke).to_owned()),
+    );
+    shortcuts.insert("mod+k".to_owned());
+    for index in 1..=8 {
+        shortcuts.insert(format!("mod+{index}"));
+    }
+    shortcuts.into_iter().map(Into::into).collect()
+}
+
 pub fn install(
     run: Rc<dyn Fn(&str)>,
     blocked: impl Fn(&str) -> Option<String>,
@@ -161,13 +208,7 @@ pub fn install(
             .unwrap_or_else(|| panic!("unknown menu command: {id}"));
         // Ctrl+B belongs to bold in rich text. The shared native menu cannot
         // install a context-free accelerator that steals it before the editor.
-        let displayed_key = if id == "texzi.sidebar.toggle" {
-            Some("Ctrl+K Ctrl+B")
-        } else if id == "texzi.group.focusIndex" {
-            Some("Ctrl+1 / Ctrl+2")
-        } else {
-            command.keys.first().map(String::as_str)
-        };
+        let displayed_key = displayed_key(command);
         let reason = blocked(id);
         let label = match &reason {
             Some(_) => format!("{}（暂不可用）", command.name),
@@ -221,6 +262,46 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn application_shortcuts_keep_window_commands_and_leave_text_roles_to_the_editor() {
+        use nsh_core::keymap::Keystroke;
+        let strokes: Vec<_> = application_shortcuts()
+            .iter()
+            .map(|s| Keystroke::parse_with(s, false).expect("valid Windows host shortcut"))
+            .collect();
+        let contains = |s| strokes.contains(&Keystroke::parse_with(s, false).unwrap());
+        for global in [
+            "ctrl+o", "ctrl+e", "ctrl+k", "ctrl+1", "ctrl+8", "f1", "ctrl+f4",
+        ] {
+            assert!(
+                contains(global),
+                "window command {global} must remain reachable in rich text"
+            );
+        }
+        // Ctrl+E is the product's global Quick Open alias. Inline code is
+        // deliberately Unassigned in COMMANDS, despite NSH's default binding.
+        for editor in [
+            "ctrl+b",
+            "ctrl+i",
+            "ctrl+z",
+            "ctrl+y",
+            "ctrl+shift+z",
+            "ctrl+a",
+            "ctrl+c",
+            "ctrl+x",
+            "ctrl+v",
+            "escape",
+            "enter",
+            "backspace",
+            "delete",
+        ] {
+            assert!(
+                !contains(editor),
+                "host must not take rich editing key {editor}"
+            );
+        }
+    }
+
     #[test]
     fn every_native_menu_entry_resolves_and_its_accelerator_parses() {
         let commands = commands();

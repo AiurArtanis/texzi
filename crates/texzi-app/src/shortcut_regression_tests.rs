@@ -1,14 +1,16 @@
 //! Headless NSH Core/keymap coverage of the production shell shortcut helper.
 //! The Input's focus event and the platform's `editing` flag are supplied here;
 //! this does not exercise Win32 key delivery, native menus or a visible dialog.
-use super::{CHORDS, SHELL_SHORTCUTS, bind_shell_shortcuts};
+use super::{CHORDS, SHELL_SHORTCUTS, bind_chord_continuations, bind_shell_shortcuts};
+use crate::{editor_owner::NativeView, rich_owner::ModeGate};
+use nsh_base::editor::ExternalDocument;
 use nsh_core::{
-    ApproxTextEngine, Command, Core, EventKind, EventPayload, MountItem, NodeId, PayloadValue,
+    ApproxTextEngine, Command, Core, EventKind, EventPayload, MountItem, NodeId, Op, PayloadValue,
     ROOT_ID, Size, ViewKind,
-    element::{Environment, Root, input, view},
+    element::{Environment, Root, RustCall, RustOp, ToJs, input, view},
     file_dialog::{FileRequest, OpenDialog, OpenDialogKind},
     geometry::px,
-    keymap::{KeyMatch, Keymap, Keystroke},
+    keymap::{KeyBinding, KeyMatch, Keymap, Keystroke, When},
     platform::Os,
     prelude::*,
 };
@@ -24,6 +26,8 @@ struct Probe {
     resets: Cell<usize>,
     focus_events: Cell<usize>,
     input_changes: Cell<usize>,
+    input_text: RefCell<String>,
+    cancellations: Cell<usize>,
     answers: Cell<usize>,
 }
 
@@ -35,6 +39,8 @@ impl Probe {
             resets: Cell::new(0),
             focus_events: Cell::new(0),
             input_changes: Cell::new(0),
+            input_text: RefCell::new("保留输入框正文".into()),
+            cancellations: Cell::new(0),
             answers: Cell::new(0),
         })
     }
@@ -64,6 +70,22 @@ thread_local! {
 #[component]
 fn ShortcutFixture() -> impl IntoElement {
     let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
+    bind_fixture_shortcuts(probe.clone());
+    let focused = probe.clone();
+    let changed = probe.clone();
+    view().child(
+        input()
+            .value("保留输入框正文".to_owned())
+            .auto_focus(true)
+            .on_focus(move |_: &()| focused.focus_events.set(focused.focus_events.get() + 1))
+            .on_change(move |value: &str| {
+                changed.input_changes.set(changed.input_changes.get() + 1);
+                *changed.input_text.borrow_mut() = value.into();
+            }),
+    )
+}
+
+fn bind_fixture_shortcuts(probe: Rc<Probe>) {
     let owner = Owner::current();
     let armed = signal(true);
     let reset = probe.clone();
@@ -78,9 +100,9 @@ fn ShortcutFixture() -> impl IntoElement {
         let run = probe.clone();
         bind_shell_shortcuts(Rc::new(move |id| owner.run(|| run.run(id))));
 
-        // Reproduce the existing chord's dynamic-owner registration boundary.
-        // Its target comes from the production CHORDS table. The full shell's
-        // timeout, modal and IME handling are not replaced or claimed here.
+        // Use the production continuation helper in a real dynamic owner.
+        // The full shell's timeout, modal and IME handling are not replaced
+        // or claimed here.
         let prefix = signal(false);
         on_key("mod+k", move |_| prefix.set(true));
         let run = probe.clone();
@@ -88,30 +110,18 @@ fn ShortcutFixture() -> impl IntoElement {
             if !prefix.get() {
                 return;
             }
-            let target = CHORDS
-                .iter()
-                .find(|(key, _)| *key == "mod+o")
-                .map(|(_, id)| *id)
-                .expect("the existing Ctrl+K Ctrl+O command remains defined");
             let run = run.clone();
-            on_key("mod+o", move |_| {
+            bind_chord_continuations(Rc::new(move |target| {
                 // Shell.run likewise moves service creation and its await to
                 // the long-lived shell owner before this prefix is disposed.
-                owner.run(|| run.run(target));
+                owner.run(|| match target {
+                    Some(id) => run.run(id),
+                    None => run.cancellations.set(run.cancellations.get() + 1),
+                });
                 prefix.set(false);
-            });
+            }));
         });
     }
-
-    let focused = probe.clone();
-    let changed = probe.clone();
-    view().child(
-        input()
-            .value("保留输入框正文".to_owned())
-            .auto_focus(true)
-            .on_focus(move |_: &()| focused.focus_events.set(focused.focus_events.get() + 1))
-            .on_change(move |_: &str| changed.input_changes.set(changed.input_changes.get() + 1)),
-    )
 }
 
 struct Harness {
@@ -120,6 +130,18 @@ struct Harness {
     keys: Option<Arc<Keymap>>,
     input: Option<NodeId>,
     requests: Vec<(u32, OpenDialogKind, bool)>,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        // Release test-owned documents during ordinary stack cleanup. Leaving
+        // a Gate in RICH_PROBE until TLS destruction outlives the RichOwner
+        // registry it uses in Drop. Never hold a RefMut while releasing it.
+        let rich = RICH_PROBE.with(|slot| slot.borrow_mut().take());
+        let plain = PROBE.with(|slot| slot.borrow_mut().take());
+        drop(rich);
+        drop(plain);
+    }
 }
 
 impl Harness {
@@ -307,4 +329,346 @@ fn dynamic_ctrl_k_ctrl_o_folder_binding_precedes_file_open_then_cleans_up() {
     fixture.cancel_request(file_request.0);
     assert_eq!(fixture.probe.answers.get(), 2);
     assert_eq!(fixture.probe.input_changes.get(), 0);
+}
+
+struct RichDocument {
+    source: Rc<NativeView>,
+    rich: Rc<NativeView>,
+    gate: Rc<ModeGate>,
+}
+
+struct RichProbe {
+    reserve_application_keys: bool,
+    document: RefCell<Option<Rc<RichDocument>>>,
+}
+
+thread_local! {
+    static RICH_PROBE: RefCell<Option<Rc<RichProbe>>> = const { RefCell::new(None) };
+}
+
+#[component]
+fn RichShortcutFixture() -> impl IntoElement {
+    let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
+    let rich_probe = RICH_PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
+    bind_fixture_shortcuts(probe.clone());
+    let source = NativeView::fixture("正文 &amp; \\*保留\\*\r\n\r\n<keep>literal</keep>\r\n");
+    let rich = source.sibling().unwrap();
+    let gate = ModeGate::new(source.clone(), rich.clone());
+    gate.to_rich();
+    assert!(gate.rich_mode.get(), "{}", gate.status.get());
+    let session = gate.session();
+    *rich_probe.document.borrow_mut() = Some(Rc::new(RichDocument { source, rich, gate }));
+    let shortcuts = if rich_probe.reserve_application_keys {
+        crate::native_menu::application_shortcuts()
+    } else {
+        Vec::new()
+    };
+    view().size_full().child(
+        nsh_base::rich_editor::view::rich_editor()
+            .editor(session)
+            .application_shortcuts(shortcuts)
+            .on_focus(move |_: &()| probe.focus_events.set(probe.focus_events.get() + 1))
+            .size_full(),
+    )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RichAudit {
+    source: String,
+    rich: String,
+    doc: serde_json::Value,
+    selection: serde_json::Value,
+    stored_marks: Vec<serde_json::Value>,
+    status: String,
+}
+
+fn view_audit(view: &NativeView) -> String {
+    let native = view.snapshot().unwrap();
+    view.inspect(|store, id| {
+        let document = store.view(id).unwrap().doc;
+        let snapshot = store.snapshot(document).unwrap();
+        format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            document,
+            snapshot.revision,
+            snapshot.token,
+            snapshot.body.to_utf8(),
+            snapshot.body.profile,
+            snapshot.body.eols(),
+            snapshot.body.origins(),
+            store.history_depth(document).unwrap(),
+            store.dirty(document).unwrap(),
+            native.selections,
+        )
+    })
+}
+
+impl Harness {
+    fn rich(reserve_application_keys: bool) -> (Self, Rc<RichDocument>, KeyMatch) {
+        let probe = Probe::new(true);
+        PROBE.with(|p| *p.borrow_mut() = Some(probe.clone()));
+        let rich_probe = Rc::new(RichProbe {
+            reserve_application_keys,
+            document: RefCell::new(None),
+        });
+        RICH_PROBE.with(|p| *p.borrow_mut() = Some(rich_probe.clone()));
+        let mut core = Core::new(
+            ApproxTextEngine,
+            Size {
+                width: px(800.0),
+                height: px(600.0),
+            },
+        );
+        let mut environment = Environment::default();
+        environment.os = Os::Windows;
+        environment.file_requests = true;
+        core.set_environment(environment);
+        core.mount_root(&Root::new::<RichShortcutFixture>(|| ()));
+        let mut fixture = Self {
+            core,
+            probe,
+            keys: None,
+            input: None,
+            requests: Vec::new(),
+        };
+        fixture.flush();
+        let root_open = fixture.matched("ctrl+o", false);
+        assert!(matches!(root_open, KeyMatch::Fire(_)));
+        let document = rich_probe.document.borrow().as_ref().unwrap().clone();
+        fixture.rich_focus(true);
+        assert_eq!(fixture.probe.focus_events.get(), 1);
+        (fixture, document, root_open)
+    }
+
+    fn rich_focus(&mut self, focused: bool) {
+        let sink = self
+            .input
+            .expect("the real RichEditor sink Input was mounted");
+        assert!(self.core.component_event(
+            sink,
+            if focused {
+                EventKind::Focus
+            } else {
+                EventKind::Blur
+            },
+            &EventPayload::None,
+        ));
+        self.flush();
+    }
+
+    fn inspect<T: 'static>(&mut self, read: impl FnOnce() -> T + 'static) -> T {
+        let result = Rc::new(RefCell::new(None));
+        let output = result.clone();
+        let read = RefCell::new(Some(read));
+        self.core
+            .apply(Op::Rust(RustOp {
+                call: 81_000,
+                run: RustCall::Op(Box::new(move |_| {
+                    *output.borrow_mut() = Some(read.borrow_mut().take().unwrap()());
+                    Ok(Box::new(()) as Box<dyn ToJs>)
+                })),
+            }))
+            .unwrap();
+        self.flush();
+        let value = result.borrow_mut().take().unwrap();
+        value
+    }
+
+    fn rich_audit(&mut self, document: &Rc<RichDocument>) -> RichAudit {
+        let document = document.clone();
+        self.inspect(move || {
+            let state = document.gate.session().state();
+            RichAudit {
+                source: view_audit(&document.source),
+                rich: view_audit(&document.rich),
+                doc: state.doc().to_json(),
+                selection: state.selection().to_json(),
+                stored_marks: state
+                    .stored_marks()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|mark| mark.to_json())
+                    .collect(),
+                status: document.gate.status.get(),
+            }
+        })
+    }
+}
+
+#[test]
+fn real_rich_without_reserved_keys_masks_root_ctrl_o_and_blur_removes_the_mask() {
+    let (mut fixture, document, root_open) = Harness::rich(false);
+    let before = fixture.rich_audit(&document);
+    let rich_open = fixture.matched("ctrl+o", false);
+    assert!(matches!(rich_open, KeyMatch::Fire(_)));
+    assert_ne!(
+        rich_open, root_open,
+        "the actual focused Rich view registered a newer key"
+    );
+    assert_eq!(fixture.press("ctrl+o", false), rich_open);
+    assert!(fixture.probe.calls.borrow().is_empty());
+    assert!(fixture.requests.is_empty());
+    assert_eq!(fixture.rich_audit(&document), before);
+
+    fixture.rich_focus(false);
+    assert_eq!(fixture.matched("ctrl+o", false), root_open);
+    assert_eq!(fixture.press("ctrl+o", false), root_open);
+    assert_eq!(fixture.probe.calls.borrow().as_slice(), ["texzi.file.open"]);
+    assert_eq!(fixture.requests.len(), 1);
+    fixture.cancel_request(fixture.requests[0].0);
+    assert_eq!(fixture.probe.answers.get(), 1);
+    assert_eq!(fixture.rich_audit(&document), before);
+}
+
+#[test]
+fn real_rich_reserved_ctrl_o_keeps_root_open_chord_priority_and_refocus_without_document_writes() {
+    let (mut fixture, document, root_open) = Harness::rich(true);
+    let before = fixture.rich_audit(&document);
+    assert!(matches!(fixture.press("ctrl+e", false), KeyMatch::Fire(_)));
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        ["texzi.navigation.quickOpen"],
+    );
+    assert!(fixture.requests.is_empty());
+    assert_eq!(fixture.rich_audit(&document), before);
+    // The host list uses normalized application shortcuts while the view's
+    // Windows table uses ctrl+o: this tests their real matching equivalence.
+    assert_eq!(fixture.matched("ctrl+o", false), root_open);
+    assert_eq!(fixture.press("ctrl+o", false), root_open);
+    assert_eq!(fixture.press("ctrl+o", true), KeyMatch::Held);
+    assert_eq!(fixture.requests.len(), 1);
+    assert_eq!(fixture.requests[0].1, OpenDialogKind::Files);
+    fixture.cancel_request(fixture.requests[0].0);
+    assert_eq!(fixture.rich_audit(&document), before);
+
+    assert!(matches!(fixture.press("ctrl+k", false), KeyMatch::Fire(_)));
+    let folder = fixture.matched("ctrl+o", false);
+    assert!(matches!(folder, KeyMatch::Fire(_)));
+    assert_ne!(folder, root_open);
+    assert_eq!(fixture.press("ctrl+o", false), folder);
+    assert_eq!(fixture.requests.len(), 2);
+    assert_eq!(fixture.requests[1].1, OpenDialogKind::Folders);
+    fixture.cancel_request(fixture.requests[1].0);
+    assert_eq!(fixture.matched("ctrl+o", false), root_open);
+    assert_eq!(fixture.rich_audit(&document), before);
+
+    fixture.rich_focus(false);
+    assert_eq!(fixture.matched("ctrl+o", false), root_open);
+    fixture.rich_focus(true);
+    assert_eq!(fixture.matched("ctrl+o", false), root_open);
+    assert_eq!(fixture.press("ctrl+o", false), root_open);
+    assert_eq!(fixture.requests.len(), 3);
+    assert_eq!(fixture.requests[2].1, OpenDialogKind::Files);
+    fixture.cancel_request(fixture.requests[2].0);
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        [
+            "texzi.navigation.quickOpen",
+            "texzi.file.open",
+            "texzi.folder.open",
+            "texzi.file.open",
+        ],
+    );
+    assert_eq!(fixture.probe.answers.get(), 3);
+    assert_eq!(fixture.rich_audit(&document), before);
+}
+
+#[test]
+fn real_rich_ctrl_b_still_toggles_stored_bold_marks_without_source_or_history_writes() {
+    let (mut fixture, document, root_open) = Harness::rich(true);
+    let before = fixture.rich_audit(&document);
+    assert!(before.stored_marks.is_empty());
+    let bold = fixture.matched("ctrl+b", false);
+    assert!(
+        matches!(bold, KeyMatch::Fire(_)),
+        "Ctrl+B must reach the real Rich keymap"
+    );
+    assert_ne!(bold, root_open);
+    assert_eq!(fixture.press("ctrl+b", false), bold);
+    let marked = fixture.rich_audit(&document);
+    assert!(
+        marked
+            .stored_marks
+            .iter()
+            .any(|mark| mark["type"] == "bold")
+    );
+    assert_eq!(marked.source, before.source);
+    assert_eq!(marked.rich, before.rich);
+    assert_eq!(marked.doc, before.doc);
+    assert_eq!(marked.selection, before.selection);
+    assert_eq!(marked.status, before.status);
+    assert!(fixture.probe.calls.borrow().is_empty());
+    assert!(fixture.requests.is_empty());
+
+    assert_eq!(fixture.press("ctrl+b", false), bold);
+    assert_eq!(fixture.rich_audit(&document), before);
+}
+
+#[test]
+fn production_plain_chord_continuations_fire_in_input_and_rich_and_cleanup_without_typing() {
+    // API-level negative control for the old default-When binding. This is not
+    // a claim that the old Windows executable was driven by this test.
+    let z = Keystroke::parse_with("z", false).unwrap();
+    let old_auto = KeyBinding::new(70_001, z, When::Auto, false);
+    assert!(!old_auto.in_text);
+    assert_eq!(
+        Keymap::new(vec![old_auto]).find(z, true, false),
+        KeyMatch::None,
+    );
+    assert!(CHORDS.contains(&("z", "texzi.view.toggleZen")));
+    assert!(!CHORDS.iter().any(|(stroke, _)| *stroke == "q"));
+
+    for rich in [false, true] {
+        let (mut fixture, document, root_open) = if rich {
+            let (fixture, document, root_open) = Harness::rich(true);
+            (fixture, Some(document), root_open)
+        } else {
+            let fixture = Harness::new(true);
+            let root_open = fixture.matched("ctrl+o", false);
+            (fixture, None, root_open)
+        };
+        let before = document
+            .as_ref()
+            .map(|document| fixture.rich_audit(document));
+        let input_before = fixture.probe.input_text.borrow().clone();
+        assert_eq!(fixture.matched("ctrl+o", false), root_open);
+
+        assert!(matches!(fixture.press("ctrl+k", false), KeyMatch::Fire(_)));
+        assert_eq!(fixture.matched("z", true), KeyMatch::Held);
+        let known = fixture.press("z", false);
+        assert!(matches!(known, KeyMatch::Fire(_)), "rich={rich}: {known:?}");
+        assert!(known.consumed());
+        assert_eq!(
+            fixture.probe.calls.borrow().as_slice(),
+            ["texzi.view.toggleZen"],
+        );
+        assert_eq!(fixture.probe.cancellations.get(), 0);
+        assert_eq!(fixture.matched("ctrl+o", false), root_open);
+        assert!(matches!(fixture.matched("z", false), KeyMatch::Notify(_)));
+        if let Some(document) = document.as_ref() {
+            assert_eq!(fixture.rich_audit(document), *before.as_ref().unwrap());
+        }
+
+        assert!(matches!(fixture.press("ctrl+k", false), KeyMatch::Fire(_)));
+        let unknown = fixture.press("q", false);
+        assert!(
+            matches!(unknown, KeyMatch::Fire(_)),
+            "rich={rich}: {unknown:?}",
+        );
+        assert!(unknown.consumed());
+        assert_eq!(fixture.probe.cancellations.get(), 1);
+        assert_eq!(
+            fixture.probe.calls.borrow().as_slice(),
+            ["texzi.view.toggleZen"],
+            "the unknown continuation must only cancel",
+        );
+        assert_eq!(fixture.matched("ctrl+o", false), root_open);
+        assert!(matches!(fixture.matched("q", false), KeyMatch::Notify(_)));
+        assert!(fixture.requests.is_empty());
+        assert_eq!(fixture.probe.input_changes.get(), 0);
+        assert_eq!(*fixture.probe.input_text.borrow(), input_before);
+        if let Some(document) = document.as_ref() {
+            assert_eq!(fixture.rich_audit(document), *before.as_ref().unwrap());
+        }
+    }
 }

@@ -13,7 +13,7 @@ use std::{
 };
 
 use nsh_core::{
-    keymap::{Modifiers, When},
+    keymap::{Keystroke, Modifiers, When},
     prelude::*,
 };
 use serde_json::Value;
@@ -331,7 +331,24 @@ impl Rv {
             if !rv.focused.get() {
                 return;
             }
+            let apple = apple_keys();
+            let application_shortcuts: HashSet<_> = rv
+                .props
+                .application_shortcuts
+                .get()
+                .iter()
+                .filter_map(|stroke| Keystroke::parse_with(stroke.as_str(), apple).ok())
+                .collect();
             for spec in keys::key_table() {
+                // The host handles these outside the rich callback. Leaving
+                // them unbound also avoids disposing this focused view from
+                // inside one of its own key handlers.
+                if !application_shortcuts.is_empty()
+                    && Keystroke::parse_with(&spec.keystroke, apple)
+                        .is_ok_and(|stroke| application_shortcuts.contains(&stroke))
+                {
+                    continue;
+                }
                 let rv = rv.clone();
                 let event = spec.event.clone();
                 on_key_with(

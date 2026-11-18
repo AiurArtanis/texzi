@@ -1,4 +1,5 @@
 //! Application shell. Native menus and the palette share command identities.
+use crate::native_menu::SHELL_SHORTCUTS;
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
 use nsh_base::editor::{Editor, EditorApi, EditorCommand, ExternalDocument};
 use nsh_core::{
@@ -99,16 +100,6 @@ mod shell_task_tests;
 #[cfg(test)]
 #[path = "shortcut_regression_tests.rs"]
 mod shortcut_regression_tests;
-
-const SHELL_SHORTCUTS: &[(&str, &str)] = &[
-    ("mod+o", "texzi.file.open"),
-    ("f3", "texzi.find.next"),
-    ("shift+f3", "texzi.find.previous"),
-    ("mod+shift+w", "texzi.window.close"),
-    ("f1", "texzi.commandPalette.open"),
-    ("mod+e", "texzi.navigation.quickOpen"),
-    ("mod+f4", "texzi.tab.close"),
-];
 
 // Keep application shortcuts in the engine keymap as well as the native menu.
 // A consumed command stops the Windows menu-shortcut fallback, so this does
@@ -1088,6 +1079,55 @@ const CHORDS: &[(&str, &str)] = &[
     ("mod+s", "texzi.settings.keybindings"),
     ("mod+\\", "texzi.group.splitDown"),
 ];
+// Installed only while the prefix is pending. Its plain second keys must be
+// commands even with a text input focused, rather than typing into the document.
+fn bind_chord_continuations(run: Rc<dyn Fn(Option<&'static str>)>) {
+    for base in "abcdefghijklmnopqrstuvwxyz0123456789"
+        .chars()
+        .map(|c| c.to_string())
+        .chain(
+            [
+                "escape",
+                "left",
+                "right",
+                "up",
+                "down",
+                "backspace",
+                "delete",
+                "enter",
+                "space",
+                "tab",
+                "\\",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+    {
+        for modifier in ["", "mod+", "shift+", "mod+shift+"] {
+            let stroke = format!("{modifier}{base}");
+            let Ok(parsed) = nsh_core::keymap::Keystroke::parse_with(&stroke, apple_keys()) else {
+                continue;
+            };
+            if parsed.reserved(os()).is_some() {
+                continue;
+            }
+            let target = CHORDS
+                .iter()
+                .find(|(key, _)| *key == stroke)
+                .map(|(_, id)| *id);
+            let run = run.clone();
+            on_key_with(
+                &stroke,
+                KeyOptions {
+                    when: nsh_core::keymap::When::Always,
+                    ..Default::default()
+                },
+                move |_| run(target),
+            );
+        }
+    }
+}
+
 fn bind_chords(s: Rc<Shell>) {
     let prefix = s.clone();
     on_key("mod+k", move |_| {
@@ -1114,56 +1154,20 @@ fn bind_chords(s: Rc<Shell>) {
         if !s.chord.get() {
             return;
         }
-        for base in "abcdefghijklmnopqrstuvwxyz0123456789"
-            .chars()
-            .map(|c| c.to_string())
-            .chain(
-                [
-                    "escape",
-                    "left",
-                    "right",
-                    "up",
-                    "down",
-                    "backspace",
-                    "delete",
-                    "enter",
-                    "space",
-                    "tab",
-                    "\\",
-                ]
-                .into_iter()
-                .map(str::to_owned),
-            )
-        {
-            for modifier in ["", "mod+", "shift+", "mod+shift+"] {
-                let stroke = format!("{modifier}{base}");
-                let Ok(parsed) = nsh_core::keymap::Keystroke::parse_with(&stroke, apple_keys())
-                else {
-                    continue;
-                };
-                if parsed.reserved(os()).is_some() {
-                    continue;
-                }
-                let target = CHORDS
-                    .iter()
-                    .find(|(key, _)| *key == stroke)
-                    .map(|(_, id)| *id);
-                let s = s.clone();
-                on_key(&stroke, move |_| {
-                    s.zen_exit.reset();
-                    s.chord.set(false);
-                    if s.notice.get() == "Ctrl+K：等待第二个按键…" {
-                        s.notice.set(String::new());
-                    }
-                    if let Some(id) = target {
-                        s.run(id);
-                    } else {
-                        s.notice
-                            .set("已取消：没有这个 Ctrl+K 组合，未写入正文".into());
-                    }
-                });
+        let s = s.clone();
+        bind_chord_continuations(Rc::new(move |target| {
+            s.zen_exit.reset();
+            s.chord.set(false);
+            if s.notice.get() == "Ctrl+K：等待第二个按键…" {
+                s.notice.set(String::new());
             }
-        }
+            if let Some(id) = target {
+                s.run(id);
+            } else {
+                s.notice
+                    .set("已取消：没有这个 Ctrl+K 组合，未写入正文".into());
+            }
+        }));
     });
 }
 
@@ -1343,6 +1347,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                         nsh_base::rich_editor::view::rich_editor()
                             .component_ref(&rich_reference)
                             .editor(rich.session())
+                            .application_shortcuts(crate::native_menu::application_shortcuts())
                             .classes(crate::app::rich_classes())
                             .auto_focus(true)
                             .on_focus(move |_: &()| rich_focus.set(second))

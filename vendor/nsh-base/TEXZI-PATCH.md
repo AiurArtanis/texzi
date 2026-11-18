@@ -27,3 +27,16 @@ T05 source review corrections additionally report transient source composition
 through the external owner, and provide an opt-in Rust session composition
 listener for the rich mode guard. These metadata hooks do not edit text or
 create history. Target projection preparation precedes visible mode publication.
+
+2026-11-18: rich_editor/view/{mod,controller}.rs additionally exposes the opt-in
+RichEditorProps.application_shortcuts (default empty Vec<SharedString>). The
+focused key-registration effect normalizes valid host declarations with the
+same platform-aware Keystroke parser as the editor, and omits equivalent rich
+view bindings. The host remains responsible for its engine-keymap/native-menu
+commands; no application callback is invoked inside the rich key handler.
+Invalid declarations are ignored. An empty list preserves upstream bindings;
+all other rich key handling, source ownership, document/history behavior,
+dependencies, features and original upstream manifests remain unchanged.
+Validation for this change: NOT_RUN (no Cargo, component execution or GUI in
+this scoped edit); the host integration and focused RichEditor regression are
+validated separately before any product acceptance claim.

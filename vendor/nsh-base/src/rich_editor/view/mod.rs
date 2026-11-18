@@ -63,6 +63,13 @@ pub struct RichEditorProps {
     /// history), `"history"`, `"baseKeymap"`, `"markdown"` (Markdown
     /// shortcuts, paste and copy). Default `["starter"]`.
     pub plugins: Prop<Option<Vec<SharedString>>>,
+    /// Single keystrokes owned by the host application, in `nsh/keymap`
+    /// syntax (`"mod+o"`, for example). While focused, this view leaves
+    /// equivalent strokes unbound so the host's keymap or native menu can
+    /// handle them. The host must install those commands itself. Default
+    /// empty preserves the view's own bindings; invalid entries are ignored.
+    #[prop(default)]
+    pub application_shortcuts: Prop<Vec<SharedString>>,
     /// The document can be edited (default true); plugins can make it
     /// read-only too. A read-only editor still selects and copies.
     #[prop(default = true)]
