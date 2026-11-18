@@ -115,10 +115,119 @@ impl RichOwner {
                 log::error!("rich dispatch outside its owning UI thread or after disposal");
             }
         })));
+        let weak = Rc::downgrade(&this);
+        effect(move || {
+            let Some(owner) = weak.upgrade() else { return };
+            owner.native.track();
+            if owner.native.is_composing() {
+                return;
+            }
+            let result = owner.refresh_external();
+            if let Err(error) = result {
+                owner.status.set(error);
+            }
+        });
         Ok(this)
+    }
+    /// Other logical views publish through the same Store. Refresh the derived
+    /// tree only, keeping the one body/history and the mapped view selection.
+    fn refresh_external(&self) -> Result<(), String> {
+        let current = self.native.snapshot()?;
+        if current.revision == self.revision.get() && current.view_epoch == self.epoch.get() {
+            return Ok(());
+        }
+        let previous = self.session.state();
+        let projected = Projection::parse(previous.schema(), current.rope.to_string())?;
+        let (a, h) = restored_selection(&projected, &current.selections)
+            .ok_or("更新后的正文位置不能映射，原文仍可从源码访问")?;
+        let next = EditorState::create(
+            EditorStateConfig::new(previous.schema().clone())
+                .doc(projected.doc.clone())
+                .plugins(previous.plugins().to_vec())
+                .selection(TextSelection::create(&projected.doc, a, Some(h))),
+        )
+        .map_err(|e| e.to_string())?;
+        self.session.update_state(next);
+        *self.projection.borrow_mut() = projected;
+        self.revision.set(current.revision);
+        self.epoch.set(current.view_epoch);
+        self.activate()?;
+        self.status.set(String::new());
+        Ok(())
     }
     pub fn session(&self) -> EditorSession {
         self.session.clone()
+    }
+    fn find_literal(&self, query: &str, previous: bool) -> Result<(usize, usize), String> {
+        if query.is_empty() {
+            return Err("请输入查找文字".into());
+        }
+        self.refresh_external()?;
+        let state = self.session.state();
+        let mut text = String::new();
+        let mut positions = std::collections::BTreeMap::new();
+        fn flatten(
+            node: &nsh_base::rich_editor::model::Node,
+            pos: usize,
+            root: bool,
+            text: &mut String,
+            positions: &mut std::collections::BTreeMap<usize, usize>,
+        ) {
+            if let Some(value) = node.text() {
+                let mut offset = pos;
+                positions.insert(text.len(), offset);
+                for ch in value.chars() {
+                    text.push(ch);
+                    offset += ch.len_utf16();
+                    positions.insert(text.len(), offset);
+                }
+            } else if node.ty().name() == "hardBreak" {
+                positions.insert(text.len(), pos);
+                text.push('\n');
+                positions.insert(text.len(), pos + 1);
+            } else {
+                if node.is_textblock() && node.child_count() == 0 {
+                    positions.insert(text.len(), pos + 1);
+                }
+                let mut offset = if root { pos } else { pos + 1 };
+                for i in 0..node.child_count() {
+                    let child = node.child(i);
+                    if i > 0 && child.is_block() {
+                        text.push(if node.ty().name() == "tableRow" {
+                            '\t'
+                        } else {
+                            '\n'
+                        });
+                    }
+                    flatten(child, offset, false, text, positions);
+                    offset += child.node_size();
+                }
+            }
+        }
+        flatten(state.doc(), 0, true, &mut text, &mut positions);
+        let hits: Vec<_> = text
+            .match_indices(query)
+            .filter_map(|(at, _)| {
+                Some((*positions.get(&at)?, *positions.get(&(at + query.len()))?))
+            })
+            .collect();
+        if hits.is_empty() {
+            return Ok((0, 0));
+        }
+        let index = if previous {
+            hits.iter()
+                .rposition(|(_, z)| *z <= state.selection().from())
+                .unwrap_or(hits.len() - 1)
+        } else {
+            hits.iter()
+                .position(|(a, _)| *a >= state.selection().to())
+                .unwrap_or(0)
+        };
+        let (a, z) = hits[index];
+        let mut tr = state.tr();
+        tr.set_selection(TextSelection::create(state.doc(), a, Some(z)));
+        self.dispatch(&self.session, tr)?;
+        Ok((index + 1, hits.len()))
     }
     fn activate(&self) -> Result<(), String> {
         let current = self.native.snapshot()?;
@@ -144,18 +253,20 @@ impl RichOwner {
         self.epoch.set(selected.view_epoch);
         Ok(())
     }
-    fn dispatch(&self, session: &EditorSession, tr: Transaction) -> Result<(), String> {
-        let current = self.native.snapshot()?;
+    fn dispatch(&self, session: &EditorSession, mut tr: Transaction) -> Result<(), String> {
+        let mut current = self.native.snapshot()?;
         if current.revision != self.revision.get() || current.view_epoch != self.epoch.get() {
             return Err("富文本视图版本已过期，请切回源码后重新打开富文本".into());
         }
         let old = session.state();
+        self.projection.borrow().inherit_replacement_link(&mut tr)?;
+        let rule_input = tr.get_meta("inputRule$").cloned();
         let (next, applied) = old.apply_transaction(tr).map_err(|e| e.to_string())?;
         let p = self.projection.borrow();
         if old.doc() != &p.doc {
             return Err("富文本视图已过期，请切回源码后重新打开富文本".into());
         }
-        let edits = p.transaction_edits(next.doc(), &applied)?;
+        let mut edits = p.transaction_edits(next.doc(), &applied)?;
         if edits.is_empty() && old.doc() != next.doc() {
             return Err("该结构变更不能映射到原文，已保留原状态".into());
         }
@@ -167,14 +278,14 @@ impl RichOwner {
             for (range, text) in edits.iter().rev() {
                 raw.replace_range(range.clone(), text);
             }
-            let projected = Projection::parse(next.schema(), raw)?;
+            let mut projected = Projection::parse(next.schema(), raw)?;
             if &projected.doc != next.doc() {
                 return Err("该富文本操作不能保真往返；请在源码中编辑此结构".into());
             }
-            let a = projected
+            let mut a = projected
                 .source_position(next.selection().anchor())
                 .ok_or("选区起点暂不能保真映射，请切到源码编辑此范围")?;
-            let h = projected
+            let mut h = projected
                 .source_position(next.selection().head())
                 .ok_or("选区终点暂不能保真映射，请切到源码编辑此范围")?;
             let kind = if applied.iter().any(|t| t.get_meta("composition").is_some()) {
@@ -187,7 +298,76 @@ impl RichOwner {
             } else {
                 ExternalEditKind::Other
             };
-            let update = self.native.edit(
+            // A text input and its automatic formatting are distinct commands.
+            // Publish the typed spelling first so one Undo of the conversion
+            // restores it (including the trigger space), using the same Store.
+            // Validate both source projections before the first mutation.
+            let mut typed_fallback = None;
+            if let Some(meta) =
+                rule_input.filter(|m| m["text"].as_str().is_some_and(|t| !t.is_empty()))
+            {
+                let from = meta["from"]
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or("无效输入规则起点")?;
+                let to = meta["to"]
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or("无效输入规则终点")?;
+                let text = meta["text"].as_str().ok_or("无效输入规则正文")?;
+                let mut typed = old.tr();
+                typed.insert_text(text, Some(from), Some(to));
+                let (typed_state, typed_applied) =
+                    old.apply_transaction(typed).map_err(|e| e.to_string())?;
+                if typed_state.doc() != next.doc() {
+                    let input_edits = p.transaction_edits(typed_state.doc(), &typed_applied)?;
+                    let mut typed_raw = p.source.clone();
+                    for (range, text) in input_edits.iter().rev() {
+                        typed_raw.replace_range(range.clone(), text);
+                    }
+                    let typed_projection = Projection::parse(next.schema(), typed_raw)?;
+                    let (range, text) = typed_projection
+                        .patch(next.doc())?
+                        .ok_or("输入规则没有可提交的格式变化")?;
+                    let mut final_raw = typed_projection.source.clone();
+                    final_raw.replace_range(range.clone(), &text);
+                    let final_projection = Projection::parse(next.schema(), final_raw)?;
+                    if final_projection.doc != *next.doc() {
+                        return Err("输入规则不能保真往返，原文未变".into());
+                    }
+                    let typed_a = typed_projection
+                        .source_position(typed_state.selection().anchor())
+                        .ok_or("输入位置不能映射")?;
+                    let typed_h = typed_projection
+                        .source_position(typed_state.selection().head())
+                        .ok_or("输入位置不能映射")?;
+                    a = final_projection
+                        .source_position(next.selection().anchor())
+                        .ok_or("格式位置不能映射")?;
+                    h = final_projection
+                        .source_position(next.selection().head())
+                        .ok_or("格式位置不能映射")?;
+                    if current.revision > u64::MAX - 2 || current.view_epoch > u64::MAX - 2 {
+                        return Err("输入版本计数耗尽".into());
+                    }
+                    let accepted = self.native.edit(
+                        current.revision,
+                        current.view_epoch,
+                        input_edits,
+                        ExternalSelections {
+                            primary: 0,
+                            ranges: vec![(typed_a, typed_h)],
+                        },
+                        ExternalEditKind::Typing,
+                    )?;
+                    current = accepted.snapshot;
+                    self.native.fence();
+                    typed_fallback = Some((typed_state, typed_applied, typed_projection));
+                    projected = final_projection;
+                    edits = vec![(range, text)];
+                }
+            }
+            let update_result = self.native.edit(
                 current.revision,
                 current.view_epoch,
                 edits,
@@ -196,7 +376,22 @@ impl RichOwner {
                     ranges: vec![(a, h)],
                 },
                 kind,
-            )?;
+            );
+            let update = match update_result {
+                Ok(update) => update,
+                Err(error) => {
+                    if let Some((typed_state, typed_applied, typed_projection)) = typed_fallback {
+                        self.revision.set(current.revision);
+                        self.epoch.set(current.view_epoch);
+                        drop(p);
+                        *self.projection.borrow_mut() = typed_projection;
+                        session.commit(typed_state, &typed_applied);
+                        self.native.notify();
+                        return Err(format!("已保留文字输入；自动格式未执行：{error}"));
+                    }
+                    return Err(error);
+                }
+            };
             self.revision.set(update.snapshot.revision);
             self.epoch.set(update.snapshot.view_epoch);
             drop(p);
@@ -285,7 +480,7 @@ impl RichOwner {
 
 fn restored_selection(p: &Projection, s: &ExternalSelections) -> Option<(usize, usize)> {
     let (a, h) = *s.ranges.get(s.primary)?;
-    Some((p.rich_position(a)?, p.rich_position(h)?))
+    Some((p.nearest_rich_position(a)?, p.nearest_rich_position(h)?))
 }
 fn selection_matches(p: &Projection, state: &EditorState, s: &ExternalSelections) -> bool {
     match (
@@ -329,6 +524,18 @@ impl ModeGate {
             return Ok(());
         }
         let next = prepare()?;
+        let origin = self.source.snapshot()?;
+        let state = next.session.state();
+        let selection = restored_selection(&next.projection.borrow(), &origin.selections)
+            .ok_or("当前源码位置不能映射到正文，已保留源码模式")?;
+        let mut tr = state.tr();
+        tr.set_selection(TextSelection::create(
+            state.doc(),
+            selection.0,
+            Some(selection.1),
+        ));
+        let restored = state.apply(tr).map_err(|e| e.to_string())?;
+        next.session.update_state(restored);
         next.activate()?;
         self.source.fence();
         self.source.trace_state("mode_rich");
@@ -350,7 +557,17 @@ impl ModeGate {
         if !self.rich_mode.get() {
             return;
         }
-        if let Err(e) = self.source.snapshot() {
+        let transferred = (|| {
+            let rich = self.rich.snapshot()?;
+            let source = self.source.snapshot()?;
+            if rich.revision != source.revision {
+                return Err("视图版本不一致，已保留正文模式".into());
+            }
+            self.source
+                .select(source.revision, source.view_epoch, rich.selections)?;
+            Ok::<_, String>(())
+        })();
+        if let Err(e) = transferred {
             self.status.set(e);
             return;
         }
@@ -365,6 +582,40 @@ impl ModeGate {
             .as_ref()
             .expect("mode published only after successful preparation")
             .session()
+    }
+    pub fn shell_history(&self, undo: bool) -> Result<(), String> {
+        if self.busy() {
+            return Err("请先完成或取消中文组合，再撤销或重做".into());
+        }
+        if self.rich_mode.get() {
+            let active = self.active.borrow();
+            let owner = active.as_ref().ok_or("正文视图尚未准备完成")?;
+            owner.history(undo);
+            let status = owner.status.get();
+            if !status.is_empty() {
+                return Err(status);
+            }
+        } else {
+            let current = self.source.snapshot()?;
+            self.source
+                .history(current.revision, current.view_epoch, undo)?;
+            self.source.notify();
+        }
+        Ok(())
+    }
+    pub fn find_literal(&self, query: &str, previous: bool) -> Result<(usize, usize), String> {
+        if self.busy() {
+            return Err("请先完成或取消中文组合".into());
+        }
+        if self.rich_mode.get() {
+            self.active
+                .borrow()
+                .as_ref()
+                .ok_or("正文视图未就绪")?
+                .find_literal(query, previous)
+        } else {
+            self.source.find_literal(query, previous)
+        }
     }
     pub fn source_mounted(&self) {
         self.active.borrow_mut().take();
@@ -399,6 +650,79 @@ mod tests {
     }
     fn bytes(n: &NativeView) -> Vec<u8> {
         n.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().body.to_utf8())
+    }
+    #[test]
+    fn external_source_view_updates_live_rich_projection_without_a_second_history() {
+        run(|| {
+            let source = NativeView::fixture("apple\r\n\n<custom>keep</custom>\n");
+            let other = source.sibling_source().unwrap();
+            let rich = RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+            rich.activate().unwrap();
+            let before = other.snapshot().unwrap();
+            batch(|| {
+                other
+                    .edit(
+                        before.revision,
+                        before.view_epoch,
+                        vec![(0..5, "pear".into())],
+                        ExternalSelections {
+                            primary: 0,
+                            ranges: vec![(4, 4)],
+                        },
+                        ExternalEditKind::Other,
+                    )
+                    .unwrap();
+                other.notify();
+            });
+            assert_eq!(
+                rich.session.state().doc().text_content(),
+                "pear<custom>keep</custom>"
+            );
+            assert_eq!(rich.revision.get(), source.snapshot().unwrap().revision);
+            assert_eq!(bytes(&source), b"pear\r\n\n<custom>keep</custom>\n");
+            assert_eq!(
+                source.inspect(|s, id| s.history_depth(s.view(id).unwrap().doc).unwrap()),
+                (1, 0)
+            );
+            other.undo_redo(true).unwrap();
+            assert_eq!(bytes(&source), b"apple\r\n\n<custom>keep</custom>\n");
+            assert_eq!(rich.revision.get(), source.snapshot().unwrap().revision);
+        });
+    }
+    #[test]
+    fn rich_find_uses_visible_text_without_mode_edits_or_url_matches() {
+        run(|| {
+            let raw =
+                "\u{feff}**apple**\r\n\r\npear\n\n[label](https://example.invalid/hidden)\r\n";
+            let source = NativeView::fixture(raw);
+            let gate = ModeGate::new(source.clone(), source.sibling().unwrap());
+            let before = source.inspect(|store, id| {
+                let doc = store.view(id).unwrap().doc;
+                (
+                    store.snapshot(doc).unwrap().token,
+                    store.history_depth(doc).unwrap(),
+                    store.dirty(doc).unwrap(),
+                )
+            });
+            gate.to_rich();
+            assert!(gate.rich_mode.get(), "{}", gate.status.get());
+            assert_eq!(gate.find_literal("apple\npear", false).unwrap(), (1, 1));
+            assert_eq!(gate.find_literal("example.invalid", false).unwrap(), (0, 0));
+            assert_eq!(gate.find_literal("label", false).unwrap(), (1, 1));
+            assert!(gate.rich_mode.get());
+            assert_eq!(bytes(&source), raw.as_bytes());
+            assert_eq!(
+                before,
+                source.inspect(|store, id| {
+                    let doc = store.view(id).unwrap().doc;
+                    (
+                        store.snapshot(doc).unwrap().token,
+                        store.history_depth(doc).unwrap(),
+                        store.dirty(doc).unwrap(),
+                    )
+                })
+            );
+        });
     }
     #[test]
     fn known_structure_text_edits_preserve_original_syntax_eols_and_neighbor() {
@@ -702,7 +1026,7 @@ mod tests {
         );
     }
     #[test]
-    fn empty_container_input_cannot_bind_escaped_text_to_another_code_leaf() {
+    fn empty_container_input_escapes_locally_without_binding_another_code_leaf() {
         run(|| {
             for raw in [
                 "| name   | value |\r\n| -------- | ----- |\r\n| `*a*` | 10 |\r\n|  |  |\r\n",
@@ -720,15 +1044,29 @@ mod tests {
                 };
                 let rich_pos = owner.projection.borrow().rich_position(at).unwrap();
                 select(&owner, rich_pos);
-                let before = audit(&source);
-                let old = owner.session.state();
-                let mut tr = old.tr();
+                let mut tr = owner.session.state().tr();
                 tr.insert_text("*a*", None, None);
                 owner.session.dispatch(tr).unwrap();
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                let expected = if raw.starts_with('|') {
+                    raw.replace("|  |  |", "| \\*a\\* |  |")
+                } else {
+                    raw.replacen("+ \r\n", "+ \\*a\\*\r\n", 1)
+                };
+                assert_eq!(bytes(&source), expected.as_bytes());
+                assert_eq!(
+                    owner
+                        .session
+                        .state()
+                        .doc()
+                        .text_content()
+                        .matches("*a*")
+                        .count(),
+                    2
+                );
+                owner.history(true);
+                assert!(owner.status.get().is_empty());
                 assert_eq!(bytes(&source), raw.as_bytes());
-                assert_eq!(audit(&source), before);
-                assert!(!owner.status.get().is_empty());
-                assert_eq!(owner.session.state().doc(), old.doc());
             }
         });
     }
@@ -1419,30 +1757,207 @@ mod tests {
         });
     }
     #[test]
-    fn unmapped_entity_and_duplicate_leaf_selection_are_atomic_rejections() {
+    fn escaped_entity_and_duplicate_leaf_edits_use_exact_source_spans_and_shared_history() {
         run(|| {
-            for raw in ["a &amp; b", "**foo** foo"] {
+            for (raw, find, offset, replacement, expected) in [
+                ("a &amp; b\r\n", "&amp;", 0, "和", "a 和 b\r\n"),
+                (
+                    "a \\*b\\* &amp; end\r\n",
+                    "b",
+                    0,
+                    "B",
+                    "a \\*B\\* &amp; end\r\n",
+                ),
+                ("**foo** foo\n", "foo\n", 0, "F", "**foo** Foo\n"),
+                (
+                    "> + **foo &amp; 甲**\r\n>   + foo \\*字\\*\n",
+                    "foo \\*",
+                    0,
+                    "F",
+                    "> + **foo &amp; 甲**\r\n>   + Foo \\*字\\*\n",
+                ),
+                (
+                    "[foo &amp; 甲][id]\r\n\r\n[id]: <https://example.invalid> \"原题\"\n",
+                    "foo",
+                    0,
+                    "F",
+                    "[Foo &amp; 甲][id]\r\n\r\n[id]: <https://example.invalid> \"原题\"\n",
+                ),
+            ] {
                 let source = NativeView::fixture(raw);
                 let rich = source.sibling().unwrap();
                 let owner = RichOwner::new(rich.clone(), signal(String::new())).unwrap();
-                let old = owner.session.state();
-                let before = (audit(&source), audit(&rich));
-                let mut tr = old.tr();
-                tr.set_selection(TextSelection::create(old.doc(), 2, None));
-                owner.session.dispatch(tr).unwrap();
-                assert!(!owner.status.get().is_empty());
-                assert_eq!(owner.session.state().selection(), old.selection());
-                assert_eq!(owner.session.state().doc(), old.doc());
-                assert_eq!(before, (audit(&source), audit(&rich)));
+                owner.activate().unwrap();
+                let logical = source.snapshot().unwrap().rope.to_string();
+                let at = if find.ends_with('\n') {
+                    logical.rfind(find.trim_end_matches('\n')).unwrap()
+                } else {
+                    logical.find(find).unwrap()
+                } + offset;
+                let pos = owner.projection.borrow().rich_position(at).unwrap();
+                select(&owner, pos);
+                let original_token =
+                    source.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().token);
                 let mut tr = owner.session.state().tr();
-                tr.insert_text("X", None, None);
+                tr.insert_text(replacement, Some(pos), Some(pos + 1));
                 owner.session.dispatch(tr).unwrap();
-                assert!(!owner.status.get().is_empty());
-                assert_eq!(before, (audit(&source), audit(&rich)));
+                assert!(
+                    owner.status.get().is_empty(),
+                    "{raw:?}: {}",
+                    owner.status.get()
+                );
+                assert_eq!(bytes(&source), expected.as_bytes(), "{raw:?}");
+                assert_eq!(bytes(&rich), expected.as_bytes());
+                source.inspect(|s, id| {
+                    assert!(s.dirty(s.view(id).unwrap().doc).unwrap());
+                    assert_eq!(s.history_depth(s.view(id).unwrap().doc).unwrap(), (1, 0));
+                });
                 owner.history(true);
-                assert!(!owner.status.get().is_empty());
-                assert_eq!(before, (audit(&source), audit(&rich)));
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), raw.as_bytes());
+                source.inspect(|s, id| {
+                    assert_eq!(
+                        s.snapshot(s.view(id).unwrap().doc).unwrap().token,
+                        original_token
+                    );
+                    assert!(!s.dirty(s.view(id).unwrap().doc).unwrap());
+                });
+                owner.history(false);
+                assert!(owner.status.get().is_empty());
+                assert_eq!(bytes(&source), expected.as_bytes());
             }
+        });
+    }
+    fn type_text(owner: &RichOwner, text: &str) {
+        let state = owner.session.state();
+        let (from, to) = (state.selection().from(), state.selection().to());
+        let mut fired = None;
+        let handled = state.plugins().iter().any(|plugin| {
+            plugin.handle_text_input(&state, from, to, text, &mut |tr| fired = Some(tr))
+        });
+        let mut tr = if handled {
+            fired.unwrap()
+        } else {
+            let mut tr = state.tr();
+            tr.insert_text(text, Some(from), Some(to));
+            tr
+        };
+        if !handled {
+            tr.set_origin(TransactionOrigin::Input);
+        }
+        owner.session.dispatch(tr).unwrap();
+        assert!(
+            owner.status.get().is_empty(),
+            "input {text:?}: {}",
+            owner.status.get()
+        );
+    }
+    #[test]
+    fn chinese_heading_and_next_paragraph_hashes_type_per_key_then_convert_and_undo() {
+        run(|| {
+            for imported in [false, true] {
+                let raw = if imported {
+                    "# 天命难违的眼镜框\r\n\r\n"
+                } else {
+                    ""
+                };
+                let source = NativeView::fixture(raw);
+                let owner =
+                    RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+                owner.activate().unwrap();
+                if !imported {
+                    type_text(&owner, "#");
+                    type_text(&owner, " ");
+                    type_text(&owner, "天命难违的眼镜框");
+                    split(&owner);
+                } else {
+                    let pos = owner.session.state().doc().child(0).node_size() + 1;
+                    select(&owner, pos);
+                }
+                assert_eq!(owner.session.state().doc().child(0).ty().name(), "heading");
+                assert_eq!(
+                    owner.session.state().doc().child(0).text_content(),
+                    "天命难违的眼镜框"
+                );
+                for count in 1..=3 {
+                    type_text(&owner, "#");
+                    assert_eq!(
+                        owner.session.state().doc().child(1).ty().name(),
+                        "paragraph"
+                    );
+                    assert_eq!(
+                        owner.session.state().doc().child(1).text_content(),
+                        "#".repeat(count)
+                    );
+                }
+                let hashes = bytes(&source);
+                type_text(&owner, " ");
+                assert_eq!(owner.session.state().doc().child(1).ty().name(), "heading");
+                assert_eq!(
+                    owner.session.state().doc().child(1).attrs()["level"],
+                    serde_json::json!(3)
+                );
+                owner.history(true);
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert!(bytes(&source).starts_with(&hashes));
+                assert!(
+                    bytes(&source).len() > hashes.len(),
+                    "Undo keeps the trigger space spelling"
+                );
+                assert_eq!(owner.session.state().doc().child(1).text_content(), "### ");
+                owner.history(false);
+                assert!(owner.status.get().is_empty());
+                assert_eq!(owner.session.state().doc().child(1).ty().name(), "heading");
+            }
+        });
+    }
+    #[test]
+    fn mode_switch_transfers_logical_selection_without_body_history_or_dirty_changes() {
+        run(|| {
+            let raw = "# 天命难违的眼镜框\r\n###\n\n末尾 &amp; \\*字\\*\r\n";
+            let source = NativeView::fixture(raw);
+            let rich = source.sibling().unwrap();
+            let gate = ModeGate::new(source.clone(), rich.clone());
+            let before = source.inspect(|s, id| {
+                let d = s.view(id).unwrap().doc;
+                (
+                    s.snapshot(d).unwrap().token,
+                    s.history_depth(d).unwrap(),
+                    s.dirty(d).unwrap(),
+                )
+            });
+            let logical = source.snapshot().unwrap().rope.to_string();
+            let at = logical.find("末尾").unwrap();
+            let snap = source.snapshot().unwrap();
+            source
+                .select(
+                    snap.revision,
+                    snap.view_epoch,
+                    ExternalSelections {
+                        primary: 0,
+                        ranges: vec![(at, at)],
+                    },
+                )
+                .unwrap();
+            for _ in 0..100 {
+                gate.to_rich();
+                assert!(gate.rich_mode.get(), "{}", gate.status.get());
+                assert_eq!(rich.snapshot().unwrap().selections.ranges, vec![(at, at)]);
+                gate.to_source();
+                assert!(!gate.rich_mode.get(), "{}", gate.status.get());
+                assert_eq!(source.snapshot().unwrap().selections.ranges, vec![(at, at)]);
+                gate.source_mounted();
+            }
+            let after = source.inspect(|s, id| {
+                let d = s.view(id).unwrap().doc;
+                (
+                    s.snapshot(d).unwrap().token,
+                    s.history_depth(d).unwrap(),
+                    s.dirty(d).unwrap(),
+                )
+            });
+            assert_eq!(before, after);
+            assert_eq!(bytes(&source), raw.as_bytes());
         });
     }
     #[test]

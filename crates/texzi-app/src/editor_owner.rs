@@ -4,6 +4,8 @@ use nsh_core::prelude::*;
 use std::{cell::RefCell, ops::Range, rc::Rc, time::Instant};
 use texzi_document as doc;
 
+mod commands;
+
 pub struct Owner {
     store: RefCell<doc::Store>,
     changed: Signal<u64>,
@@ -18,7 +20,7 @@ impl NativeView {
     pub fn new() -> Rc<Self> {
         Self::from_text("")
     }
-    fn from_text(raw: &str) -> Rc<Self> {
+    pub fn from_text(raw: &str) -> Rc<Self> {
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let s = store
             .open_utf8(raw, doc::Profile::default(), false)
@@ -88,12 +90,18 @@ impl NativeView {
         }
     }
     pub fn sibling(&self) -> Result<Rc<Self>, String> {
+        self.sibling_mode(doc::ModeTag::Rich)
+    }
+    pub fn sibling_source(&self) -> Result<Rc<Self>, String> {
+        self.sibling_mode(doc::ModeTag::Source)
+    }
+    fn sibling_mode(&self, mode: doc::ModeTag) -> Result<Rc<Self>, String> {
         let mut store = self.owner.store.borrow_mut();
         let source = store.view(self.view).map_err(err)?;
         let v = store
             .open_view(
                 source.doc,
-                doc::ModeTag::Rich,
+                mode,
                 source.selection,
                 source.scroll,
                 source.pixel_bias,

@@ -1,5 +1,5 @@
 //! Exact source seams for flat, plain bullet-list item splits.
-use super::{Block, Projection, raw_text_start};
+use super::{Block, Projection};
 use markdown::{ParseOptions, mdast};
 use nsh_base::rich_editor::{model::Node, transform::ReplaceStep};
 use std::ops::Range;
@@ -175,7 +175,6 @@ pub(super) fn split_edit(
     if text.is_empty()
         || text.contains(['\r', '\n'])
         || projection.source.get(item.body.clone())? != text
-        || block.source.start + raw_text_start(block, &text, &projection.source)? != item.body.start
     {
         return None;
     }

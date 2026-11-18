@@ -12,7 +12,10 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 mod list_items;
+mod local_patch;
+mod references;
 mod table_rows;
+mod text_map;
 
 pub fn manager() -> ExtensionManager {
     ExtensionManager::with_core(vec![
@@ -28,6 +31,7 @@ pub struct Block {
     pub source: Range<usize>,
     pub node: Node,
     pub opaque: bool,
+    text_map: text_map::TextMap,
 }
 pub struct Projection {
     pub source: String,
@@ -37,32 +41,74 @@ pub struct Projection {
 fn message(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
+fn parse_options() -> ParseOptions {
+    let mut options = ParseOptions::gfm();
+    options.constructs.math_flow = true;
+    options.constructs.math_text = true;
+    options
+}
 fn root(schema: &Schema, nodes: Vec<Node>) -> Result<Node, String> {
     schema
         .node("doc", None, Fragment::from(nodes), vec![])
         .map_err(message)
 }
 impl Projection {
+    /// Replacing the selected visible label keeps its existing resource. The
+    /// upstream non-inclusive link mark deliberately does not extend at a
+    /// cursor, but its generic marks_across also drops a whole selected label.
+    /// Restore it only for a nonempty, text-only replacement wholly inside one
+    /// identical link. Explicit unlink/format steps never enter this path.
+    pub fn inherit_replacement_link(&self, tr: &mut Transaction) -> Result<(), String> {
+        if tr.steps.len() != 1 || tr.docs.first() != Some(&self.doc) {
+            return Ok(());
+        }
+        let Some(step) = tr.steps[0].as_any().downcast_ref::<ReplaceStep>() else {
+            return Ok(());
+        };
+        if step.structure
+            || step.from >= step.to
+            || step.slice.open_start != 0
+            || step.slice.open_end != 0
+            || step.slice.content.child_count() == 0
+            || !(0..step.slice.content.child_count()).all(|i| {
+                step.slice.content.child(i).is_text()
+                    && !step
+                        .slice
+                        .content
+                        .child(i)
+                        .marks()
+                        .iter()
+                        .any(|m| m.ty.name() == "link")
+            })
+        {
+            return Ok(());
+        }
+        let (from, to, length) = (step.from, step.to, step.slice.content.size());
+        let mut mark = None;
+        let mut valid = true;
+        self.doc.nodes_between(from, to, &mut |node, _, _, _| {
+            if node.is_text() {
+                let link = node.marks().iter().find(|m| m.ty.name() == "link");
+                match (&mark, link) {
+                    (None, Some(link)) => mark = Some(link.clone()),
+                    (Some(old), Some(link)) if old == link => {}
+                    _ => valid = false,
+                }
+            } else if node.is_leaf() {
+                valid = false;
+            }
+            true
+        });
+        if valid && let Some(mark) = mark {
+            tr.add_mark(from, from + length, mark).map_err(message)?;
+        }
+        Ok(())
+    }
     pub fn rich_position(&self, byte: usize) -> Option<usize> {
         let mut base = 0;
         for block in &self.blocks {
-            let mut found = None;
-            block.node.descendants(&mut |n, p, _, _| {
-                if let Some(t) = n.text() {
-                    if let Some(at) = raw_text_start(block, t, &self.source) {
-                        let start = block.source.start + at;
-                        if let Some(delta) = byte
-                            .checked_sub(start)
-                            .filter(|d| *d <= t.len() && t.is_char_boundary(*d))
-                        {
-                            found = Some(base + 1 + p + t[..delta].encode_utf16().count());
-                        }
-                    }
-                }
-                true
-            });
-            if found.is_some() {
-                return found;
+            if let Some(found) = block.text_map.rich_position(byte) {
+                return Some(base + found);
             }
             if let Some((pos, _)) = list_items::empty_positions(block, &self.source)
                 .into_iter()
@@ -78,6 +124,48 @@ impl Projection {
             base += block.node.node_size();
         }
         None
+    }
+    /// Syntax delimiters and expanded entities may have no exact visible
+    /// boundary. A mode switch stays in the same source block, choosing its
+    /// closest editable text boundary without changing any document bytes.
+    pub fn nearest_rich_position(&self, byte: usize) -> Option<usize> {
+        if let Some(exact) = self.rich_position(byte) {
+            return Some(exact);
+        }
+        let mut base = 0;
+        for block in &self.blocks {
+            if byte >= block.source.start && byte <= block.source.end {
+                let nearest = block
+                    .text_map
+                    .units
+                    .iter()
+                    .flat_map(|u| [(u.source.start, u.rich.start), (u.source.end, u.rich.end)])
+                    .min_by_key(|(at, _)| at.abs_diff(byte));
+                return nearest
+                    .map(|(_, pos)| base + pos)
+                    .or_else(|| (block.node.is_textblock()).then_some(base + 1));
+            }
+            base += block.node.node_size();
+        }
+        // A normal terminal EOL or a separator belongs to source trivia, not
+        // to a text leaf. Keep its caret beside the closest surviving block.
+        let mut base = 0;
+        let mut nearest = None;
+        for block in &self.blocks {
+            for unit in &block.text_map.units {
+                for (at, pos) in [
+                    (unit.source.start, unit.rich.start),
+                    (unit.source.end, unit.rich.end),
+                ] {
+                    let distance = at.abs_diff(byte);
+                    if nearest.is_none_or(|(best, _)| distance < best) {
+                        nearest = Some((distance, base + pos));
+                    }
+                }
+            }
+            base += block.node.node_size();
+        }
+        nearest.map(|(_, pos)| pos)
     }
     /// A single plain-text ReplaceStep supplies the identity of the edited
     /// source range. Validate the complete projection before preferring it to
@@ -132,6 +220,9 @@ impl Projection {
                     && (0..step.slice.content.child_count())
                         .all(|i| step.slice.content.child(i).is_text())
                 {
+                    if let Some(edit) = local_patch::text_step(self, next, step) {
+                        return Ok(vec![edit]);
+                    }
                     if let (Some(a), Some(h)) = (
                         self.source_position(step.from),
                         self.source_position(step.to),
@@ -240,21 +331,44 @@ impl Projection {
         Ok(edits)
     }
     pub fn parse(schema: &Schema, source: String) -> Result<Self, String> {
-        let tree = markdown::to_mdast(&source, &ParseOptions::gfm()).map_err(message)?;
+        let tree = markdown::to_mdast(&source, &parse_options()).map_err(message)?;
         let mut blocks = Vec::new();
+        let definitions: Vec<_> = tree
+            .children()
+            .ok_or("missing Markdown root")?
+            .iter()
+            .filter_map(|n| {
+                if let mdast::Node::Definition(d) = n {
+                    Some(d)
+                } else {
+                    None
+                }
+            })
+            .collect();
         for child in tree.children().ok_or("missing Markdown root")? {
             let p = child.position().ok_or("missing source span")?;
-            let span = p.start.offset..p.end.offset;
+            let mut span = p.start.offset..p.end.offset;
+            // The parser includes a footnote definition's terminating EOL in
+            // its container span. It remains source trivia, like the terminal
+            // EOL of a paragraph, rather than part of the literal block text.
+            if matches!(child, mdast::Node::FootnoteDefinition(_)) {
+                while span.end > span.start
+                    && matches!(source.as_bytes()[span.end - 1], b'\n' | b'\r')
+                {
+                    span.end -= 1;
+                }
+            }
             let raw = source
                 .get(span.clone())
                 .ok_or("invalid parser byte boundary")?;
             // Unsupported syntax is represented visibly as a local source block.
             // It is never silently discarded by the Markdown importer.
-            let mut opaque = contains_opaque(child);
+            let mut opaque = contains_opaque(child) || raw.trim_start().starts_with(":::");
             let parsed = if opaque {
                 None
             } else {
-                MarkdownFormat::default().parse(schema, raw).ok()
+                references::import_source(child, &source, &definitions)
+                    .and_then(|input| MarkdownFormat::default().parse(schema, &input).ok())
             };
             let node = match parsed.filter(|d| d.child_count() == 1) {
                 Some(d) => d.child(0).clone(),
@@ -276,7 +390,8 @@ impl Projection {
                     mdast::Node::Definition(_) | mdast::Node::FootnoteDefinition(_)
                 );
             blocks.push(Block {
-                source: span,
+                source: span.clone(),
+                text_map: text_map::TextMap::build(&node, child, &source, opaque, span),
                 node,
                 opaque,
             });
@@ -319,6 +434,7 @@ impl Projection {
                 source: source.len()..source.len(),
                 node: empty,
                 opaque: false,
+                text_map: text_map::TextMap::default(),
             });
         }
         let doc = root(schema, blocks.iter().map(|b| b.node.clone()).collect())?;
@@ -341,32 +457,7 @@ impl Projection {
                 return Some(b.source.end);
             }
             if pos > base && pos < base + size {
-                let mut found = None;
-                b.node.descendants(&mut |n, p, _, _| {
-                    if let Some(t) = n.text() {
-                        let local = pos.checked_sub(base + 1 + p);
-                        if let Some(units) = local.filter(|u| *u <= t.encode_utf16().count()) {
-                            if let Some(at) = raw_text_start(b, t, &self.source) {
-                                let mut used = 0;
-                                let byte = t
-                                    .char_indices()
-                                    .find_map(|(i, c)| {
-                                        if used == units {
-                                            Some(i)
-                                        } else {
-                                            used += c.len_utf16();
-                                            None
-                                        }
-                                    })
-                                    .or_else(|| {
-                                        (units == t.encode_utf16().count()).then_some(t.len())
-                                    });
-                                found = byte.map(|i| b.source.start + at + i);
-                            }
-                        }
-                    }
-                    true
-                });
+                let mut found = b.text_map.source_positions(pos - base).last().copied();
                 if found.is_none() {
                     found = list_items::empty_positions(b, &self.source)
                         .into_iter()
@@ -418,6 +509,15 @@ impl Projection {
         }
         // Text-only edits can preserve delimiters and trivia even inside the block.
         if old_end - first == 1 && new_end - first == 1 {
+            if let Some(patch) =
+                local_patch::block_patch(&self.blocks[first], next.child(first), &self.source)
+            {
+                let mut raw = self.source.clone();
+                raw.replace_range(patch.0.clone(), &patch.1);
+                if Self::parse(next.ty().schema(), raw).is_ok_and(|p| &p.doc == next) {
+                    return Ok(Some(patch));
+                }
+            }
             if let Some(patch) =
                 task_toggle_patch(&self.blocks[first], next.child(first), &self.source)?
             {
@@ -494,6 +594,7 @@ fn empty_block(schema: &Schema, at: usize) -> Result<Block, String> {
             .node("paragraph", None, Fragment::empty(), vec![])
             .map_err(message)?,
         opaque: false,
+        text_map: text_map::TextMap::default(),
     })
 }
 
@@ -536,6 +637,153 @@ mod tests {
         assert_eq!(p.source_position(2), Some(5));
         assert_eq!(p.source_position(3), None);
         assert_eq!(p.source_position(4), Some(9));
+    }
+    #[test]
+    fn ast_text_map_distinguishes_repeated_leaves_and_entity_boundaries() {
+        let m = manager();
+        let raw = "**foo** foo &amp; \\*甲😀\\*";
+        let p = Projection::parse(m.schema(), raw.into()).unwrap();
+        for needle in ["**foo", "foo &", "&amp;", "甲😀"] {
+            let byte = raw.find(needle).unwrap() + if needle.starts_with("**") { 2 } else { 0 };
+            let pos = p.rich_position(byte).unwrap();
+            assert_eq!(p.source_position(pos), Some(byte), "{needle}");
+        }
+        let amp = p.rich_position(raw.find("&amp;").unwrap()).unwrap();
+        assert_eq!(
+            p.source_position(amp + 1),
+            Some(raw.find("&amp;").unwrap() + 5)
+        );
+        let n = edited(&p, amp, amp + 1, "和");
+        assert_eq!(apply(&p, &n), raw.replace("&amp;", "和"));
+    }
+    #[test]
+    fn code_span_backtick_edit_changes_only_necessary_node_fence() {
+        let m = manager();
+        let raw = "原 \\*样\\* &amp; `code` 后 **保留**\n";
+        let p = Projection::parse(m.schema(), raw.into()).unwrap();
+        let from = p.rich_position(raw.find("code").unwrap() + 2).unwrap();
+        let n = edited(&p, from, from, "`");
+        let result = apply(&p, &n);
+        assert_eq!(result, raw.replace("`code`", "``co`de``"));
+        assert_eq!(Projection::parse(m.schema(), result).unwrap().doc, n);
+    }
+    #[test]
+    fn heading_level_change_preserves_existing_style_text_escape_and_trivia() {
+        let m = manager();
+        for (raw, level, expected) in [
+            (
+                "  ##  中文 &amp; \\*字\\* ##\n",
+                3,
+                "  ###  中文 &amp; \\*字\\* ##\n",
+            ),
+            (
+                "中文 &amp; \\*字\\*\n=======\n",
+                2,
+                "中文 &amp; \\*字\\*\n-------\n",
+            ),
+        ] {
+            let p = Projection::parse(m.schema(), raw.into()).unwrap();
+            let state =
+                EditorState::create(EditorStateConfig::new(m.schema().clone()).doc(p.doc.clone()))
+                    .unwrap();
+            let mut tr = state.tr();
+            tr.set_node_attribute(0, "level", json!(level)).unwrap();
+            let next = state.apply(tr).unwrap();
+            assert_eq!(apply(&p, next.doc()), expected);
+        }
+    }
+    #[test]
+    fn imported_nested_code_and_references_map_to_original_source_text() {
+        let m = manager();
+        for raw in [
+            "> ~~~rust\n> alpha\n> beta\n> ~~~\n",
+            "+ outer\n  + **alpha** &amp; alpha\n",
+            "[alpha &amp; 甲][ref]\n\n[ref]: <https://example.invalid> \"原题\"\n",
+        ] {
+            let p = Projection::parse(m.schema(), raw.into()).unwrap();
+            let byte = raw.rfind("alpha").unwrap();
+            let pos = p.rich_position(byte).unwrap();
+            assert_eq!(p.source_position(pos), Some(byte));
+            let state =
+                EditorState::create(EditorStateConfig::new(m.schema().clone()).doc(p.doc.clone()))
+                    .unwrap();
+            let mut tr = state.tr();
+            tr.insert_text("A", Some(pos), Some(pos + 1));
+            let (next, applied) = state.apply_transaction(tr).unwrap();
+            let mut result = raw.to_owned();
+            for (r, t) in p
+                .transaction_edits(next.doc(), &applied)
+                .unwrap()
+                .into_iter()
+                .rev()
+            {
+                result.replace_range(r, &t);
+            }
+            let mut expected = raw.to_owned();
+            expected.replace_range(byte..byte + 1, "A");
+            assert_eq!(result, expected);
+        }
+    }
+    #[test]
+    fn math_footnote_and_custom_extension_display_complete_literal_source_blocks() {
+        let m = manager();
+        let raw = "anchor\n\n$x_1 + y^2$\n\n$$\na + b = c\n$$\n\ntext[^note]\n\n[^note]: note body\n\n::: custom\nopaque body\n:::\n\nend\n";
+        let p = Projection::parse(m.schema(), raw.into()).unwrap();
+        let literal: Vec<_> = p
+            .blocks
+            .iter()
+            .filter(|b| b.opaque)
+            .map(|b| b.node.text_content())
+            .collect();
+        for expected in [
+            "$x_1 + y^2$",
+            "$$\na + b = c\n$$",
+            "text[^note]",
+            "[^note]: note body",
+            "::: custom\nopaque body\n:::",
+        ] {
+            assert!(
+                literal.iter().any(|text| text == expected),
+                "missing {expected:?}, literal blocks {literal:?}"
+            );
+        }
+        assert_eq!(p.source, raw);
+    }
+    #[test]
+    fn whole_link_label_replacement_preserves_resource_before_source_patch() {
+        let m = manager();
+        for raw in [
+            "[apple](<https://example.invalid/inline> \"keep title\")",
+            "+ [ ] **outer**\n  + [X] [apple](./target \"keep\")\n  + third",
+        ] {
+            let p = Projection::parse(m.schema(), raw.into()).unwrap();
+            let state =
+                EditorState::create(EditorStateConfig::new(m.schema().clone()).doc(p.doc.clone()))
+                    .unwrap();
+            let from = p.rich_position(raw.find("apple").unwrap()).unwrap();
+            let to = p.rich_position(raw.find("apple").unwrap() + 5).unwrap();
+            let mut tr = state.tr();
+            tr.insert_text("Apple", Some(from), Some(to));
+            p.inherit_replacement_link(&mut tr).unwrap();
+            let (next, applied) = state.apply_transaction(tr).unwrap();
+            let mut found = false;
+            next.doc().descendants(&mut |node, _, _, _| {
+                found |= node.text() == Some("Apple")
+                    && node.marks().iter().any(|m| m.ty.name() == "link");
+                true
+            });
+            assert!(found);
+            let mut result = raw.to_owned();
+            for (range, text) in p
+                .transaction_edits(next.doc(), &applied)
+                .unwrap()
+                .into_iter()
+                .rev()
+            {
+                result.replace_range(range, &text);
+            }
+            assert_eq!(result, raw.replacen("apple", "Apple", 1));
+        }
     }
     #[test]
     fn opaque_source_is_editable_but_never_serialized_as_code_fence() {
@@ -658,11 +906,11 @@ fn contains_opaque(n: &mdast::Node) -> bool {
     matches!(
         n,
         mdast::Node::Html(_)
+            | mdast::Node::Math(_)
+            | mdast::Node::InlineMath(_)
             | mdast::Node::Definition(_)
             | mdast::Node::FootnoteDefinition(_)
             | mdast::Node::FootnoteReference(_)
-            | mdast::Node::LinkReference(_)
-            | mdast::Node::ImageReference(_)
     ) || n
         .children()
         .is_some_and(|xs| xs.iter().any(contains_opaque))
@@ -764,6 +1012,19 @@ fn raw_text_start(b: &Block, text: &str, source: &str) -> Option<usize> {
 fn empty_position(b: &Block, source: &str) -> Option<usize> {
     if b.node.ty().name() == "codeBlock" && !b.opaque {
         return fenced_content_start(b, "", source).map(|at| b.source.start + at);
+    }
+    if b.node.ty().name() == "heading" {
+        let raw = source.get(b.source.clone())?;
+        let indent = raw.bytes().take_while(|b| *b == b' ').count();
+        let run = raw[indent..].bytes().take_while(|b| *b == b'#').count();
+        if run > 0 {
+            let after = indent + run;
+            let spacing = raw[after..]
+                .bytes()
+                .take_while(|b| matches!(b, b' ' | b'\t'))
+                .count();
+            return Some(b.source.start + after + spacing);
+        }
     }
     Some(b.source.start)
 }
