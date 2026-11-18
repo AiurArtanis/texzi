@@ -678,6 +678,164 @@ mod tests {
         assert!(owner.status.get().is_empty(), "{}", owner.status.get());
     }
     #[test]
+    fn list_item_enter_at_end_accepts_text_and_source_undo_redo_with_terminal_eol() {
+        run(|| {
+            for eol in ["\n", "\r\n", ""] {
+                let raw = format!("+ apple甲{eol}");
+                // With no existing EOL, Store inserts CRLF but must not add a
+                // terminal EOL that the original document did not contain.
+                let separator = if eol.is_empty() { "\r\n" } else { eol };
+                let after_enter = format!("+ apple甲{separator}+ {eol}");
+                let after_text = format!("+ apple甲{separator}+ 乙{eol}");
+                let source = NativeView::fixture(&raw);
+                let rich = source.sibling().unwrap();
+                let owner = RichOwner::new(rich.clone(), signal(String::new())).unwrap();
+                owner.activate().unwrap();
+                let end = owner
+                    .projection
+                    .borrow()
+                    .rich_position("+ apple甲".len())
+                    .unwrap();
+                select(&owner, end);
+                let original_token =
+                    source.inspect(|s, id| s.snapshot(s.view(id).unwrap().doc).unwrap().token);
+                let state = owner.session.state();
+                // Use the exact command installed by NSH's listItem extension.
+                let (_, enter) =
+                    nsh_base::rich_editor::extensions::kit::list_item_keys(state.schema())
+                        .into_iter()
+                        .find(|(key, _)| key == "Enter")
+                        .expect("listItem must bind Enter");
+                let mut dispatch = |tr| owner.session.dispatch(tr).unwrap();
+                assert!(enter(&state, Some(&mut dispatch)));
+                assert!(
+                    owner.status.get().is_empty(),
+                    "Enter with {eol:?}: {}",
+                    owner.status.get()
+                );
+                assert_eq!(bytes(&source), after_enter.as_bytes());
+                let state = owner.session.state();
+                let list = state.doc().child(0);
+                assert_eq!(list.ty().name(), "bulletList");
+                assert_eq!(list.child_count(), 2);
+                assert_eq!(list.child(1).ty().name(), "listItem");
+                assert_eq!(list.child(1).child(0).ty().name(), "paragraph");
+                assert_eq!(list.child(1).child(0).content().size(), 0);
+                let caret = "+ apple甲\n+ ".len();
+                let projection = owner.projection.borrow();
+                assert_eq!(
+                    projection.source_position(state.selection().anchor()),
+                    Some(caret)
+                );
+                assert_eq!(
+                    projection.rich_position(caret),
+                    Some(state.selection().anchor())
+                );
+                drop(projection);
+                assert_eq!(
+                    rich.snapshot().unwrap().selections.ranges,
+                    vec![(caret, caret)]
+                );
+                let mut tr = state.tr();
+                tr.insert_text("乙", None, None);
+                owner.session.dispatch(tr).unwrap();
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), after_text.as_bytes());
+                assert_eq!(bytes(&rich), after_text.as_bytes());
+                assert!(
+                    nsh_base::rich_editor::extensions::history::history_state(
+                        &owner.session.state()
+                    )
+                    .is_none()
+                );
+                source.inspect(|s, id| {
+                    assert_eq!(s.history_depth(s.view(id).unwrap().doc).unwrap(), (2, 0));
+                });
+                // Source history owns both edits; no rich-only undo stack exists.
+                for (undo, expected) in [
+                    (true, after_enter.as_str()),
+                    (true, raw.as_str()),
+                    (false, after_enter.as_str()),
+                    (false, after_text.as_str()),
+                ] {
+                    let snapshot = source.snapshot().unwrap();
+                    source
+                        .history(snapshot.revision, snapshot.view_epoch, undo)
+                        .unwrap();
+                    assert_eq!(bytes(&source), expected.as_bytes());
+                    assert_eq!(bytes(&rich), expected.as_bytes());
+                    if undo && expected == raw {
+                        source.inspect(|s, id| {
+                            assert_eq!(
+                                s.snapshot(s.view(id).unwrap().doc).unwrap().token,
+                                original_token
+                            );
+                        });
+                    }
+                }
+                source.inspect(|s, id| {
+                    assert_eq!(s.history_depth(s.view(id).unwrap().doc).unwrap(), (2, 0));
+                });
+            }
+        });
+    }
+    #[test]
+    fn list_item_split_preserves_bullets_mixed_eols_origins_and_opaque_neighbor() {
+        run(|| {
+            for bullet in ["+", "-", "*"] {
+                let raw = format!("{bullet} apple甲\r\n{bullet} pear\n\n<custom>keep</custom>\r\n");
+                let expected = raw.replacen("apple", &format!("apple\r\n{bullet} "), 1);
+                let source = NativeView::fixture(&raw);
+                let owner =
+                    RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+                owner.activate().unwrap();
+                let at = owner
+                    .projection
+                    .borrow()
+                    .rich_position(format!("{bullet} apple").len())
+                    .unwrap();
+                select(&owner, at);
+                let state = owner.session.state();
+                let (_, enter) =
+                    nsh_base::rich_editor::extensions::kit::list_item_keys(state.schema())
+                        .into_iter()
+                        .find(|(key, _)| key == "Enter")
+                        .unwrap();
+                let mut dispatch = |tr| owner.session.dispatch(tr).unwrap();
+                assert!(enter(&state, Some(&mut dispatch)));
+                assert!(
+                    owner.status.get().is_empty(),
+                    "{bullet}: {}",
+                    owner.status.get()
+                );
+                assert_eq!(bytes(&source), expected.as_bytes());
+                source.inspect(|s, id| {
+                    let snapshot = s.snapshot(s.view(id).unwrap().doc).unwrap();
+                    let mut original_bytes = 0;
+                    let mut inserted = 0;
+                    for (logical, origin) in snapshot.body.origins() {
+                        match origin {
+                            Some(origin) => {
+                                assert_eq!(origin.source.as_ref(), raw);
+                                original_bytes += origin.raw.len();
+                            }
+                            None => inserted += logical.len(),
+                        }
+                    }
+                    assert_eq!(original_bytes, raw.len());
+                    assert_eq!(inserted, 3);
+                    assert_eq!(s.history_depth(snapshot.doc).unwrap(), (1, 0));
+                });
+                owner.history(true);
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), raw.as_bytes());
+                owner.history(false);
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(bytes(&source), expected.as_bytes());
+            }
+        });
+    }
+    #[test]
     fn paragraph_enter_start_middle_end_and_empty_roundtrip_through_owner() {
         run(|| {
             for (raw, pos, expected) in [

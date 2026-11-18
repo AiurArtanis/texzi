@@ -11,6 +11,8 @@ use serde_json::json;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod list_items;
+
 pub fn manager() -> ExtensionManager {
     ExtensionManager::with_core(vec![
         kit::starter_kit()
@@ -61,6 +63,12 @@ impl Projection {
             if found.is_some() {
                 return found;
             }
+            if let Some((pos, _)) = list_items::empty_positions(block, &self.source)
+                .into_iter()
+                .find(|(_, at)| *at == byte)
+            {
+                return Some(base + pos);
+            }
             if block.node.content().size() == 0 && Some(byte) == empty_position(block, &self.source)
             {
                 return Some(base + 1);
@@ -83,6 +91,31 @@ impl Projection {
         let steps: Vec<_> = applied.iter().flat_map(|t| t.steps.iter()).collect();
         if steps.len() == 1 {
             if let Some(step) = steps[0].as_any().downcast_ref::<ReplaceStep>() {
+                if step.structure
+                    && step.from == step.to
+                    && step.slice.open_start == 2
+                    && step.slice.open_end == 2
+                {
+                    let mut base = 0;
+                    let in_bullet = self.blocks.iter().any(|block| {
+                        let end = base + block.node.node_size();
+                        let inside = block.node.ty().name() == "bulletList"
+                            && step.from > base
+                            && step.from < end;
+                        base = end;
+                        inside
+                    });
+                    if in_bullet {
+                        let (range, text) = list_items::split_edit(self, next, step)
+                            .ok_or("该列表拆分暂不能保真映射，原文未变")?;
+                        let mut raw = self.source.clone();
+                        raw.replace_range(range.clone(), &text);
+                        if Self::parse(next.ty().schema(), raw).is_ok_and(|p| &p.doc == next) {
+                            return Ok(vec![(range, text)]);
+                        }
+                        return Err("该列表拆分不能保真往返，原文未变".into());
+                    }
+                }
                 if !step.structure
                     && step.slice.open_start == 0
                     && step.slice.open_end == 0
@@ -288,6 +321,11 @@ impl Projection {
                     }
                     true
                 });
+                if found.is_none() {
+                    found = list_items::empty_positions(b, &self.source)
+                        .into_iter()
+                        .find_map(|(at, byte)| (pos == base + at).then_some(byte));
+                }
                 if found.is_none() && b.node.content().size() == 0 && pos == base + 1 {
                     return empty_position(b, &self.source);
                 }
