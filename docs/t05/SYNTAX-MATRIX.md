@@ -8,6 +8,8 @@
 
 标题自动转换另捕获触发空格已提交、结构转换尚未发生的真实 Store 状态，比较 Undo/Redo 的完整字节、token、Profile、EOL、provenance、dirty 及历史深度；源码往返不清 redo。富文本字面标记允许在新增局部用 Markdown 转义/实体编码，例 `\###&#32;` 显示为 `### `，不是承诺把字面标记裸写源码后仍作为普通段落。
 
+代码块/表格按键的下一增量已在 `compile20/runtime15` 实际编译及运行99/99、native和wrapper均exit0。新增8项覆盖围栏语言词和额外info保留、取消、退出优先复用后续正文/文末补段、真实Tab/Shift+Tab混合EOL及Source Undo、原样/缩进/未闭围栏/IME/过期拒绝和伪meta；新增2项覆盖installed Enter向表格下一行同列导航、末行提示、零正文/history/token/dirty增量及已有Source Undo。完整代码高亮/所有导航与GUI不由此关闭。`runtime14`的97项原native0但wrapper沿用先前rg的exit1，原回执保留，不冒wrapper0或产品FAIL。
+
 机器可读固定语料与分层状态在 [SYNTAX-MATRIX.json](SYNTAX-MATRIX.json)，执行代码在 [syntax_matrix_tests.rs](../../crates/texzi-app/src/syntax_matrix_tests.rs)。JSON 的每一行分别保留 original_bytes、formatted_display、direct_edit、source_reachable、component、gui、manual 和证据引用。
 
 | ID | PRD 原语法行 | 已编写的严格组件行为 | 仍须独立覆盖 |

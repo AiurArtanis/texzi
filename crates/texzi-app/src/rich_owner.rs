@@ -74,7 +74,29 @@ impl RichOwner {
             }
             true
         });
+        let enter_table = crate::table_navigation::enter(move || {
+            if let Some(owner) = owner(id) {
+                owner
+                    .status
+                    .set("表格已到最后一行；末格 Tab 可新增一行".into());
+            }
+        });
+        let table_enter: BoxCommand = Arc::new(move |state, dispatch| {
+            if matches!(
+                crate::table_navigation::target(state),
+                crate::table_navigation::EnterTarget::OutsideTable
+            ) {
+                return false;
+            }
+            if let Some(owner) = owner(id) {
+                if owner.native.is_composing() || owner.session.composing() {
+                    return true;
+                }
+            }
+            enter_table(state, dispatch)
+        });
         let mut plugins = vec![keymap(vec![
+            ("Enter".into(), table_enter),
             ("Mod-z".into(), undo),
             ("Mod-y".into(), redo.clone()),
             ("Mod-Shift-z".into(), redo),

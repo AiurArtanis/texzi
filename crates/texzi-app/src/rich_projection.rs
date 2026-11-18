@@ -11,6 +11,7 @@ use serde_json::json;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod code_actions;
 mod list_items;
 mod local_patch;
 mod references;
@@ -23,8 +24,10 @@ pub use resources::{ResourceKind, ResourceTarget, ResourceValues};
 
 pub fn manager() -> ExtensionManager {
     ExtensionManager::with_core(vec![
-        kit::starter_kit()
-            .configure(json!({"history":false,"trailingNode":false,"typography":false})),
+        kit::starter_kit().configure(
+            json!({"history":false,"trailingNode":false,"typography":false,
+                "codeBlock":{"enableTabIndentation":true,"tabSize":4,"exitOnTripleEnter":false}}),
+        ),
         kit::table_kit(),
     ])
     .expect("fixed rich schema")
@@ -221,6 +224,9 @@ impl Projection {
         next: &Node,
         applied: &[Transaction],
     ) -> Result<Vec<(Range<usize>, String)>, String> {
+        if let Some(edits) = code_actions::transaction_edits(self, next, applied)? {
+            return Ok(edits);
+        }
         if let Some(edits) = resources::transaction_edits(self, next, applied)? {
             return Ok(edits);
         }

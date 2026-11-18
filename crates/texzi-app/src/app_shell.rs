@@ -766,8 +766,14 @@ fn bind_chords(s: Rc<Shell>) {
         prefix.chord.set(true);
         prefix.notice.set("Ctrl+K：等待第二个按键…".into());
         let chord = prefix.chord;
+        let notice = prefix.notice;
         set_timeout(std::time::Duration::from_millis(1500), move || {
-            chord.set(false)
+            if chord.get() {
+                chord.set(false);
+                if notice.get() == "Ctrl+K：等待第二个按键…" {
+                    notice.set("Ctrl+K 组合已超时取消".into());
+                }
+            }
         });
     });
     effect(move || {
@@ -811,6 +817,9 @@ fn bind_chords(s: Rc<Shell>) {
                 let s = s.clone();
                 on_key(&stroke, move |_| {
                     s.chord.set(false);
+                    if s.notice.get() == "Ctrl+K：等待第二个按键…" {
+                        s.notice.set(String::new());
+                    }
                     if let Some(id) = target {
                         s.run(id);
                     } else {
@@ -969,6 +978,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .child(
                         view()
                             .flex_row()
+                            .flex_wrap()
+                            .min_w(px(0.0))
                             .gap(px(8.0))
                             .p(px(6.0))
                             .child(crate::rich_controls::view(
@@ -977,6 +988,11 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                                 focus.clone(),
                             ))
                             .child(crate::table_controls::view(
+                                rich.clone(),
+                                controls_source.clone(),
+                                focus.clone(),
+                            ))
+                            .child(crate::code_controls::view(
                                 rich.clone(),
                                 controls_source.clone(),
                                 focus,

@@ -22,6 +22,10 @@ static LOGGER: StderrLogger = StderrLogger;
 #[cfg(windows)]
 mod app_shell;
 #[cfg(windows)]
+mod code_controls;
+#[cfg(all(test, windows))]
+mod code_controls_tests;
+#[cfg(windows)]
 mod native_menu;
 #[cfg(all(test, windows))]
 mod syntax_matrix_tests;
@@ -48,6 +52,10 @@ mod startup_fault;
 mod table_controls;
 #[cfg(all(test, windows))]
 mod table_controls_tests;
+#[cfg(windows)]
+mod table_navigation;
+#[cfg(all(test, windows))]
+mod table_navigation_tests;
 
 #[cfg(windows)]
 mod app {
