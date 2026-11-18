@@ -148,6 +148,28 @@ impl Projection {
                             {
                                 return Ok(vec![(a..h, text)]);
                             }
+                            if step.from == step.to && !text.is_empty() {
+                                let mut base = 0;
+                                let adjacent_fence = self.blocks.iter().any(|block| {
+                                    let matches = step.from == base + 1
+                                        && adjacent_empty_fence_at(block, &self.source) == Some(a);
+                                    base += block.node.node_size();
+                                    matches
+                                });
+                                if adjacent_fence {
+                                    // Materialize the missing body/closing-fence separator.
+                                    // All existing bytes and EOL provenance stay outside the edit.
+                                    let replacement = format!("{text}\n");
+                                    let mut raw = self.source.clone();
+                                    raw.replace_range(a..h, &replacement);
+                                    if Self::parse(next.ty().schema(), raw)
+                                        .is_ok_and(|p| &p.doc == next)
+                                    {
+                                        return Ok(vec![(a..h, replacement)]);
+                                    }
+                                    return Err("该空围栏输入暂不能保真往返，原文未变".into());
+                                }
+                            }
                             if step.from == step.to {
                                 let mut base = 0;
                                 let empty_container = self.blocks.iter().any(|block| {
@@ -678,6 +700,42 @@ fn single_text_patch(b: &Block, next: &Node, source: &str) -> Option<(Range<usiz
         b.source.start + at..b.source.start + at + old.len(),
         new.into(),
     ))
+}
+
+fn adjacent_empty_fence_at(b: &Block, source: &str) -> Option<usize> {
+    if b.opaque || b.node.ty().name() != "codeBlock" || b.node.content().size() != 0 {
+        return None;
+    }
+    let raw = source.get(b.source.clone())?;
+    let (opening, closing) = raw.split_once('\n')?;
+    // Runtime projections have canonical LF; do not reinterpret raw CR bytes.
+    if raw.contains('\r') || closing.contains('\n') {
+        return None;
+    }
+    let indent = opening.bytes().take_while(|b| *b == b' ').count();
+    let marker = *opening.as_bytes().get(indent)?;
+    if indent > 3 || !matches!(marker, b'`' | b'~') {
+        return None;
+    }
+    let run = opening.as_bytes()[indent..]
+        .iter()
+        .take_while(|b| **b == marker)
+        .count();
+    let close_indent = closing.bytes().take_while(|b| *b == b' ').count();
+    let close_run = closing.as_bytes()[close_indent..]
+        .iter()
+        .take_while(|b| **b == marker)
+        .count();
+    if run < 3
+        || close_indent > 3
+        || close_run < run
+        || !closing.as_bytes()[close_indent + close_run..]
+            .iter()
+            .all(|b| matches!(*b, b' ' | b'\t'))
+    {
+        return None;
+    }
+    Some(b.source.start + opening.len() + 1)
 }
 
 fn fenced_content_start(b: &Block, text: &str, source: &str) -> Option<usize> {

@@ -733,6 +733,139 @@ mod tests {
         });
     }
     #[test]
+    fn adjacent_empty_fence_first_text_is_one_source_history_entry() {
+        run(|| {
+            // round-empty-code-01: two Source lines, no blank code-body line
+            // and no final EOL; the failed Rich input must have its own undo.
+            assert_empty_fence_input_source_roundtrip("~~~rust\r\n~~~", "~~~rust\r\n戊\r\n~~~");
+        });
+    }
+    #[test]
+    fn empty_fence_input_preserves_marker_eol_blank_body_and_terminal_eol_controls() {
+        run(|| {
+            for eol in ["\n", "\r\n"] {
+                for fence in ["~~~", "```"] {
+                    for body_separator in ["", eol] {
+                        for ending in ["", eol] {
+                            let raw = format!("{fence}rust{eol}{body_separator}{fence}{ending}");
+                            let expected = format!("{fence}rust{eol}戊{eol}{fence}{ending}");
+                            assert_empty_fence_input_source_roundtrip(&raw, &expected);
+                        }
+                    }
+                }
+            }
+        });
+    }
+    fn assert_empty_fence_input_source_roundtrip(raw: &str, expected: &str) {
+        let source = NativeView::fixture(raw);
+        let rich = source.sibling().unwrap();
+        let owner = RichOwner::new(rich.clone(), signal(String::new())).unwrap();
+        owner.activate().unwrap();
+        select(&owner, 1);
+        let state = owner.session.state();
+        assert_eq!(state.doc().child_count(), 1, "fixture {raw:?}");
+        assert_eq!(state.doc().child(0).ty().name(), "codeBlock");
+        assert_eq!(state.doc().child(0).text_content(), "");
+        assert_eq!(state.selection().anchor(), 1);
+        assert_eq!(state.selection().head(), 1);
+        let body_at = source
+            .snapshot()
+            .unwrap()
+            .rope
+            .to_string()
+            .find('\n')
+            .unwrap()
+            + 1;
+        assert_eq!(owner.projection.borrow().source_position(1), Some(body_at));
+        assert_eq!(
+            rich.snapshot().unwrap().selections.ranges,
+            vec![(body_at, body_at)]
+        );
+        // Start with an imported fixture, not Source typing history: one undo
+        // below can only remove this first Rich input, never the old fences.
+        assert_eq!(source.can_history(), (false, false));
+        let identity = || {
+            source.inspect(|store, id| {
+                let snapshot = store.snapshot(store.view(id).unwrap().doc).unwrap();
+                let origins = snapshot
+                    .body
+                    .origins()
+                    .into_iter()
+                    .map(|(range, origin)| {
+                        (range, origin.map(|o| (o.source, o.raw, o.logical_len)))
+                    })
+                    .collect::<Vec<_>>();
+                (snapshot.token, snapshot.body.eols(), origins)
+            })
+        };
+        let original_identity = identity();
+        let original_revision = source.snapshot().unwrap().revision;
+        let mut tr = state.tr();
+        // Match the native Text input transaction rather than an API-origin
+        // edit, so the real Owner submits a single Typing edit to the Store.
+        tr.insert_text("戊", None, None);
+        tr.set_origin(TransactionOrigin::Input);
+        tr.scroll_into_view();
+        owner.session.dispatch(tr).unwrap();
+        assert!(
+            owner.status.get().is_empty(),
+            "fixture {raw:?}: {}",
+            owner.status.get()
+        );
+        assert_eq!(bytes(&source), expected.as_bytes(), "fixture {raw:?}");
+        assert_eq!(bytes(&rich), expected.as_bytes());
+        assert_eq!(source.snapshot().unwrap().revision, original_revision + 1);
+        assert_eq!(owner.session.state().doc().child(0).text_content(), "戊");
+        assert_eq!(owner.session.state().selection().anchor(), 2);
+        assert_eq!(owner.session.state().selection().head(), 2);
+        assert_eq!(
+            rich.snapshot().unwrap().selections.ranges,
+            vec![(body_at + "戊".len(), body_at + "戊".len())]
+        );
+        let text_identity = identity();
+        assert_ne!(text_identity.0, original_identity.0);
+        source.inspect(|store, id| {
+            let snapshot = store.snapshot(store.view(id).unwrap().doc).unwrap();
+            assert_eq!(store.history_depth(snapshot.doc).unwrap(), (1, 0));
+            let mut kept_original = Vec::new();
+            for (_, origin) in snapshot.body.origins() {
+                if let Some(origin) = origin {
+                    assert_eq!(origin.source.as_ref(), raw);
+                    kept_original.extend_from_slice(&origin.source.as_bytes()[origin.raw]);
+                }
+            }
+            assert_eq!(kept_original, raw.as_bytes());
+        });
+        assert!(
+            nsh_base::rich_editor::extensions::history::history_state(&owner.session.state())
+                .is_none()
+        );
+        let final_doc = owner.session.state().doc().to_json();
+        // Source alone drives the same Store history; token, exact EOL vector
+        // and every origin range must return with the corresponding bytes.
+        for (undo, expected_bytes, expected_identity, depth) in [
+            (true, raw, &original_identity, (0, 1)),
+            (false, expected, &text_identity, (1, 0)),
+        ] {
+            let snapshot = source.snapshot().unwrap();
+            source
+                .history(snapshot.revision, snapshot.view_epoch, undo)
+                .unwrap();
+            assert_eq!(bytes(&source), expected_bytes.as_bytes());
+            assert_eq!(bytes(&rich), expected_bytes.as_bytes());
+            assert_eq!(&identity(), expected_identity);
+            source.inspect(|store, id| {
+                assert_eq!(
+                    store.history_depth(store.view(id).unwrap().doc).unwrap(),
+                    depth
+                );
+            });
+        }
+        let reopened = RichOwner::new(rich, signal(String::new())).unwrap();
+        reopened.activate().unwrap();
+        assert_eq!(reopened.session.state().doc().to_json(), final_doc);
+    }
+    #[test]
     fn empty_fenced_code_and_language_duplicate_map_to_body_not_fence() {
         run(|| {
             for raw in ["```\r\n\r\n```\r\n", "~~~ rust\r\nrust\r\n~~~\r\n"] {
