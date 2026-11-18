@@ -93,6 +93,30 @@ impl RichControlSet {
 #[cfg(test)]
 #[path = "shell_markdown_tests.rs"]
 mod shell_markdown_tests;
+#[cfg(test)]
+#[path = "shell_task_tests.rs"]
+mod shell_task_tests;
+
+// Command rows and other transient views may dispose their own owner before
+// their listener returns. A modal's creation and completion belong to Shell,
+// so the dialog answer must not inherit that listener's cancellation scope.
+fn await_shell_modal<F: std::future::Future + 'static>(
+    owner: &Owner,
+    modal: Rc<Cell<bool>>,
+    show: impl FnOnce() -> F,
+    done: impl FnOnce(F::Output) + 'static,
+) {
+    owner.run(|| {
+        modal.set(true);
+        let answer = show();
+        spawn(async move {
+            let result = answer.await;
+            modal.set(false);
+            done(result);
+        });
+    });
+}
+
 impl PartialEq for Document {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && Rc::ptr_eq(&self.source, &other.source)
@@ -116,7 +140,7 @@ struct Shell {
     zen_exit: Rc<crate::zen_state::ZenState>,
     chord: Signal<bool>,
     source_ref: Cell<Option<ComponentRef<Editor>>>,
-    modal: Cell<bool>,
+    modal: Rc<Cell<bool>>,
     split: Signal<Option<Rc<Document>>>,
     split_down: Signal<bool>,
     second_active: Signal<bool>,
@@ -184,7 +208,7 @@ impl Shell {
             zen_exit: crate::zen_state::ZenState::new(),
             chord: signal(false),
             source_ref: Cell::new(None),
-            modal: Cell::new(false),
+            modal: Rc::new(Cell::new(false)),
             split: signal(None),
             split_down: signal(false),
             second_active: signal(false),
@@ -399,18 +423,36 @@ impl Shell {
     }
     fn explain(self: &Rc<Self>, title: &str, message: &str) {
         self.notice.set(message.into());
-        self.modal.set(true);
-        let answer = nsh_base::alert_dialog()
-            .title(title.to_owned())
-            .description(message.to_owned())
-            .action("ok", "知道了")
-            .close_on_escape(true)
-            .show();
+        // A palette selection unmounts its own owner. Both the native dialog
+        // request and its answer task must outlive that transient command row;
+        // otherwise its cleanup cancels the task and leaves `modal` set forever.
         let s = self.clone();
-        spawn(async move {
-            let _ = answer.await;
-            s.modal.set(false);
-        });
+        await_shell_modal(
+            &self.owner,
+            self.modal.clone(),
+            || {
+                if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1"))
+                {
+                    log::info!("TX_SHELL_MODAL action=open");
+                }
+                nsh_base::alert_dialog()
+                    .title(title.to_owned())
+                    .description(message.to_owned())
+                    .action("ok", "知道了")
+                    .close_on_escape(true)
+                    .show()
+            },
+            move |result| {
+                if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1"))
+                {
+                    log::info!(
+                        "TX_SHELL_MODAL action=answer ok={} modal=false",
+                        result.is_ok()
+                    );
+                }
+                s.restore_editor_focus();
+            },
+        );
     }
     fn zen_stamp(&self) -> Option<crate::zen_state::Stamp> {
         let doc = self.current()?;
@@ -573,27 +615,32 @@ impl Shell {
             self.window.close();
             return;
         }
-        self.modal.set(true);
-        let answer = nsh_base::alert_dialog()
-            .title("关闭前保留未保存内容")
-            .description(format!(
-                "{}\n保存与恢复快照尚未通过验收。关闭将丢失这些内存内容。",
-                dirty.join("、")
-            ))
-            .cancel("cancel", "继续编辑")
-            .destructive("discard", "放弃并关闭")
-            .close_on_escape(true)
-            .show();
         let s = self.clone();
-        spawn(async move {
-            let discard = answer
-                .await
-                .is_ok_and(|r| r.action.as_deref() == Some("discard"));
-            s.modal.set(false);
-            if discard {
-                s.window.close();
-            }
-        });
+        // ClosePress is an effect; another close request reruns that effect.
+        // Its cleanup must not cancel the first pending confirmation.
+        await_shell_modal(
+            &self.owner,
+            self.modal.clone(),
+            || {
+                nsh_base::alert_dialog()
+                    .title("关闭前保留未保存内容")
+                    .description(format!(
+                        "{}\n保存与恢复快照尚未通过验收。关闭将丢失这些内存内容。",
+                        dirty.join("、")
+                    ))
+                    .cancel("cancel", "继续编辑")
+                    .destructive("discard", "放弃并关闭")
+                    .close_on_escape(true)
+                    .show()
+            },
+            move |result| {
+                if result.is_ok_and(|r| r.action.as_deref() == Some("discard")) {
+                    s.window.close();
+                } else {
+                    s.restore_editor_focus();
+                }
+            },
+        );
     }
     fn close_tab(self: &Rc<Self>, id: u64) {
         let Some(doc) = self.docs.with(|ds| ds.iter().find(|d| d.id == id).cloned()) else {
@@ -615,27 +662,29 @@ impl Shell {
             return;
         }
         if doc.source.is_dirty().unwrap_or(true) {
-            self.modal.set(true);
-            let answer = nsh_base::alert_dialog()
-                .title("关闭未保存标签")
-                .description(format!(
-                    "{} 尚未保存。保存当前受阻；可以继续编辑，或明确放弃内容。",
-                    doc.name
-                ))
-                .cancel("cancel", "继续编辑")
-                .destructive("discard", "放弃并关闭")
-                .close_on_escape(true)
-                .show();
             let s = self.clone();
-            spawn(async move {
-                let discard = answer
-                    .await
-                    .is_ok_and(|r| r.action.as_deref() == Some("discard"));
-                s.modal.set(false);
-                if discard {
-                    s.remove(id);
-                }
-            });
+            await_shell_modal(
+                &self.owner,
+                self.modal.clone(),
+                || {
+                    nsh_base::alert_dialog()
+                        .title("关闭未保存标签")
+                        .description(format!(
+                            "{} 尚未保存。保存当前受阻；可以继续编辑，或明确放弃内容。",
+                            doc.name
+                        ))
+                        .cancel("cancel", "继续编辑")
+                        .destructive("discard", "放弃并关闭")
+                        .close_on_escape(true)
+                        .show()
+                },
+                move |result| {
+                    if result.is_ok_and(|r| r.action.as_deref() == Some("discard")) {
+                        s.remove(id);
+                    }
+                    s.restore_editor_focus();
+                },
+            );
         } else {
             self.remove(id);
         }
@@ -702,6 +751,18 @@ impl Shell {
                 EditorCommand::DuplicateLinesDown => doc.source.duplicate_line(),
                 _ => doc.source.clear_extra_selections(),
             };
+            if result.is_ok()
+                && std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1"))
+            {
+                if let Ok(snapshot) = doc.source.snapshot() {
+                    log::info!(
+                        "TX_SHELL_SELECTION command={command:?} revision={} epoch={} count={}",
+                        snapshot.revision,
+                        snapshot.view_epoch,
+                        snapshot.selections.ranges.len()
+                    );
+                }
+            }
             if transferred && result.is_ok() {
                 self.notice
                     .set("此操作已切换到源码；继续使用同一正文和撤销历史。".into());
@@ -1731,6 +1792,7 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                     } else {
                         run.run(id);
                         if run.panel.get().is_empty()
+                            && !run.modal.get()
                             && !run.current().is_some_and(|d| d.controls.open())
                         {
                             run.restore_editor_focus();
