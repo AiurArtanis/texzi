@@ -83,6 +83,7 @@ try {
         if (!$finalLink[0].Contains($selectedPath.Replace('\', '\\'))) { throw "Actual link invocation missing selected path: $selectedPath" }
     }
     $finalLink | Set-Content build-evidence/final-app-link-command.txt
+    Invoke-Checked python @('scripts/verify-windows-identity.py', '--exe', 'target/x86_64-pc-windows-msvc/release/texzi-app.exe', '--ico', 'crates/texzi-app/assets/ink-z.ico', '--report', 'build-evidence/windows-identity.json')
     Invoke-Checked cargo @('metadata', '--locked', '--format-version', '1', '--filter-platform', 'x86_64-pc-windows-msvc') -StdoutFile 'build-evidence/metadata.json'
     New-Item dist/package/licenses -ItemType Directory -Force | Out-Null
     New-Item dist/package/component-tests -ItemType Directory | Out-Null
@@ -101,6 +102,8 @@ try {
     Copy-Item vendor/nsh-platform-windows/UPSTREAM-MANIFEST.json dist/package/component-tests/NSH-WINDOWS-UPSTREAM-MANIFEST.json
     Copy-Item docs/t04/IME-01.md dist/package/component-tests/IME-01.md
     Copy-Item docs/t05/RUN.md dist/package/component-tests/RICH-RUN.md
+    Copy-Item docs/t05/SYNTAX-MATRIX.json,docs/t05/SYNTAX-MATRIX.md dist/package/component-tests/
+    Copy-Item crates/texzi-app/assets/README.md dist/package/licenses/ink-z-provenance.md
     Copy-Item docs/t05/LICENSE-SOURCES.json dist/package/licenses/supplemental-rich-sources.json
     Copy-Item docs/tx00/licenses dist/package/licenses/supplemental -Recurse
     Invoke-Checked rustc @('--print', 'sysroot') -StdoutFile 'build-evidence/rust-sysroot.txt'

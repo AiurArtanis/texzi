@@ -1638,7 +1638,7 @@ fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>, area: Option<&
                 MenuRole::Paste => (0x56, false),
                 _ => (0x41, false),
             };
-            crate::input::key(
+            crate::input::menu_key(
                 surface,
                 KeyEvent {
                     vk,

@@ -33,3 +33,18 @@ an authoritative document Undo, without removing any document/overlay text.
 Backend crate-wide tests are not claimed: the original internal tests refer
 to upstream gallery resources outside this vendored source subset. Existing
 component tests and actual application/IME regressions are reported separately.
+
+## Native application edit-menu relay
+
+The application now supplies a native menu. An edit MenuRole synthesizes the
+focused control's Ctrl key. Relaying it through the ordinary input entry used
+to match the same native accelerator again before reaching a plain input,
+forming a recursive menu -> key -> menu cycle. `input::menu_key` uses the same
+key pipeline but skips only this second application-menu accelerator lookup;
+the engine keymap and focused text/selectable controls remain in their original
+order. Ordinary hardware input is unchanged. `chrome::choose` calls this relay
+for edit roles. No clipboard read/write API is added or run by this change.
+The upstream manifest is retained as the original source inventory; changed
+files are input.rs and chrome.rs. Real window/menu validation is separate from
+source review and compilation. This does not modify file IO or the blocked
+T07 rename implementation.

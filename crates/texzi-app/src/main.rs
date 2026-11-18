@@ -1,4 +1,5 @@
 //! Native editing checkpoint. File IO and rich-text integration follow separately.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 struct StderrLogger;
 
@@ -19,6 +20,13 @@ impl log::Log for StderrLogger {
 static LOGGER: StderrLogger = StderrLogger;
 
 #[cfg(windows)]
+mod app_shell;
+#[cfg(windows)]
+mod native_menu;
+#[cfg(all(test, windows))]
+mod syntax_matrix_tests;
+
+#[cfg(windows)]
 mod editor_owner;
 #[cfg(windows)]
 mod rich_owner;
@@ -32,7 +40,7 @@ mod app {
     use nsh_core::prelude::*;
     use nsh_platform_windows as platform;
 
-    fn rich_classes() -> nsh_base::rich_editor::view::RichEditorClasses {
+    pub(crate) fn rich_classes() -> nsh_base::rich_editor::view::RichEditorClasses {
         use std::collections::BTreeMap;
         let mut classes = nsh_base::rich_editor::view::RichEditorClasses::default();
         classes.content = Some("p-4 text-base".into());
@@ -70,58 +78,8 @@ mod app {
 
     #[component]
     pub fn Window() -> impl IntoElement {
-        nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#000000","background":"#ffffff","muted":"#f5f5f5","muted-foreground":"#525252","border":"#d4d4d4","accent":"#e5e5e5","accent-foreground":"#000000","input":"#d4d4d4"},"dark":{"foreground":"#000000","background":"#ffffff","muted":"#f5f5f5","muted-foreground":"#525252","border":"#d4d4d4","accent":"#e5e5e5","accent-foreground":"#000000","input":"#d4d4d4"}}}"##)).expect("fixed content palette"));
-        let source = crate::editor_owner::NativeView::new();
-        let rich = source.sibling().expect("independent rich view");
-        provide_context(source.buffer());
-        let gate = crate::rich_owner::ModeGate::new(source, rich);
-        let rich_mode = gate.rich_mode;
-        let status = gate.status;
-        let source_request = gate.clone();
-        let rich_request = gate.clone();
-        let source_busy = gate.clone();
-        let rich_busy = gate.clone();
-        let render_rich = gate.clone();
-        let render_source = gate.clone();
-        view()
-            .flex_1()
-            .bg(white())
-            .text_color(black())
-            .child(
-                view()
-                    .flex_row()
-                    .gap(px(16.0))
-                    .p(px(8.0))
-                    .child(
-                        nsh_base::button()
-                            .child(text("源码"))
-                            .disabled(move || source_busy.busy())
-                            .on_press(move |_: &()| source_request.to_source()),
-                    )
-                    .child(
-                        nsh_base::button()
-                            .child(text("富文本"))
-                            .disabled(move || rich_busy.busy())
-                            .on_press(move |_: &()| rich_request.to_rich()),
-                    ),
-            )
-            .child(text(move || status.get()).text_color(black()))
-            .child(
-                when(rich_mode, move || {
-                    nsh_base::rich_editor::view::rich_editor()
-                        .editor(render_rich.session())
-                        .classes(rich_classes())
-                        .auto_focus(true)
-                        .size_full()
-                })
-                .otherwise(move || {
-                    render_source.source_mounted();
-                    nsh_base::editor::editor()
-                        .auto_focus(true)
-                        .language("markdown")
-                        .size_full()
-                }),
-            )
+        nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#20242b","background":"#ffffff","muted":"#f3f4f6","muted-foreground":"#616975","border":"#dee2e8","accent":"#edf1f6","accent-foreground":"#20242b","input":"#dee2e8"},"dark":{"foreground":"#e5e9f0","background":"#191d23","muted":"#20242b","muted-foreground":"#a7b0bd","border":"#3b4350","accent":"#303845","accent-foreground":"#e5e9f0","input":"#3b4350"}}}"##)).expect("application palette"));
+        crate::app_shell::view_shell()
     }
 
     pub fn run() -> std::process::ExitCode {

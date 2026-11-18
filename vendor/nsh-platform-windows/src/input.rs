@@ -1178,6 +1178,16 @@ pub(crate) fn wheel(surface: &Rc<Surface>, event: WheelEvent) {
 /// A key from the window; true when handled. Only key downs (and their
 /// repeats) go to the modules; ups are not acted on.
 pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
+    key_impl(surface, event, false)
+}
+
+/// An edit role has already been selected by the native menu. Forward its
+/// synthetic key to the focused control, never back to that menu accelerator.
+pub(crate) fn menu_key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
+    key_impl(surface, event, true)
+}
+
+fn key_impl(surface: &Rc<Surface>, event: KeyEvent, from_menu: bool) -> bool {
     let input = &surface.input;
     if MODIFIER_KEYS.contains(&event.vk) && !event.repeat {
         modifiers_changed(surface, event.modifiers);
@@ -1199,7 +1209,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
     let handled = shortcut
         || crate::system::key(surface, &event)
         || crate::keymap::key(surface, &event)
-        || crate::chrome::shortcut(surface, &event)
+        || (!from_menu && crate::chrome::shortcut(surface, &event))
         || crate::text_input::key(surface, &event)
         || crate::text::key(surface, &event)
         || crate::selectable_view::key(surface, &event)
