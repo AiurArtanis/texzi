@@ -111,7 +111,7 @@ pub(super) fn encode_preserving(
     // address is used solely for identity, never dereferenced or used as content.
     let mut origins = BTreeMap::<(usize, usize), OriginUnit>::new();
     let mut logical_end = 0;
-    let mut decoded_at = 0;
+    let mut decoded_at: usize = 0;
     for (range, origin) in binding.imported.body.origins() {
         if range.start != logical_end {
             return Err(missing());

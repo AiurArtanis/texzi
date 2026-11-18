@@ -167,10 +167,12 @@ impl ExistingReadCapture {
     }
     /// Actual same-handle read; alone this is not an owner/capture revalidation.
     pub fn current_target_version(&self) -> Result<FileVersion, IdentityError> {
-        super::super::windows_identity::read_version_handle(&mut self.target_file()?)
+        let mut file = self.target_file()?;
+        super::super::windows_identity::read_version_handle(&mut file)
     }
     pub fn current_target_path(&self) -> Result<PathBuf, IdentityError> {
-        super::super::windows_identity::volume_path(&self.target_file()?)
+        let file = self.target_file()?;
+        super::super::windows_identity::volume_path(&file)
     }
     /// Blocking diagnostic recheck, not a UI worker entrypoint. Ordinary sharing
     /// does not freeze ACLs, mapped writers or
