@@ -988,6 +988,25 @@ pub(crate) fn focused(surface: &Surface) -> Option<NshView> {
     None
 }
 
+/// Diagnostic-only snapshot. Unlike `focused`, this never repairs stale focus,
+/// processes notes, queries services or changes the input/IME state.
+pub(crate) fn trace_composition(surface: &Surface, hwnd: HWND) -> (bool, bool) {
+    let view = FOCUS.with(|f| f.borrow().get(&surface.key()).and_then(|f| f.view.clone()));
+    let Some(view) = view else {
+        return (false, false);
+    };
+    if !view.attached() || crate::app_window::hwnd_showing(surface, &view) != hwnd {
+        return (false, false);
+    }
+    let Some(input) = input_of(&view) else {
+        return (false, false);
+    };
+    (
+        input.composing.get().is_some(),
+        input.editor.as_ref().is_some_and(Editor::composing),
+    )
+}
+
 /// The surface stopped (its views are detached): its focused field goes
 /// now, while the thread is alive, rather than with the thread's locals,
 /// whose destruction order is undefined (#1767).

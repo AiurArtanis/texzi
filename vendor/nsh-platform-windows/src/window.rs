@@ -45,7 +45,8 @@ use windows::{
             Input::{
                 KeyboardAndMouse::{
                     GetKeyState, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT,
-                    TrackMouseEvent, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+                    TrackMouseEvent, VK_CONTROL, VK_LWIN, VK_MENU, VK_PROCESSKEY, VK_RWIN,
+                    VK_SHIFT,
                 },
                 Pointer::{GetPointerInfo, POINTER_INFO},
             },
@@ -793,11 +794,59 @@ pub(crate) fn run_loop() -> i32 {
     // SAFETY: the standard message loop.
     unsafe {
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            if matches!(msg.message, WM_KEYDOWN | WM_SYSKEYDOWN)
+                && std::env::var_os("TEXZI_TRACE_CHORD").as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+            {
+                trace_chord_key(
+                    "pre_translate",
+                    msg.hwnd,
+                    KeyEvent {
+                        vk: msg.wParam.0 as u16,
+                        down: true,
+                        repeat: (msg.lParam.0 >> 30) & 1 == 1,
+                        modifiers: modifiers(),
+                    },
+                    None,
+                );
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
     msg.wParam.0 as i32
+}
+
+// All fields are flags or an owned application's window handle. In particular,
+// do not log the VK, scan code, character, input text or any path here.
+fn trace_chord_key(stage: &'static str, hwnd: HWND, event: KeyEvent, handled: Option<bool>) {
+    if !event.down
+        || std::env::var_os("TEXZI_TRACE_CHORD").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let Some(data) = data(hwnd) else { return };
+    let Some(surface) = data.surface.upgrade() else {
+        return;
+    };
+    let (input_composing, host_composing) = crate::text_input::trace_composition(&surface, hwnd);
+    let utc_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_micros());
+    let m = event.modifiers;
+    log::info!(
+        "TX_CHORD_NATIVE utc_us={utc_us} stage={stage} hwnd={:#x} processkey={} ctrl={} alt={} shift={} meta={} repeat={} native_composing={} input_composing={input_composing} host_composing={host_composing} handled_known={} handled={}",
+        hwnd.0 as usize,
+        event.vk == VK_PROCESSKEY.0,
+        m.ctrl,
+        m.alt,
+        m.shift,
+        m.meta,
+        event.repeat,
+        input_composing || host_composing,
+        handled.is_some(),
+        handled.unwrap_or(false),
+    );
 }
 
 /// The modifiers held now.
@@ -1283,6 +1332,7 @@ fn handle(
                 modifiers: modifiers(),
             };
             let handled = crate::input::key(surface, event);
+            trace_chord_key("post_key_dispatch", hwnd, event, Some(handled));
             if msg == WM_SYSKEYDOWN {
                 data.sys_char.set(handled);
             }

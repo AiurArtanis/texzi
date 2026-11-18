@@ -357,6 +357,11 @@ impl Editor {
         self.host().notes.take()
     }
 
+    /// Read-only synchronous host state, before deferred input processing.
+    pub(crate) fn composing(&self) -> bool {
+        self.host().composing.get()
+    }
+
     /// The caret the services placed.
     pub(crate) fn caret(&self) -> Caret {
         self.host().caret.get()

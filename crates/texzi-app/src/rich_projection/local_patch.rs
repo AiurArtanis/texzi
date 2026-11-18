@@ -37,13 +37,30 @@ fn encoded(text: &str) -> String {
 fn candidates(p: &Projection, pos: usize) -> Vec<usize> {
     let mut base = 0;
     let mut out = Vec::new();
+    let mut edges = Vec::new();
     for block in &p.blocks {
         if pos >= base && pos <= base + block.node.node_size() {
             out.extend(block.text_map.source_positions(pos - base));
+            if block.node.is_textblock() && !block.opaque {
+                if pos == base + 1 {
+                    edges.push(block.source.start);
+                }
+                if pos == base + block.node.node_size() - 1 {
+                    edges.push(block.source.end);
+                }
+            }
         }
         base += block.node.node_size();
     }
     if let Some(at) = p.source_position(pos) {
+        if !out.contains(&at) {
+            out.push(at);
+        }
+    }
+    // At a textblock edge, visible text may start/end inside a link or
+    // another inline wrapper. Try its outside source boundary only after
+    // exact visible boundaries; text_step verifies the complete next tree.
+    for at in edges {
         if !out.contains(&at) {
             out.push(at);
         }
@@ -67,7 +84,7 @@ pub(super) fn text_step(
     for inserted in [text.clone(), escaped(&text), encoded(&text)] {
         for &a in &starts {
             for &z in &ends {
-                if a > z {
+                if a > z || (step.from == step.to && a != z) {
                     continue;
                 }
                 let mut raw = p.source.clone();
@@ -83,23 +100,35 @@ pub(super) fn text_step(
     None
 }
 
+struct Verify<'a> {
+    projection: &'a Projection,
+    next: &'a Node,
+}
+
 fn verified(
+    verify: &Verify<'_>,
     block: &Block,
-    next: &Node,
-    source: &str,
     range: Range<usize>,
     text: String,
 ) -> Option<(Range<usize>, String)> {
-    let mut raw = source.get(block.source.clone())?.to_owned();
-    raw.replace_range(
-        range.start.checked_sub(block.source.start)?..range.end.checked_sub(block.source.start)?,
-        &text,
-    );
-    let projected = Projection::parse(next.ty().schema(), raw).ok()?;
-    (projected.doc.child_count() == 1 && projected.doc.child(0) == next).then_some((range, text))
+    if range.start < block.source.start || range.end > block.source.end {
+        return None;
+    }
+    let mut raw = verify.projection.source.clone();
+    raw.get(range.clone())?;
+    raw.replace_range(range.clone(), &text);
+    // Reference labels depend on definitions outside this block. Retain that
+    // import context and verify every block, not just the edited child.
+    let projected = Projection::parse(verify.next.ty().schema(), raw).ok()?;
+    (&projected.doc == verify.next).then_some((range, text))
 }
 
-fn heading(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, String)> {
+fn heading(
+    block: &Block,
+    next: &Node,
+    source: &str,
+    verify: &Verify<'_>,
+) -> Option<(Range<usize>, String)> {
     let old = &block.node;
     let (a, z) = (old.ty().name(), next.ty().name());
     if !matches!(a, "heading" | "paragraph")
@@ -134,9 +163,8 @@ fn heading(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, St
                 end
             };
             if let Some(edit) = verified(
+                verify,
                 block,
-                next,
-                source,
                 block.source.start + indent..block.source.start + end,
                 marker,
             ) {
@@ -151,9 +179,8 @@ fn heading(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, St
                 if z == "heading" && matches!(level, 1 | 2) {
                     let marker = if level == 1 { "=" } else { "-" }.repeat(count);
                     if let Some(edit) = verified(
+                        verify,
                         block,
-                        next,
-                        source,
                         block.source.start + at + 1 + pad
                             ..block.source.start + at + 1 + pad + count,
                         marker,
@@ -166,16 +193,15 @@ fn heading(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, St
                 } else {
                     raw[..at].into()
                 };
-                if let Some(edit) = verified(block, next, source, block.source.clone(), text) {
+                if let Some(edit) = verified(verify, block, block.source.clone(), text) {
                     return Some(edit);
                 }
             }
         }
         if a == "paragraph" && z == "heading" {
             if let Some(edit) = verified(
+                verify,
                 block,
-                next,
-                source,
                 block.source.start..block.source.start,
                 format!("{} ", "#".repeat(level)),
             ) {
@@ -193,9 +219,8 @@ fn heading(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, St
             || old.text_content() == format!("{} ", "#".repeat(level)))
     {
         return verified(
+            verify,
             block,
-            next,
-            source,
             block.source.clone(),
             format!("{} ", "#".repeat(level)),
         );
@@ -203,7 +228,7 @@ fn heading(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, St
     None
 }
 
-fn text_leaf(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, String)> {
+fn text_leaf(block: &Block, next: &Node, verify: &Verify<'_>) -> Option<(Range<usize>, String)> {
     fn changed<'a>(
         a: &'a Node,
         z: &'a Node,
@@ -261,7 +286,7 @@ fn text_leaf(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, 
                 escaped(replacement),
                 encoded(replacement),
             ] {
-                if let Some(edit) = verified(block, next, source, a..z, text) {
+                if let Some(edit) = verified(verify, block, a..z, text) {
                     return Some(edit);
                 }
             }
@@ -285,7 +310,12 @@ fn marked_chars(node: &Node) -> Vec<(usize, char, Vec<Mark>)> {
     out
 }
 
-fn inline_code(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, String)> {
+fn inline_code(
+    block: &Block,
+    next: &Node,
+    source: &str,
+    verify: &Verify<'_>,
+) -> Option<(Range<usize>, String)> {
     fn leaves(node: &Node) -> Vec<(usize, Node)> {
         let mut out = Vec::new();
         node.descendants(&mut |n, at, _, _| {
@@ -368,14 +398,19 @@ fn inline_code(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>
             if pad { " " } else { "" },
             if pad { " " } else { "" }
         );
-        if let Some(edit) = verified(block, next, source, range, text) {
+        if let Some(edit) = verified(verify, block, range, text) {
             return Some(edit);
         }
     }
     None
 }
 
-fn image(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, String)> {
+fn image(
+    block: &Block,
+    next: &Node,
+    source: &str,
+    verify: &Verify<'_>,
+) -> Option<(Range<usize>, String)> {
     fn changed<'a>(
         a: &'a Node,
         z: &'a Node,
@@ -435,14 +470,19 @@ fn image(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, Stri
         let text = nsh_base::rich_editor::formats::MarkdownFormat::default().serialize_fragment(
             &nsh_base::rich_editor::model::Fragment::from(vec![(*node).clone()]),
         );
-        if let Some(edit) = verified(block, next, source, range, text) {
+        if let Some(edit) = verified(verify, block, range, text) {
             return Some(edit);
         }
     }
     None
 }
 
-fn format(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, String)> {
+fn format(
+    block: &Block,
+    next: &Node,
+    source: &str,
+    verify: &Verify<'_>,
+) -> Option<(Range<usize>, String)> {
     let old = marked_chars(&block.node);
     let new = marked_chars(next);
     if old.len() != new.len() || old.iter().zip(&new).any(|(a, z)| a.0 != z.0 || a.1 != z.1) {
@@ -524,7 +564,7 @@ fn format(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, Str
                     } else {
                         format!("{delimiter}{}{delimiter}", source.get(a..z)?)
                     };
-                    if let Some(edit) = verified(block, next, source, a..z, text) {
+                    if let Some(edit) = verified(verify, block, a..z, text) {
                         return Some(edit);
                     }
                 } else if a >= delimiter.len()
@@ -532,9 +572,8 @@ fn format(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, Str
                     && source.get(z..z + delimiter.len()) == Some(delimiter)
                 {
                     if let Some(edit) = verified(
+                        verify,
                         block,
-                        next,
-                        source,
                         a - delimiter.len()..z + delimiter.len(),
                         source.get(a..z)?.into(),
                     ) {
@@ -555,7 +594,7 @@ fn format(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, Str
                         source.get(a..z)?,
                         if right { "" } else { delimiter }
                     );
-                    if let Some(edit) = verified(block, next, source, range, text) {
+                    if let Some(edit) = verified(verify, block, range, text) {
                         return Some(edit);
                     }
                 }
@@ -566,13 +605,17 @@ fn format(block: &Block, next: &Node, source: &str) -> Option<(Range<usize>, Str
 }
 
 pub(super) fn block_patch(
-    block: &Block,
+    projection: &Projection,
+    index: usize,
     next: &Node,
-    source: &str,
 ) -> Option<(Range<usize>, String)> {
-    heading(block, next, source)
-        .or_else(|| text_leaf(block, next, source))
-        .or_else(|| inline_code(block, next, source))
-        .or_else(|| image(block, next, source))
-        .or_else(|| format(block, next, source))
+    let block = projection.blocks.get(index)?;
+    let target = next.child(index);
+    let verify = Verify { projection, next };
+    let source = projection.source.as_str();
+    heading(block, target, source, &verify)
+        .or_else(|| text_leaf(block, target, &verify))
+        .or_else(|| inline_code(block, target, source, &verify))
+        .or_else(|| image(block, target, source, &verify))
+        .or_else(|| format(block, target, source, &verify))
 }

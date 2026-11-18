@@ -48,3 +48,28 @@ The upstream manifest is retained as the original source inventory; changed
 files are input.rs and chrome.rs. Real window/menu validation is separate from
 source review and compilation. This does not modify file IO or the blocked
 T07 rename implementation.
+
+## CHORD-IME-01 opt-in synchronous diagnosis
+
+`TEXZI_TRACE_CHORD=1` explicitly enables diagnostic logs; the default is off.
+This is observation only: no pre-IME shortcut branch, consumption change,
+Translate/Dispatch reordering, IME setting change or new dependency is added.
+
+`window.rs` records KeyDown flags before the existing `TranslateMessage` call
+and after the existing `input::key` dispatch, only for this process's own NSH
+windows validated by `data(hwnd)`. Records contain Unix-epoch UTC microseconds,
+window handle, process-key/modifier/repeat flags, handled-known/handled flags
+and read-only native composition flags. No VK value, scan code, character,
+document text or path is logged. `text_input.rs` reads focus without invoking
+the ordinary stale-focus repair path; `richedit.rs` exposes only its existing
+host composition boolean, so deferred input processing can be distinguished
+from the host's synchronous notification state. No borrow spans key dispatch.
+
+The Shell uses the same UTC-microsecond basis to record prefix begin/rejection,
+continuation registration, actual known/unknown continuation hits and timeout.
+Only state flags and a static command ID are recorded. Registration is an
+engine-side observation, not proof that Windows has received the resulting
+mounted keymap. Native records do not reveal the original key behind
+VK_PROCESSKEY, and UTC timestamps are subject to system-clock adjustment.
+These diagnostics do not establish a CHORD-IME-01 root cause or claim a fix;
+the next fixed package still requires targeted real Windows/IME observation.

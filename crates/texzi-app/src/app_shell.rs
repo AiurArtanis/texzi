@@ -1128,20 +1128,49 @@ fn bind_chord_continuations(run: Rc<dyn Fn(Option<&'static str>)>) {
     }
 }
 
+// This opt-in snapshot must not subscribe a binding effect to extra signals.
+// UTC microseconds use the same SystemTime epoch as the native key trace.
+fn trace_chord_shell(stage: &'static str, s: &Shell, command: Option<&'static str>) {
+    if std::env::var_os("TEXZI_TRACE_CHORD").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    untracked(|| {
+        let current = s.current();
+        let utc_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_micros());
+        log::info!(
+            "TX_CHORD_SHELL utc_us={utc_us} stage={stage} prefix_pending={} modal={} active_document={} ime_busy={} known_command={} command={}",
+            s.chord.get(),
+            s.modal.get(),
+            current.is_some(),
+            current.is_some_and(|d| d.gate.busy()),
+            command.is_some(),
+            command.unwrap_or("none"),
+        );
+    });
+}
+
 fn bind_chords(s: Rc<Shell>) {
     let prefix = s.clone();
     on_key("mod+k", move |_| {
         prefix.zen_exit.reset();
         if prefix.modal.get() || prefix.current().is_some_and(|d| d.gate.busy()) {
+            trace_chord_shell("prefix_rejected", &prefix, None);
             return;
         }
         prefix.chord.set(true);
         prefix.notice.set("Ctrl+K：等待第二个按键…".into());
+        trace_chord_shell("prefix_begin", &prefix, None);
         let chord = prefix.chord;
         let notice = prefix.notice;
         let zen = prefix.zen_exit.clone();
+        let trace_shell = Rc::downgrade(&prefix);
         set_timeout(std::time::Duration::from_millis(1500), move || {
             if chord.get() {
+                if let Some(shell) = trace_shell.upgrade() {
+                    trace_chord_shell("timeout", &shell, None);
+                }
                 zen.reset();
                 chord.set(false);
                 if notice.get() == "Ctrl+K：等待第二个按键…" {
@@ -1154,20 +1183,25 @@ fn bind_chords(s: Rc<Shell>) {
         if !s.chord.get() {
             return;
         }
-        let s = s.clone();
+        let shell = s.clone();
         bind_chord_continuations(Rc::new(move |target| {
-            s.zen_exit.reset();
-            s.chord.set(false);
-            if s.notice.get() == "Ctrl+K：等待第二个按键…" {
-                s.notice.set(String::new());
+            trace_chord_shell("continuation_hit", &shell, target);
+            shell.zen_exit.reset();
+            shell.chord.set(false);
+            if shell.notice.get() == "Ctrl+K：等待第二个按键…" {
+                shell.notice.set(String::new());
             }
             if let Some(id) = target {
-                s.run(id);
+                shell.run(id);
             } else {
-                s.notice
+                shell
+                    .notice
                     .set("已取消：没有这个 Ctrl+K 组合，未写入正文".into());
             }
         }));
+        // This observes engine registration, not delivery of MountItem::Keymap
+        // to Windows. A native trace is still needed to establish that boundary.
+        trace_chord_shell("continuations_registered", &s, None);
     });
 }
 

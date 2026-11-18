@@ -312,11 +312,12 @@ impl RichOwner {
             if &projected.doc != next.doc() {
                 return Err("该富文本操作不能保真往返；请在源码中编辑此结构".into());
             }
-            let mut a = projected
-                .source_position(next.selection().anchor())
+            let input_caret = edited_caret(&projected, &next, &edits);
+            let mut a = input_caret
+                .or_else(|| projected.source_position(next.selection().anchor()))
                 .ok_or("选区起点暂不能保真映射，请切到源码编辑此范围")?;
-            let mut h = projected
-                .source_position(next.selection().head())
+            let mut h = input_caret
+                .or_else(|| projected.source_position(next.selection().head()))
                 .ok_or("选区终点暂不能保真映射，请切到源码编辑此范围")?;
             let kind = if applied.iter().any(|t| t.get_meta("composition").is_some()) {
                 ExternalEditKind::ImeCommit
@@ -433,7 +434,7 @@ impl RichOwner {
             drop(p);
             *self.projection.borrow_mut() = projected;
             self.native.notify();
-        } else {
+        } else if !selection_matches(&p, &next, &current.selections) {
             let a = p
                 .source_position(next.selection().anchor())
                 .ok_or("选区起点暂不能保真映射，已保留原选区")?;
@@ -526,14 +527,35 @@ fn restored_selection(p: &Projection, s: &ExternalSelections) -> Option<(usize, 
     let (a, h) = *s.ranges.get(s.primary)?;
     Some((p.nearest_rich_position(a)?, p.nearest_rich_position(h)?))
 }
-fn selection_matches(p: &Projection, state: &EditorState, s: &ExternalSelections) -> bool {
-    match (
-        p.source_position(state.selection().anchor()),
-        p.source_position(state.selection().head()),
-    ) {
-        (Some(a), Some(h)) => s.primary == 0 && s.ranges == vec![(a, h)],
-        _ => false,
+// An exact source edit disambiguates a collapsed caret at an inline boundary.
+// For example, after typing before a link, the inserted end is outside `[`,
+// while the same visible position also maps inside its label. Prefer that end
+// only when it maps exactly to the actual next selection; never use a nearest
+// position or infer a source endpoint from multiple edits.
+fn edited_caret(
+    p: &Projection,
+    state: &EditorState,
+    edits: &[(std::ops::Range<usize>, String)],
+) -> Option<usize> {
+    let [(range, text)] = edits else { return None };
+    if state.selection().anchor() != state.selection().head() {
+        return None;
     }
+    let at = range.start.checked_add(text.len())?;
+    (p.rich_position(at) == Some(state.selection().head())).then_some(at)
+}
+fn selection_matches(p: &Projection, state: &EditorState, s: &ExternalSelections) -> bool {
+    let [(a, h)] = s.ranges.as_slice() else {
+        return false;
+    };
+    // Distinct raw delimiter boundaries can map to one visible position.
+    // Selecting only `[` must not grant a collapsed-caret edit permission.
+    if (*a == *h) != (state.selection().anchor() == state.selection().head()) {
+        return false;
+    }
+    let exact =
+        |byte, pos| p.source_position(pos) == Some(byte) || p.rich_position(byte) == Some(pos);
+    s.primary == 0 && exact(*a, state.selection().anchor()) && exact(*h, state.selection().head())
 }
 
 /// Guard the actual steps, including appended plugin steps, before Store gets
@@ -2327,6 +2349,362 @@ mod tests {
             }
         });
     }
+    const MD08_LINK_RAW: &str =
+        "[普通](target.md) <https://example.invalid> [引用][id]\n\n[id]: target.md\n";
+
+    fn md08_depth(source: &NativeView) -> (usize, usize) {
+        source.inspect(|store, id| store.history_depth(store.view(id).unwrap().doc).unwrap())
+    }
+
+    fn md08_assert_origins(
+        source: &NativeView,
+        raw: &str,
+        removed: std::ops::Range<usize>,
+        inserted: &str,
+    ) {
+        source.inspect(|store, id| {
+            let body = &store.snapshot(store.view(id).unwrap().doc).unwrap().body;
+            let logical = body.source().to_string();
+            let mut retained = Vec::new();
+            let mut owned = String::new();
+            for (range, origin) in body.origins() {
+                if let Some(origin) = origin {
+                    assert_eq!(origin.source.as_ref(), raw);
+                    assert_eq!(origin.logical_len, range.len());
+                    retained.extend_from_slice(&origin.source.as_bytes()[origin.raw]);
+                } else {
+                    owned.push_str(&logical[range]);
+                }
+            }
+            let mut expected_retained = raw.as_bytes().to_vec();
+            drop(expected_retained.drain(removed));
+            assert_eq!(
+                retained, expected_retained,
+                "all unedited original bytes retain provenance"
+            );
+            assert_eq!(owned, inserted, "only the entered text becomes owned");
+        });
+    }
+
+    fn md08_type_and_verify_exact_patch(
+        owner: &RichOwner,
+        text: &str,
+        range: std::ops::Range<usize>,
+    ) {
+        let old = owner.session.state();
+        let mut input = old.tr();
+        input.insert_text(text, None, None);
+        input.set_origin(TransactionOrigin::Input);
+        input.scroll_into_view();
+        owner
+            .projection
+            .borrow()
+            .inherit_replacement_link(&mut input)
+            .unwrap();
+        let (next, mut applied) = old.apply_transaction(input).unwrap();
+        assert_eq!(
+            applied.len(),
+            1,
+            "plain native input has no appended transaction"
+        );
+        assert!(matches!(
+            applied[0].origin(),
+            Some(TransactionOrigin::Input)
+        ));
+        assert_eq!(
+            owner
+                .projection
+                .borrow()
+                .transaction_edits(next.doc(), &applied)
+                .unwrap(),
+            vec![(range, text.to_owned())],
+            "MD08 must use the exact insertion patch, not a whole-block rewrite",
+        );
+        // Apply the very same native Input transaction through the actual
+        // Owner. apply_transaction above only derives a state; it publishes
+        // nothing to the session, NativeViews or Store.
+        owner.session.dispatch(applied.remove(0)).unwrap();
+        assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+        assert_eq!(owner.session.state().doc(), next.doc());
+    }
+
+    fn md08_assert_source_undo_redo(
+        gate: &ModeGate,
+        source: &NativeView,
+        rich: &NativeView,
+        initial: &ExactBodyState,
+        edited: &ExactBodyState,
+    ) {
+        assert!(!gate.rich_mode.get());
+        assert_eq!(exact_body(source), *edited);
+        assert_eq!(exact_body(rich), *edited);
+        assert_eq!(md08_depth(source), (1, 0));
+        for (undo, expected, depth) in [(true, initial, (0, 1)), (false, edited, (1, 0))] {
+            let revision = source.snapshot().unwrap().revision;
+            gate.shell_history(undo).unwrap();
+            assert_eq!(source.snapshot().unwrap().revision, revision + 1);
+            assert_eq!(rich.snapshot().unwrap().revision, revision + 1);
+            assert_eq!(exact_body(source), *expected);
+            assert_eq!(exact_body(rich), *expected);
+            assert_eq!(md08_depth(source), depth);
+        }
+    }
+
+    #[test]
+    fn md08_home_typing_keeps_auto_reference_bytes_origins_and_continuous_source_caret() {
+        run(|| {
+            assert_eq!(MD08_LINK_RAW.len(), 76);
+            for (raw, continuous) in [
+                (MD08_LINK_RAW.to_owned(), false),
+                (MD08_LINK_RAW.replace('\n', "\r\n"), false),
+                (MD08_LINK_RAW.to_owned(), true),
+            ] {
+                let source = NativeView::fixture(&raw);
+                let rich = source.sibling().unwrap();
+                let initial = exact_body(&source);
+                let gate = ModeGate::new(source.clone(), rich.clone());
+                gate.to_rich();
+                assert!(gate.rich_mode.get(), "{}", gate.status.get());
+                let owner = gate.active.borrow().as_ref().unwrap().clone();
+                select(&owner, 1);
+                assert_eq!(owner.session.state().selection().anchor(), 1);
+                assert_eq!(owner.session.state().selection().head(), 1);
+                assert_eq!(owner.projection.borrow().source.len(), 76);
+                assert_eq!(exact_body(&source), initial);
+                assert_eq!(exact_body(&rich), initial);
+                assert_eq!(md08_depth(&source), (0, 0));
+                assert!(!initial.dirty);
+
+                let original_revision = source.snapshot().unwrap().revision;
+                md08_type_and_verify_exact_patch(&owner, "甲", 0..0);
+                let first = exact_body(&source);
+                assert_eq!(first.bytes, format!("甲{raw}").as_bytes());
+                assert_eq!(first.bytes.len(), raw.len() + 3);
+                assert_eq!(owner.projection.borrow().source.len(), 79);
+                assert_eq!(first.profile, initial.profile);
+                assert_eq!(first.eols, initial.eols);
+                assert_ne!(first.token, initial.token);
+                assert!(first.dirty);
+                assert_eq!(exact_body(&rich), first);
+                assert_eq!(source.snapshot().unwrap().revision, original_revision + 1);
+                assert_eq!(md08_depth(&source), (1, 0));
+                assert_eq!(rich.snapshot().unwrap().selections.ranges, vec![(3, 3)]);
+                md08_assert_origins(&source, &raw, 0..0, "甲");
+                if !continuous {
+                    gate.to_source();
+                    assert!(!gate.rich_mode.get(), "{}", gate.status.get());
+                    assert_eq!(source.snapshot().unwrap().selections.ranges, vec![(3, 3)]);
+                    md08_assert_source_undo_redo(&gate, &source, &rich, &initial, &first);
+                    continue;
+                }
+
+                // Continue at the actual post-input caret, with no selection
+                // repair or intervening mode/history fence.
+                md08_type_and_verify_exact_patch(&owner, "乙", 3..3);
+                let edited = exact_body(&source);
+                assert_eq!(edited.bytes, format!("甲乙{raw}").as_bytes());
+                assert_eq!(edited.bytes.len(), raw.len() + 6);
+                assert_eq!(owner.projection.borrow().source.len(), 82);
+                assert_eq!(edited.profile, initial.profile);
+                assert_eq!(edited.eols, initial.eols);
+                assert_ne!(edited.token, first.token);
+                assert_ne!(edited.token, initial.token);
+                assert_eq!(exact_body(&rich), edited);
+                assert_eq!(source.snapshot().unwrap().revision, original_revision + 2);
+                assert_eq!(md08_depth(&source), (1, 0));
+                assert_eq!(rich.snapshot().unwrap().selections.ranges, vec![(6, 6)]);
+                md08_assert_origins(&source, &raw, 0..0, "甲乙");
+                gate.to_source();
+                assert!(!gate.rich_mode.get(), "{}", gate.status.get());
+                assert_eq!(source.snapshot().unwrap().selections.ranges, vec![(6, 6)]);
+                md08_assert_source_undo_redo(&gate, &source, &rich, &initial, &edited);
+            }
+        });
+    }
+
+    #[test]
+    fn md08_selected_plain_link_label_typing_keeps_resource_auto_and_reference_spelling() {
+        run(|| {
+            for raw in [
+                MD08_LINK_RAW.to_owned(),
+                MD08_LINK_RAW.replace('\n', "\r\n"),
+            ] {
+                let source = NativeView::fixture(&raw);
+                let rich = source.sibling().unwrap();
+                let initial = exact_body(&source);
+                let gate = ModeGate::new(source.clone(), rich.clone());
+                gate.to_rich();
+                assert!(gate.rich_mode.get(), "{}", gate.status.get());
+                let owner = gate.active.borrow().as_ref().unwrap().clone();
+                let state = owner.session.state();
+                let mut selection = state.tr();
+                selection.set_selection(TextSelection::create(state.doc(), 1, Some(3)));
+                owner.session.dispatch(selection).unwrap();
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                assert_eq!(exact_body(&source), initial);
+                assert_eq!(md08_depth(&source), (0, 0));
+                let revision = source.snapshot().unwrap().revision;
+
+                // This uses the existing native text-input helper and leaves
+                // replacement-link inheritance to the real Owner pipeline.
+                type_text(&owner, "甲");
+                let edited = exact_body(&source);
+                let expected = raw.replacen("普通", "甲", 1);
+                assert_eq!(edited.bytes, expected.as_bytes());
+                assert_eq!(edited.profile, initial.profile);
+                assert_eq!(edited.eols, initial.eols);
+                assert_ne!(edited.token, initial.token);
+                assert!(edited.dirty);
+                assert_eq!(exact_body(&rich), edited);
+                assert_eq!(source.snapshot().unwrap().revision, revision + 1);
+                assert_eq!(md08_depth(&source), (1, 0));
+                md08_assert_origins(&source, &raw, 1..7, "甲");
+                gate.to_source();
+                assert!(!gate.rich_mode.get(), "{}", gate.status.get());
+                md08_assert_source_undo_redo(&gate, &source, &rich, &initial, &edited);
+            }
+        });
+    }
+
+    #[test]
+    fn md08_stored_marks_and_same_selection_keep_the_outside_link_source_caret() {
+        run(|| {
+            let source = NativeView::fixture(MD08_LINK_RAW);
+            let rich = source.sibling().unwrap();
+            let gate = ModeGate::new(source.clone(), rich.clone());
+            gate.to_rich();
+            assert!(gate.rich_mode.get(), "{}", gate.status.get());
+            let owner = gate.active.borrow().as_ref().unwrap().clone();
+            select(&owner, 1);
+            md08_type_and_verify_exact_patch(&owner, "甲", 0..0);
+            assert_eq!(bytes(&source), format!("甲{MD08_LINK_RAW}").as_bytes());
+            assert_eq!(rich.snapshot().unwrap().selections.ranges, vec![(3, 3)]);
+            let before = exact_body(&source);
+            let revision = source.snapshot().unwrap().revision;
+            let state = owner.session.state();
+            let doc = state.doc().to_json();
+            let selection = state.selection().to_json();
+            let bold = state.schema().mark_type("bold").unwrap().clone();
+            let toggle = nsh_base::rich_editor::commands::toggle_mark(bold.clone(), None, true);
+
+            for enabled in [true, false] {
+                let state = owner.session.state();
+                assert!(toggle(
+                    &state,
+                    Some(&mut |transaction| owner.session.dispatch(transaction).unwrap()),
+                ));
+                assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+                let current = owner.session.state();
+                assert_eq!(
+                    current
+                        .stored_marks()
+                        .is_some_and(|marks| bold.is_in_set(marks).is_some()),
+                    enabled,
+                );
+                assert_eq!(current.doc().to_json(), doc);
+                assert_eq!(current.selection().to_json(), selection);
+                assert_eq!(exact_body(&source), before);
+                assert_eq!(exact_body(&rich), before);
+                assert_eq!(source.snapshot().unwrap().revision, revision);
+                assert_eq!(md08_depth(&source), (1, 0));
+                assert_eq!(rich.snapshot().unwrap().selections.ranges, vec![(3, 3)]);
+            }
+
+            let current = owner.session.state();
+            let mut same_selection = current.tr();
+            same_selection.set_selection(current.selection().clone());
+            owner.session.dispatch(same_selection).unwrap();
+            assert!(owner.status.get().is_empty(), "{}", owner.status.get());
+            assert_eq!(owner.session.state().doc().to_json(), doc);
+            assert_eq!(owner.session.state().selection().to_json(), selection);
+            assert_eq!(exact_body(&source), before);
+            assert_eq!(exact_body(&rich), before);
+            assert_eq!(md08_depth(&source), (1, 0));
+            assert_eq!(rich.snapshot().unwrap().selections.ranges, vec![(3, 3)]);
+            gate.to_source();
+            assert!(!gate.rich_mode.get(), "{}", gate.status.get());
+            assert_eq!(source.snapshot().unwrap().selections.ranges, vec![(3, 3)]);
+            assert_eq!(exact_body(&source), before);
+            assert_eq!(md08_depth(&source), (1, 0));
+        });
+    }
+
+    #[test]
+    fn md08_native_nonempty_bracket_selection_cannot_match_a_collapsed_rich_caret() {
+        run(|| {
+            let source = NativeView::fixture(MD08_LINK_RAW);
+            let rich = source.sibling().unwrap();
+            let gate = ModeGate::new(source.clone(), rich.clone());
+            gate.to_rich();
+            assert!(gate.rich_mode.get(), "{}", gate.status.get());
+            let owner = gate.active.borrow().as_ref().unwrap().clone();
+            select(&owner, 1);
+            md08_type_and_verify_exact_patch(&owner, "甲", 0..0);
+            assert_eq!(rich.snapshot().unwrap().selections.ranges, vec![(3, 3)]);
+            let before_state = owner.session.state().to_json();
+            assert_eq!(owner.session.state().selection().anchor(), 2);
+            assert_eq!(owner.session.state().selection().head(), 2);
+            let current = rich.snapshot().unwrap();
+            let selected = rich
+                .select(
+                    current.revision,
+                    current.view_epoch,
+                    ExternalSelections {
+                        primary: 0,
+                        ranges: vec![(3, 4)],
+                    },
+                )
+                .unwrap();
+            assert_eq!(selected.selections.ranges, vec![(3, 4)]);
+            assert_eq!(&bytes(&rich)[3..4], b"[");
+            assert_eq!(owner.session.state().to_json(), before_state);
+            let illegal_source = audit(&source);
+            let illegal_rich = audit(&rich);
+            let input = || {
+                let state = owner.session.state();
+                let mut transaction = state.tr();
+                transaction.insert_text("乙", None, None);
+                transaction.set_origin(TransactionOrigin::Input);
+                owner.session.dispatch(transaction).unwrap();
+            };
+
+            // A real independent NativeView.select naturally advances its
+            // epoch. First prove the ordinary stale-view rejection is atomic.
+            input();
+            assert!(owner.status.get().contains("富文本视图版本已过期"));
+            assert_eq!(audit(&source), illegal_source);
+            assert_eq!(audit(&rich), illegal_rich);
+            assert_eq!(owner.session.state().to_json(), before_state);
+
+            // Test-only private state injection acknowledges only that epoch
+            // to isolate selection_matches. No Store/session selection is
+            // repaired; this is not a claim of a normal UI-reachable route,
+            // and no public setter is added.
+            owner.epoch.set(selected.view_epoch);
+            owner.status.set(String::new());
+            let acknowledged_source = audit(&source);
+            let acknowledged_rich = audit(&rich);
+            assert_eq!(acknowledged_source, illegal_source);
+            assert_eq!(acknowledged_rich, illegal_rich);
+            assert!(!selection_matches(
+                &owner.projection.borrow(),
+                &owner.session.state(),
+                &selected.selections,
+            ));
+            input();
+            assert_eq!(
+                owner.status.get(),
+                "当前选区尚未同步到原文，请切到源码编辑；原文未变",
+            );
+            assert_eq!(audit(&source), acknowledged_source);
+            assert_eq!(audit(&rich), acknowledged_rich);
+            assert_eq!(rich.snapshot().unwrap().selections.ranges, vec![(3, 4)]);
+            assert_eq!(owner.session.state().to_json(), before_state);
+            assert_eq!(owner.epoch.get(), selected.view_epoch);
+            assert_eq!(md08_depth(&source), (1, 0));
+        });
+    }
+
     fn type_text(owner: &RichOwner, text: &str) {
         let state = owner.session.state();
         let (from, to) = (state.selection().from(), state.selection().to());

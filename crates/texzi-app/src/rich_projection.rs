@@ -677,9 +677,7 @@ impl Projection {
         }
         // Text-only edits can preserve delimiters and trivia even inside the block.
         if old_end - first == 1 && new_end - first == 1 {
-            if let Some(patch) =
-                local_patch::block_patch(&self.blocks[first], next.child(first), &self.source)
-            {
+            if let Some(patch) = local_patch::block_patch(self, first, next) {
                 let mut raw = self.source.clone();
                 raw.replace_range(patch.0.clone(), &patch.1);
                 if Self::parse(next.ty().schema(), raw).is_ok_and(|p| &p.doc == next) {
@@ -890,6 +888,83 @@ mod tests {
             let mut expected = raw.to_owned();
             expected.replace_range(byte..byte + 1, "A");
             assert_eq!(result, expected);
+        }
+    }
+    #[test]
+    fn unmarked_textblock_edge_input_preserves_link_spellings_and_mixed_eols() {
+        let m = manager();
+        let fixture = "[普通](target.md) <https://example.invalid> [引用][id]\n\n[id]: target.md\n";
+        assert_eq!(fixture.len(), 76);
+        for raw in [
+            fixture,
+            "[普通](target.md) <https://example.invalid> [引用][id]\r\n\r\n[id]: target.md\n\n<custom>stay</custom>\r\n",
+        ] {
+            let p = Projection::parse(m.schema(), raw.into()).unwrap();
+            assert_eq!(p.doc.child(0).ty().name(), "paragraph");
+            assert_eq!(p.blocks[0].source, 0..58);
+            for (pos, byte) in [(1, 0), (p.doc.child(0).node_size() - 1, 58)] {
+                let state = EditorState::create(
+                    EditorStateConfig::new(m.schema().clone()).doc(p.doc.clone()),
+                )
+                .unwrap();
+                let mut tr = state.tr();
+                tr.set_stored_marks(Some(vec![]));
+                tr.insert_text("甲", Some(pos), Some(pos));
+                let (next, applied) = state.apply_transaction(tr).unwrap();
+                let edits = p.transaction_edits(next.doc(), &applied).unwrap();
+                assert_eq!(edits, vec![(byte..byte, "甲".to_owned())]);
+                let mut result = raw.to_owned();
+                for (range, text) in edits.into_iter().rev() {
+                    result.replace_range(range, &text);
+                }
+                let mut expected = raw.to_owned();
+                expected.insert_str(byte, "甲");
+                assert_eq!(result, expected);
+                assert_eq!(result.len(), raw.len() + 3);
+                assert_eq!(
+                    Projection::parse(m.schema(), result).unwrap().doc,
+                    *next.doc()
+                );
+            }
+        }
+    }
+    #[test]
+    fn marked_reference_label_replacement_verifies_full_definition_context() {
+        let m = manager();
+        let raw = "[普通](target.md) <https://example.invalid> [引用][id]\r\n\r\n[id]: target.md\n\n<custom>stay</custom>\r\n";
+        let p = Projection::parse(m.schema(), raw.into()).unwrap();
+        for label in ["普通", "引用"] {
+            let byte = raw.find(label).unwrap();
+            let end = byte + label.len();
+            let from = p.rich_position(byte).unwrap();
+            let to = p.rich_position(end).unwrap();
+            let state =
+                EditorState::create(EditorStateConfig::new(m.schema().clone()).doc(p.doc.clone()))
+                    .unwrap();
+            let mut tr = state.tr();
+            tr.set_stored_marks(Some(vec![]));
+            tr.insert_text("甲", Some(from), Some(to));
+            p.inherit_replacement_link(&mut tr).unwrap();
+            assert!(
+                tr.steps.len() > 1,
+                "link inheritance uses the real added mark step"
+            );
+            let (next, applied) = state.apply_transaction(tr).unwrap();
+            let expected_edit = (byte..end, "甲".to_owned());
+            assert_eq!(
+                local_patch::block_patch(&p, 0, next.doc()),
+                Some(expected_edit.clone())
+            );
+            assert_eq!(
+                p.transaction_edits(next.doc(), &applied).unwrap(),
+                vec![expected_edit]
+            );
+            let mut result = raw.to_owned();
+            result.replace_range(byte..end, "甲");
+            assert_eq!(
+                Projection::parse(m.schema(), result).unwrap().doc,
+                *next.doc()
+            );
         }
     }
     #[test]
