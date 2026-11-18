@@ -52,6 +52,10 @@ impl Default for Profile {
 #[derive(Clone, Debug)]
 pub struct Body {
     pub(crate) text: Rope,
+    // One ASCII marker per line break recognized by this Rope build: LF for
+    // a canonical LF, x for a Unicode-only break. This persistent rank index
+    // isolates the EOL table from Cargo feature unification of unicode_lines.
+    line_breaks: Rope,
     eols: Rope,
     counts: [usize; 3],
     origins: Tree,
@@ -90,8 +94,11 @@ impl Body {
         for c in codes.chars() {
             counts[index(Eol::from_code(c))] += 1;
         }
+        let text = Rope::from_str(&logical);
+        let line_breaks = Rope::from_str(&break_markers(&text));
         Self {
-            text: Rope::from_str(&logical),
+            text,
+            line_breaks,
             eols: Rope::from_str(&codes),
             counts,
             origins: Tree::imported(Arc::from(raw)),
@@ -157,8 +164,10 @@ impl Body {
     pub(crate) fn replace(&mut self, range: Range<usize>, text: &str, eols: &[Eol]) {
         let a = self.text.byte_to_char(range.start);
         let b = self.text.byte_to_char(range.end);
-        let el = self.text.char_to_line(a);
-        let er = self.text.char_to_line(b);
+        let first_break = self.text.char_to_line(a);
+        let last_break = self.text.char_to_line(b);
+        let el = self.line_breaks.char_to_line(first_break);
+        let er = self.line_breaks.char_to_line(last_break);
         for c in self.eols.slice(el..er).chars() {
             self.counts[index(Eol::from_code(c))] -= 1;
         }
@@ -168,13 +177,23 @@ impl Body {
         for &e in eols {
             self.counts[index(e)] += 1;
         }
+        // Import and Edit::input normalize CR; submit_inner rejects raw CR,
+        // and history inverses retain canonical text. Thus no CR/LF pair can
+        // merge across these edit boundaries and invalidate break ordinals.
+        let inserted_breaks = break_markers(&Rope::from_str(text));
+        self.line_breaks.remove(first_break..last_break);
+        self.line_breaks.insert(first_break, &inserted_breaks);
         self.text.remove(a..b);
         self.text.insert(a, text);
         self.origins = self.origins.replace(range, text.len());
     }
     pub(crate) fn eols_in(&self, range: Range<usize>) -> Vec<Eol> {
-        let a = self.text.byte_to_line(range.start);
-        let b = self.text.byte_to_line(range.end);
+        let a = self
+            .line_breaks
+            .char_to_line(self.text.byte_to_line(range.start));
+        let b = self
+            .line_breaks
+            .char_to_line(self.text.byte_to_line(range.end));
         self.eols.slice(a..b).chars().map(Eol::from_code).collect()
     }
     pub(crate) fn change_eols(&mut self, eol: Eol) {
@@ -185,6 +204,21 @@ impl Body {
         // A changed serialization policy invalidates raw passthrough. Undo holds the old tree.
         self.origins = Tree::default().replace(0..0, self.len_bytes());
     }
+}
+fn break_markers(text: &Rope) -> String {
+    // Rope's own iterator keeps the index correct both with and without
+    // unicode_lines. Building it inspects only imported/inserted text; later
+    // rank lookups and persistent edits use the ropes' logarithmic indices.
+    text.lines()
+        .take(text.len_lines() - 1)
+        .map(|line| {
+            if line.char(line.len_chars() - 1) == '\n' {
+                '\n'
+            } else {
+                'x'
+            }
+        })
+        .collect()
 }
 fn index(e: Eol) -> usize {
     match e {
