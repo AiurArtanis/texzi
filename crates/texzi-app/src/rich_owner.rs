@@ -836,6 +836,28 @@ mod tests {
         });
     }
     #[test]
+    fn marker_only_bullet_does_not_gain_lossy_text_mapping() {
+        run(|| {
+            for raw in ["+", "-", "*"] {
+                let source = NativeView::fixture(raw);
+                let owner =
+                    RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+                // The old marker-only case has no source text insertion point.
+                // Whether activation rejects or succeeds, typing must not rewrite its marker.
+                let _activation = owner.activate();
+                let before = audit(&source);
+                let old = owner.session.state();
+                let mut tr = old.tr();
+                tr.insert_text("甲", None, None);
+                owner.session.dispatch(tr).unwrap();
+                assert_eq!(bytes(&source), raw.as_bytes(), "marker-only {raw}");
+                assert!(!owner.status.get().is_empty());
+                assert_eq!(audit(&source), before);
+                assert_eq!(owner.session.state().doc(), old.doc());
+            }
+        });
+    }
+    #[test]
     fn paragraph_enter_start_middle_end_and_empty_roundtrip_through_owner() {
         run(|| {
             for (raw, pos, expected) in [

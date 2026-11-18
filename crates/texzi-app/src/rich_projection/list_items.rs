@@ -67,7 +67,7 @@ fn item_sources(block: &Block, source: &str) -> Option<Vec<ItemSource>> {
             return None;
         }
         let mut end = indent + 1;
-        if end < line.len() && !matches!(line.as_bytes()[end], b' ' | b'\t') {
+        if end == line.len() || !matches!(line.as_bytes()[end], b' ' | b'\t') {
             return None;
         }
         while end < line.len() && matches!(line.as_bytes()[end], b' ' | b'\t') {
