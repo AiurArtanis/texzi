@@ -186,23 +186,6 @@ fn source_input_during_real_menu_save_keeps_newer_revision_dirty() {
     assert_eq!(n.bytes, b"N");
     assert!(n.dirty);
     harness.key(&mut core, "ctrl+s");
-    let warning = harness
-        .commands
-        .drain(..)
-        .find_map(|command| match command {
-            Command::Dialog(dialog) => Some(dialog.id),
-            _ => None,
-        })
-        .unwrap();
-    assert!(core.component_event(
-        ROOT_ID,
-        EventKind::Dialog,
-        &EventPayload::Map(vec![
-            ("id", PayloadValue::Number(warning as f64)),
-            ("index", PayloadValue::Number(1.0))
-        ])
-    ));
-    harness.drain(&mut core);
     let picker = harness
         .commands
         .drain(..)

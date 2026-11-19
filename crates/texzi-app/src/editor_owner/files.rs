@@ -177,7 +177,7 @@ impl NativeView {
             }
             let locked = staged.lock_temporary().map_err(StagingFailure::Lock)?;
             locked
-                .prepare_new_owner_only()
+                .prepare_new_creation_default()
                 .map_err(StagingFailure::Prepare)
         })
         .await
@@ -521,6 +521,18 @@ mod tests {
         assert_eq!(
             std::fs::read(&destination).unwrap(),
             [0xff, 0xfe, 0x4e, 0, 0x41, 0, 0x0d, 0, 0x0a, 0]
+        );
+        let reference = ObservedTarget::inspect(&original).unwrap();
+        let saved = ObservedTarget::inspect(&destination).unwrap();
+        let expected_security = reference.version().unwrap().security.as_bytes();
+        let saved_security = saved.version().unwrap().security.as_bytes();
+        // The new name has the ordinary directory DACL. Windows may stamp
+        // auto-inheritance while restoring it, as in the document contract.
+        assert_eq!(expected_security[..3], saved_security[..3]);
+        assert_eq!(expected_security[4..], saved_security[4..]);
+        assert!(
+            saved_security[3] == expected_security[3]
+                || saved_security[3] == (expected_security[3] | 0x04)
         );
         assert_eq!(
             NativeView::open_file(&destination).unwrap().text().unwrap(),

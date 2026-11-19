@@ -32,12 +32,12 @@ struct Probe {
 }
 
 #[component]
-fn SavePolicyFixture() -> impl IntoElement {
+fn SavePickerFixture() -> impl IntoElement {
     super::view_shell()
 }
 
 #[test]
-fn saving_new_files_requires_permission_confirmation_before_requesting_a_path() {
+fn saving_new_files_opens_native_picker_and_can_cancel_without_blocking_save_as() {
     let mut core = Core::new(
         ApproxTextEngine,
         Size {
@@ -49,7 +49,7 @@ fn saving_new_files_requires_permission_confirmation_before_requesting_a_path() 
     environment.os = Os::Windows;
     environment.file_requests = true;
     core.set_environment(environment);
-    core.mount_root(&Root::new::<SavePolicyFixture>(|| ()));
+    core.mount_root(&Root::new::<SavePickerFixture>(|| ()));
     let drain = |core: &mut Core<ApproxTextEngine>| {
         let mut keymap = None;
         let mut commands = Vec::new();
@@ -68,7 +68,7 @@ fn saving_new_files_requires_permission_confirmation_before_requesting_a_path() 
         (keymap, commands)
     };
     let keys = drain(&mut core).0.expect("Shell registers save shortcuts");
-    let open_warning = |core: &mut Core<ApproxTextEngine>, key| {
+    let open_picker = |core: &mut Core<ApproxTextEngine>, key, title| {
         let stroke = Keystroke::parse_with(key, false).unwrap();
         let binding = keys.find(stroke, true, false).fired().unwrap();
         assert!(core.component_event(
@@ -77,62 +77,32 @@ fn saving_new_files_requires_permission_confirmation_before_requesting_a_path() 
             &EventPayload::Value(PayloadValue::Number(binding as f64)),
         ));
         let (_, commands) = drain(core);
-        assert!(
-            !commands
-                .iter()
-                .any(|cmd| matches!(cmd, Command::FileRequest { .. }))
-        );
-        let warning = commands
+        assert!(!commands.iter().any(|cmd| matches!(cmd, Command::Dialog(_))));
+        let (id, actual_title) = commands
             .into_iter()
             .find_map(|cmd| match cmd {
-                Command::Dialog(dialog) => Some(dialog),
+                Command::FileRequest { id, request } => match *request {
+                    FileRequest::SaveDialog(dialog) => Some((id, dialog.title)),
+                    _ => None,
+                },
                 _ => None,
             })
-            .expect("permission warning precedes native picker");
-        let message = warning.message.as_deref().unwrap();
-        assert!(message.contains("文件所有者和 SYSTEM") && message.contains("不继承目标文件夹"));
-        assert_eq!(warning.buttons[0].text, "取消");
-        assert_eq!(warning.buttons[1].text, "继续选择路径");
-        warning.id
+            .expect("save opens the native picker");
+        assert_eq!(actual_title.as_deref(), Some(title));
+        id
     };
-    let answer_warning = |core: &mut Core<ApproxTextEngine>, id, index| {
+    let cancel_picker = |core: &mut Core<ApproxTextEngine>, id| {
         assert!(core.component_event(
             ROOT_ID,
-            EventKind::Dialog,
-            &EventPayload::Map(vec![
-                ("id", PayloadValue::Number(id as f64)),
-                ("index", PayloadValue::Number(index)),
-            ]),
+            EventKind::FileRequest,
+            &EventPayload::file_answer(id, Vec::new()),
         ));
-        drain(core).1
+        drain(core);
     };
-    let cancelled = open_warning(&mut core, "ctrl+s");
-    assert!(
-        !answer_warning(&mut core, cancelled, 0.0)
-            .iter()
-            .any(|cmd| matches!(cmd, Command::FileRequest { .. }))
-    );
-    let accepted = open_warning(&mut core, "ctrl+shift+s");
-    let requests = answer_warning(&mut core, accepted, 1.0);
-    let (id, title) = requests
-        .into_iter()
-        .find_map(|cmd| match cmd {
-            Command::FileRequest { id, request } => match *request {
-                FileRequest::SaveDialog(dialog) => Some((id, dialog.title)),
-                _ => None,
-            },
-            _ => None,
-        })
-        .expect("confirmation opens native Save As");
-    assert_eq!(title.as_deref(), Some("另存为受限权限的新文件"));
-    assert!(core.component_event(
-        ROOT_ID,
-        EventKind::FileRequest,
-        &EventPayload::file_answer(id, Vec::new()),
-    ));
-    drain(&mut core);
-    let reopened = open_warning(&mut core, "ctrl+s");
-    answer_warning(&mut core, reopened, 0.0);
+    let save = open_picker(&mut core, "ctrl+s", "保存新文件");
+    cancel_picker(&mut core, save);
+    let save_as = open_picker(&mut core, "ctrl+shift+s", "另存为新文件");
+    cancel_picker(&mut core, save_as);
 }
 
 impl Probe {

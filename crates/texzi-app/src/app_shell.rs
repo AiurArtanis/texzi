@@ -647,7 +647,6 @@ impl Shell {
         targets: Vec<Rc<Document>>,
         save_as: bool,
     ) -> Result<bool, String> {
-        let mut accepted_permissions = false;
         for doc in targets {
             if doc.source.needs_save_recovery() {
                 return Err(format!("{} 有待检查的保存恢复结果", doc.name()));
@@ -660,27 +659,10 @@ impl Shell {
                 self.notice.set(format!("{} 没有未保存的修改", doc.name()));
                 continue;
             }
-            if !accepted_permissions {
-                let answer = self.owner.run(|| {
-                    nsh_base::alert_dialog()
-                        .title("以受限权限保存新文件？")
-                        .description(
-                            "新文件只授予文件所有者和 SYSTEM 访问权限，不继承目标文件夹的默认权限。原本可通过文件夹权限访问的其他用户或共享成员可能无法打开该文件。",
-                        )
-                        .cancel("cancel", "取消")
-                        .action("continue", "继续选择路径")
-                        .close_on_escape(true)
-                        .show()
-                });
-                if answer.await?.action.as_deref() != Some("continue") {
-                    return Ok(false);
-                }
-                accepted_permissions = true;
-            }
             let mut dialog = SaveDialog::new().title(if save_as {
-                "另存为受限权限的新文件"
+                "另存为新文件"
             } else {
-                "保存受限权限的新文件"
+                "保存新文件"
             });
             if let Some(path) = &original {
                 if let Some(parent) = path.parent() {
@@ -711,10 +693,7 @@ impl Shell {
             } else {
                 ""
             };
-            self.notice.set(format!(
-                "已保存 {} · 仅所有者和 SYSTEM 可访问{newer}",
-                doc.name()
-            ));
+            self.notice.set(format!("已保存 {}{newer}", doc.name()));
         }
         Ok(true)
     }
@@ -1095,7 +1074,7 @@ impl Shell {
             "texzi.find.next"=>self.find(false),"texzi.find.previous"=>self.find(true),"texzi.find.close"=>self.close_panel(),
             "texzi.find.replaceOne"|"texzi.find.replaceAll"=>if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}match doc.source.replace_literal(&self.query.get(),&self.replacement.get(),id.ends_with("All")){Ok(n)=>{self.notice.set(format!("源码 · 已替换 {n} 处，可一次撤销"));self.restore_editor_focus();},Err(e)=>self.notice.set(e)}},
             "texzi.appearance.light"=>set_color_scheme(Appearance::Light),"texzi.appearance.dark"=>set_color_scheme(Appearance::Dark),
-            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存新文件，或将现有文档另存为新文件。新文件只授予所有者和 SYSTEM 访问权限，不继承目录默认权限。原位替换和指定编码保存仍待实现。\n查看菜单提供分屏、源码/富文本切换、源码自动换行、主题与 Zen。Ctrl+1/2 可聚焦编辑组。编辑和选择命令作用于当前视图。"),
+            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存新文件，或将现有文档另存为新文件。新文件继承目标文件夹权限，保存时会核验。原位替换和指定编码保存仍待实现。\n查看菜单提供分屏、源码/富文本切换、源码自动换行、主题与 Zen。Ctrl+1/2 可聚焦编辑组。编辑和选择命令作用于当前视图。"),
             "texzi.help.about"=>self.explain("关于 texzi","texzi\n为日常文字、Markdown 与代码片段设计的 Windows 原生文本编辑器。"),
             _=>if let Some(command)=source_command(id){if let Err(e)=self.source_action(command){self.notice.set(e);}},
         }
