@@ -5,11 +5,13 @@ use std::{cell::RefCell, ops::Range, rc::Rc, time::Instant};
 use texzi_document as doc;
 
 mod commands;
+mod files;
 
 pub struct Owner {
     store: RefCell<doc::Store>,
     changed: Signal<u64>,
     clock: Instant,
+    files: RefCell<files::FileState>,
 }
 pub struct NativeView {
     owner: Rc<Owner>,
@@ -17,14 +19,19 @@ pub struct NativeView {
     composing: Signal<bool>,
 }
 impl NativeView {
-    pub fn new() -> Rc<Self> {
-        Self::from_text("")
-    }
+    #[cfg(test)]
     pub fn from_text(raw: &str) -> Rc<Self> {
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let s = store
             .open_utf8(raw, doc::Profile::default(), false)
             .expect("new document");
+        Self::from_store(store, s, None).expect("new logical view")
+    }
+    fn from_store(
+        mut store: doc::Store,
+        s: doc::Snapshot,
+        binding: Option<doc::files::FileBinding>,
+    ) -> Result<Rc<Self>, String> {
         let set = doc::SelectionSet::caret(&s, 0);
         let v = store
             .open_view(
@@ -34,16 +41,17 @@ impl NativeView {
                 set.selections[0].head,
                 0,
             )
-            .expect("new logical view");
-        Rc::new(Self {
+            .map_err(err)?;
+        Ok(Rc::new(Self {
             owner: Rc::new(Owner {
                 store: RefCell::new(store),
                 changed: signal(0),
                 clock: Instant::now(),
+                files: RefCell::new(files::FileState::new(binding)),
             }),
             view: v.id,
             composing: signal(false),
-        })
+        }))
     }
     pub fn buffer(self: &Rc<Self>) -> ExternalBuffer {
         ExternalBuffer(self.clone())

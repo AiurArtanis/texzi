@@ -8,7 +8,7 @@ use nsh_core::{
         desktop::{WindowRef, current_window},
         input,
     },
-    file_dialog::OpenDialog,
+    file_dialog::{OpenDialog, SaveDialog},
     platform::Appearance,
     prelude::*,
 };
@@ -41,14 +41,23 @@ struct SearchReport {
 
 struct Document {
     id: u64,
-    name: String,
-    path: Option<PathBuf>,
+    path: Signal<Option<PathBuf>>,
     source: Rc<NativeView>,
     gate: Rc<ModeGate>,
     reference: ComponentRef<Editor>,
     rich_reference: ComponentRef<nsh_base::rich_editor::view::RichEditor>,
     controls: RichControlSet,
     wrap: Signal<bool>,
+}
+impl Document {
+    fn name(&self) -> String {
+        self.path.with(|path| {
+            path.as_deref()
+                .and_then(Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("未命名-{}", self.id))
+        })
+    }
 }
 // Toolbar and command-palette entries share the same per-view drafts and
 // confirmation methods. Neither surface owns a second editable document.
@@ -107,7 +116,14 @@ mod shortcut_regression_tests;
 fn bind_shell_shortcuts(run: Rc<dyn Fn(&str)>) {
     for &(key, id) in SHELL_SHORTCUTS {
         let run = run.clone();
-        on_key(key, move |_| run(id));
+        on_key_with(
+            key,
+            KeyOptions {
+                when: nsh_core::keymap::When::Always,
+                ..Default::default()
+            },
+            move |_| run(id),
+        );
     }
 }
 
@@ -257,7 +273,7 @@ impl Shell {
                 quick.cancel_quick(false);
             }
         });
-        s.add("", None);
+        s.add_blank();
         let mut attributes = WindowAttributes::default();
         attributes.close_on_press = Some(false);
         s.window.set(attributes);
@@ -325,15 +341,12 @@ impl Shell {
         });
         s
     }
-    fn add(&self, text: &str, path: Option<PathBuf>) {
+    fn add_blank(&self) {
+        self.add(self.owner.run(NativeView::new_file), None);
+    }
+    fn add(&self, source: Rc<NativeView>, path: Option<PathBuf>) {
         let id = self.next.get();
         self.next.set(id + 1);
-        let name = path
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("未命名-{id}"));
-        let source = self.owner.run(|| NativeView::from_text(text));
         let rich = self.owner.run(|| source.sibling().expect("rich view"));
         let gate = self.owner.run(|| ModeGate::new(source.clone(), rich));
         if path
@@ -349,10 +362,10 @@ impl Shell {
             .run(component_ref::<nsh_base::rich_editor::view::RichEditor>);
         let controls = self.owner.run(|| RichControlSet::new(&gate, &source));
         let wrap = self.owner.run(|| signal(false));
+        let path = self.owner.run(|| signal(path));
         self.docs.update(|ds| {
             ds.push(Rc::new(Document {
                 id,
-                name,
                 path,
                 source,
                 gate,
@@ -400,12 +413,7 @@ impl Shell {
             return None;
         }
         let reason = match id {
-            "texzi.file.save"
-            | "texzi.file.saveAs"
-            | "texzi.file.saveAll"
-            | "texzi.file.saveWithEncoding" => {
-                "保存受阻：T07 原生文件请求出现 Windows 错误 87，写盘、编码与原子替换尚未通过验收。本次没有创建或覆盖文件，未保存内容仍在内存。"
-            }
+            "texzi.file.saveWithEncoding" => "指定编码保存尚未接入。",
             "texzi.file.revert" | "texzi.file.reopenWithEncoding" | "texzi.file.changeEol" => {
                 "编码、换行与磁盘重载的保护流程尚未接入，当前文档保持原样。"
             }
@@ -552,6 +560,7 @@ impl Shell {
             ds.iter()
                 .find(|d| {
                     d.path
+                        .get()
                         .as_ref()
                         .is_some_and(|p| p.as_os_str().eq_ignore_ascii_case(path.as_os_str()))
                 })
@@ -560,29 +569,30 @@ impl Shell {
             self.remember(&path);
             self.active.set(doc.id);
             self.second_active.set(false);
+            self.restore_editor_focus();
             return;
         }
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) => {
-                self.explain("读取失败", &e.to_string());
-                return;
+        match self.owner.run(|| NativeView::open_file(&path)) {
+            Ok(source) => {
+                self.remember(&path);
+                self.add(source, Some(path));
             }
-        };
-        match std::str::from_utf8(&bytes){Ok(raw) if !raw.contains('\0')=>{self.remember(&path);self.add(raw,Some(path));},_=>self.explain("编码不支持","当前仅支持严格 UTF-8 文本；未使用替换字符解码，原文件未改变。完整编码与保存验收仍受阻。")}
+            Err(error) => self.explain("读取失败", &error),
+        }
     }
     fn pick(self: &Rc<Self>, folder: bool) {
-        self.modal.set(true);
-        let answer = pick_paths(if folder {
-            OpenDialog::folders()
-        } else {
-            OpenDialog::files().multiple(true)
-        });
         let s = self.clone();
-        spawn(async move {
-            let result = answer.await;
-            s.modal.set(false);
-            match result {
+        await_shell_modal(
+            &self.owner,
+            self.modal.clone(),
+            || {
+                pick_paths(if folder {
+                    OpenDialog::folders()
+                } else {
+                    OpenDialog::files().multiple(true)
+                })
+            },
+            move |result| match result {
                 Ok(Some(paths)) => {
                     for path in paths {
                         if folder {
@@ -603,17 +613,107 @@ impl Shell {
                     "原生打开请求失败",
                     &format!("{e}\n未读取或写入文件；原生文件请求仍待修复。"),
                 ),
+            },
+        );
+    }
+    fn save(self: &Rc<Self>, all: bool, save_as: bool) {
+        let targets = if all {
+            self.docs.with(|docs| {
+                docs.iter()
+                    .filter(|doc| {
+                        doc.source.is_dirty().unwrap_or(true) || doc.source.needs_save_recovery()
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+        } else {
+            self.current().into_iter().collect()
+        };
+        if targets.is_empty() {
+            self.notice.set("没有待保存的文档".into());
+            return;
+        }
+        if targets.iter().any(|doc| doc.gate.busy())
+            || self.split.get().is_some_and(|split| {
+                split.gate.busy() && targets.iter().any(|doc| doc.id == split.id)
+            })
+        {
+            self.notice.set("请先完成或取消中文组合".into());
+            return;
+        }
+        let shell = self.clone();
+        self.modal.set(true);
+        spawn(async move {
+            let result = shell.save_documents(targets, save_as).await;
+            shell.modal.set(false);
+            match result {
+                Ok(true) => {}
+                Ok(false) => shell.notice.set("已取消保存".into()),
+                Err(error) => shell.explain("保存失败", &error),
             }
         });
+    }
+    async fn save_documents(
+        &self,
+        targets: Vec<Rc<Document>>,
+        save_as: bool,
+    ) -> Result<bool, String> {
+        for doc in targets {
+            if doc.source.needs_save_recovery() {
+                return Err(format!("{} 有待检查的保存恢复结果", doc.name()));
+            }
+            let original = doc.path.get();
+            if !save_as && let Some(path) = &original {
+                if doc.source.is_dirty()? {
+                    doc.source.check_current_save(path)?;
+                }
+                self.notice.set(format!("{} 没有未保存的修改", doc.name()));
+                continue;
+            }
+            let mut dialog = SaveDialog::new().title(if save_as {
+                "另存为新文件"
+            } else {
+                "保存新文件"
+            });
+            if let Some(path) = &original {
+                if let Some(parent) = path.parent() {
+                    dialog = dialog.directory(parent);
+                }
+                if let Some(stem) = path.file_stem() {
+                    let extension = path
+                        .extension()
+                        .map(|ext| format!(".{}", ext.to_string_lossy()))
+                        .unwrap_or_default();
+                    dialog =
+                        dialog.file_name(format!("{}-副本{extension}", stem.to_string_lossy()));
+                }
+            }
+            let answer = self.owner.run(|| pick_save_path(dialog));
+            let Some(path) = answer.await? else {
+                return Ok(false);
+            };
+            doc.source.save_new_destination(&path)?;
+            self.remember(&path);
+            doc.path.set(Some(path));
+            self.notice.set(format!("已保存 {}", doc.name()));
+        }
+        Ok(true)
     }
     fn close_window(self: &Rc<Self>) {
         if self.modal.get() {
             return;
         }
+        if self
+            .docs
+            .with(|docs| docs.iter().any(|doc| doc.source.needs_save_recovery()))
+        {
+            self.explain("无法关闭窗口", "请先检查保存恢复结果。");
+            return;
+        }
         let dirty = self.docs.with(|ds| {
             ds.iter()
                 .filter(|d| d.source.is_dirty().unwrap_or(true))
-                .map(|d| d.name.clone())
+                .map(|d| d.name())
                 .collect::<Vec<_>>()
         });
         if dirty.is_empty() {
@@ -630,7 +730,7 @@ impl Shell {
                 nsh_base::alert_dialog()
                     .title("关闭前保留未保存内容")
                     .description(format!(
-                        "{}\n保存与恢复快照尚未通过验收。关闭将丢失这些内存内容。",
+                        "{}\n关闭将丢失这些未保存的修改。",
                         dirty.join("、")
                     ))
                     .cancel("cancel", "继续编辑")
@@ -648,6 +748,9 @@ impl Shell {
         );
     }
     fn close_tab(self: &Rc<Self>, id: u64) {
+        if self.modal.get() {
+            return;
+        }
         let Some(doc) = self.docs.with(|ds| ds.iter().find(|d| d.id == id).cloned()) else {
             return;
         };
@@ -666,6 +769,10 @@ impl Shell {
             self.active.set(id);
             return;
         }
+        if doc.source.needs_save_recovery() {
+            self.explain("无法关闭文档", "请先检查保存恢复结果。");
+            return;
+        }
         if doc.source.is_dirty().unwrap_or(true) {
             let s = self.clone();
             await_shell_modal(
@@ -675,8 +782,8 @@ impl Shell {
                     nsh_base::alert_dialog()
                         .title("关闭未保存标签")
                         .description(format!(
-                            "{} 尚未保存。保存当前受阻；可以继续编辑，或明确放弃内容。",
-                            doc.name
+                            "{} 尚未保存。可以继续编辑，或明确放弃内容。",
+                            doc.name()
                         ))
                         .cancel("cancel", "继续编辑")
                         .destructive("discard", "放弃并关闭")
@@ -709,7 +816,7 @@ impl Shell {
                 .set(self.docs.with(|ds| ds.last().map_or(0, |d| d.id)));
         }
         if self.docs.with(|ds| ds.is_empty()) {
-            self.add("", None);
+            self.add_blank();
         }
     }
     fn find(self: &Rc<Self>, previous: bool) {
@@ -822,8 +929,7 @@ impl Shell {
         let wrap = signal(doc.wrap.get());
         self.split.set(Some(Rc::new(Document {
             id: doc.id,
-            name: doc.name.clone(),
-            path: doc.path.clone(),
+            path: doc.path,
             source,
             gate,
             reference,
@@ -948,7 +1054,10 @@ impl Shell {
         }
         match id {
             "texzi.find.inFolder"=>{self.query.set(String::new());self.panel.set("folder".into());},
-            "texzi.file.new"=>self.add("",None),"texzi.file.open"=>self.pick(false),"texzi.folder.open"=>self.pick(true),
+            "texzi.file.new"=>self.add_blank(),"texzi.file.open"=>self.pick(false),"texzi.folder.open"=>self.pick(true),
+            "texzi.file.save" => self.save(false,false),
+            "texzi.file.saveAs" => self.save(false,true),
+            "texzi.file.saveAll" => self.save(true,false),
             "texzi.folder.close"=>{self.root.set(None);self.notice.set("已关闭文件夹，已打开标签保持不变".into());},
             "texzi.window.close"=>self.close_window(),"texzi.tab.close"=>if self.second_active.get(){self.split.set(None);self.second_active.set(false);}else{self.close_tab(self.active.get());},
             "texzi.window.new"=>match std::env::current_exe().and_then(|exe|std::process::Command::new(exe).spawn()){Ok(_)=>self.notice.set("已启动新的 texzi 窗口".into()),Err(e)=>self.explain("新建窗口失败",&e.to_string())},
@@ -997,6 +1106,9 @@ fn supported(id: &str) -> bool {
             id,
             "texzi.file.new"
                 | "texzi.file.open"
+                | "texzi.file.save"
+                | "texzi.file.saveAs"
+                | "texzi.file.saveAll"
                 | "texzi.folder.open"
                 | "texzi.folder.close"
                 | "texzi.window.close"
@@ -1317,13 +1429,15 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let resource_controls = doc.controls.resources.clone();
     let table_controls = doc.controls.table.clone();
     let code_controls = doc.controls.code.clone();
-    let image_document_path = doc.path.clone();
+    let image_document_path = doc.path;
     let controls_owner = s.owner;
     let controls_shell = s.clone();
-    let name = doc.name.clone();
+    let header_doc = doc.clone();
     view()
         .flex_1()
         .min_w(px(0.0))
+        .min_h(px(0.0))
+        .overflow_hidden()
         .child(
             view()
                 .flex_row()
@@ -1335,9 +1449,11 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 .p(px(6.0))
                 .bg(frame)
                 .child(
-                    text(format!("组 {} · {name}", if second { 2 } else { 1 }))
-                        .flex_1()
-                        .min_w(px(0.0)),
+                    text(move || {
+                        format!("组 {} · {}", if second { 2 } else { 1 }, header_doc.name())
+                    })
+                    .flex_1()
+                    .min_w(px(0.0)),
                 )
                 .child(
                     nsh_base::button()
@@ -1357,7 +1473,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
         )
         .child(
             when(rich_mode, move || {
-                crate::rich_images::install(&rich.session(), image_document_path.clone());
+                let session = rich.session();
+                effect(move || crate::rich_images::install(&session, image_document_path.get()));
                 let shell = controls_shell.clone();
                 let focus: Rc<dyn Fn()> =
                     Rc::new(move || shell.focus_group(if second { 2 } else { 1 }));
@@ -1367,32 +1484,48 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .w_full()
                     .max_w(relative(1.0))
                     .min_w(px(0.0))
+                    .min_h(px(0.0))
                     .child(
-                        view()
-                            .flex_row()
-                            .flex_wrap()
-                            .min_w(px(0.0))
-                            .gap(px(8.0))
-                            .p(px(6.0))
-                            .child(crate::block_controls::view(
-                                block_controls.clone(),
-                                focus.clone(),
-                            ))
-                            .child(crate::rich_controls::view(
-                                resource_controls.clone(),
-                                focus.clone(),
-                            ))
-                            .child(crate::table_controls::view(
-                                table_controls.clone(),
-                                focus.clone(),
-                            ))
-                            .child(crate::code_controls::view(code_controls.clone(), focus)),
+                        scroll()
+                            .w_full()
+                            .max_h(relative(0.48))
+                            .min_h(px(0.0))
+                            .child(
+                                view()
+                                    .w_full()
+                                    .min_w(px(0.0))
+                                    .child(
+                                        view()
+                                            .flex_row()
+                                            .flex_wrap()
+                                            .w_full()
+                                            .min_w(px(0.0))
+                                            .gap(px(8.0))
+                                            .p(px(6.0))
+                                            .child(crate::block_controls::view(
+                                                block_controls.clone(),
+                                                focus.clone(),
+                                            ))
+                                            .child(crate::rich_controls::view(
+                                                resource_controls.clone(),
+                                                focus.clone(),
+                                            ))
+                                            .child(crate::table_controls::view(
+                                                table_controls.clone(),
+                                                focus.clone(),
+                                            ))
+                                            .child(crate::code_controls::view(
+                                                code_controls.clone(),
+                                                focus,
+                                            )),
+                                    )
+                                    .child(crate::raw_block_controls::raw_block_controls(
+                                        rich.clone(),
+                                        controls_owner,
+                                        move || raw_focus(),
+                                    )),
+                            ),
                     )
-                    .child(crate::raw_block_controls::raw_block_controls(
-                        rich.clone(),
-                        controls_owner,
-                        move || raw_focus(),
-                    ))
                     .child(
                         nsh_base::rich_editor::view::rich_editor()
                             .component_ref(&rich_reference)
@@ -1402,7 +1535,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             .auto_focus(true)
                             .on_focus(move |_: &()| rich_focus.set(second))
                             .flex_1()
-                            .min_w(px(0.0)),
+                            .min_w(px(0.0))
+                            .min_h(px(0.0)),
                     )
             })
             .otherwise(move || {
@@ -1411,24 +1545,29 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .component_ref(&reference)
                     .auto_focus(true)
                     .on_focus(move |_: &()| source_focus.set(second))
-                    .language(
-                        if doc
+                    .language(move || {
+                        let markdown = doc
                             .path
+                            .get()
                             .as_ref()
                             .and_then(|p| p.extension())
-                            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
-                        {
+                            .is_some_and(|e| {
+                                e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown")
+                            });
+                        Some(SharedString::from(if markdown {
                             "markdown"
                         } else {
                             "plaintext"
-                        },
-                    )
+                        }))
+                    })
                     .soft_wrap(move || wrap.get())
                     .font_size(px(16.0))
                     .line_height(px(24.0))
-                    .size_full()
+                    .w_full()
+                    .flex_1()
                     .max_w(relative(1.0))
                     .min_w(px(0.0))
+                    .min_h(px(0.0))
             }),
         )
 }
@@ -1574,7 +1713,7 @@ pub fn view_shell() -> impl IntoElement {
                                                                 } else {
                                                                     ""
                                                                 },
-                                                                doc.name,
+                                                                doc.name(),
                                                                 if doc
                                                                     .source
                                                                     .is_dirty()
@@ -1778,15 +1917,11 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                 .collect::<Vec<_>>()
         } else {
             let docs = s.docs.get();
-            let mut known = docs
-                .iter()
-                .filter_map(|d| d.path.clone())
-                .collect::<Vec<_>>();
+            let mut known = docs.iter().filter_map(|d| d.path.get()).collect::<Vec<_>>();
             let mut entries = docs
                 .iter()
                 .map(|d| {
-                    nsh_base::CommandItem::new(format!("file:{}", d.id), d.name.clone())
-                        .group("已打开")
+                    nsh_base::CommandItem::new(format!("file:{}", d.id), d.name()).group("已打开")
                 })
                 .collect::<Vec<_>>();
             let mut add = |path: PathBuf, display: String, group: &'static str| {
@@ -1951,7 +2086,7 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                         .on_press(move |_: &()| {
                             s.open(&hit.path);
                             let target = hit.path.canonicalize().ok();
-                            if let Some(doc) = s.current().filter(|d| d.path == target) {
+                            if let Some(doc) = s.current().filter(|d| d.path.get() == target) {
                                 doc.gate.to_source();
                                 if !doc.gate.rich_mode.get() {
                                     if let Err(e) = doc.source.go_to_line(hit.line) {

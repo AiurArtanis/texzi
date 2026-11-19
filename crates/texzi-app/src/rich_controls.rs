@@ -147,10 +147,15 @@ pub fn view(controls: Rc<ResourceControls>, focus: Rc<dyn Fn()>) -> impl IntoEle
     let image = controls.clone();
     let modal = controls.clone();
     box_view()
+        .max_w(relative(1.0))
+        .min_w(px(0.0))
         .gap(px(4.0))
         .child(
             box_view()
                 .flex_row()
+                .flex_wrap()
+                .max_w(relative(1.0))
+                .min_w(px(0.0))
                 .gap(px(6.0))
                 .child(
                     nsh_base::button()

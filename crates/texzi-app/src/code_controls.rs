@@ -148,11 +148,14 @@ pub fn view(controls: Rc<CodeControls>, focus: Rc<dyn Fn()>) -> impl IntoElement
     let indent_focus = focus.clone();
     let outdent_focus = focus.clone();
     box_view()
+        .max_w(relative(1.0))
+        .min_w(px(0.0))
         .gap(px(6.0))
         .child(
             box_view()
                 .flex_row()
                 .flex_wrap()
+                .max_w(relative(1.0))
                 .min_w(px(0.0))
                 .gap(px(6.0))
                 .child(

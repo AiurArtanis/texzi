@@ -7,6 +7,8 @@ use std::rc::Rc;
 
 pub(super) const SHELL_SHORTCUTS: &[(&str, &str)] = &[
     ("mod+o", "texzi.file.open"),
+    ("mod+s", "texzi.file.save"),
+    ("mod+shift+s", "texzi.file.saveAs"),
     ("f3", "texzi.find.next"),
     ("shift+f3", "texzi.find.previous"),
     ("mod+shift+w", "texzi.window.close"),
