@@ -425,3 +425,33 @@ fn paragraph_heading_input_control_keeps_entity_neighbor_and_separate_format_und
         20,
     );
 }
+
+#[test]
+fn enter_at_chinese_heading_end_creates_room_for_h3_before_entity_paragraph() {
+    let runtime = nsh_core::element::Runtime::default();
+    let _entered = runtime.enter();
+    let (source, rich, gate) = setup(ORIGINAL);
+    select(&source, &rich, &gate, 5, 14);
+    enter(&source, &gate);
+    let initial_gap = "# 中文标题\n\n\n\na &amp; b \\*转义\\*";
+    check(
+        &source,
+        &rich,
+        &gate,
+        "empty paragraph below H1",
+        initial_gap,
+        7,
+        18,
+    );
+    for _ in 0..3 {
+        input(&source, &gate, "hash in new paragraph", "#", 1);
+    }
+    input(&source, &gate, "heading trigger", " ", 2);
+    input(&source, &gate, "H3 title", "新标题", 1);
+    let raw = "# 中文标题\n\n### 新标题\n\na &amp; b \\*转义\\*";
+    check(&source, &rich, &gate, "H3 below H1", raw, 10, 29);
+    assert_eq!(
+        gate.session().state().doc().child(1).attrs()["level"],
+        serde_json::json!(3)
+    );
+}

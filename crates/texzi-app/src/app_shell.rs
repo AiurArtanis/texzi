@@ -383,10 +383,6 @@ impl Shell {
         if self.current().is_some_and(|d| d.gate.busy()) {
             return Some("请先完成或取消中文组合".into());
         }
-        if id == "texzi.editor.toggleWrap" && self.current().is_some_and(|d| d.gate.rich_mode.get())
-        {
-            return Some("自动换行开关作用于当前源码视图；正文按块排版。请先切换源码。".into());
-        }
         if matches!(id, "texzi.group.splitRight" | "texzi.group.splitDown")
             && self.split.get().is_some()
         {
@@ -401,16 +397,6 @@ impl Shell {
                 None => return Some("没有活动文档".into()),
             };
             return crate::rich_commands::availability(&doc.gate, &doc.source, id, true).err();
-        }
-        if matches!(
-            id,
-            "texzi.window.new"
-                | "texzi.group.splitRight"
-                | "texzi.group.splitDown"
-                | "texzi.group.joinAll"
-                | "texzi.find.inFolder"
-        ) {
-            return None;
         }
         let reason = match id {
             "texzi.file.saveWithEncoding" => "指定编码保存尚未接入。",
@@ -1076,7 +1062,7 @@ impl Shell {
             "texzi.find.next"=>self.find(false),"texzi.find.previous"=>self.find(true),"texzi.find.close"=>self.close_panel(),
             "texzi.find.replaceOne"|"texzi.find.replaceAll"=>if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}match doc.source.replace_literal(&self.query.get(),&self.replacement.get(),id.ends_with("All")){Ok(n)=>{self.notice.set(format!("源码 · 已替换 {n} 处，可一次撤销"));self.restore_editor_focus();},Err(e)=>self.notice.set(e)}},
             "texzi.appearance.light"=>set_color_scheme(Appearance::Light),"texzi.appearance.dark"=>set_color_scheme(Appearance::Dark),
-            "texzi.help.guide"=>self.explain("使用说明","文件：新建、原生打开请求、目录展开、标签与新窗口。编辑/选择：当前文本控件的操作。查看：命令面板、两组分屏、源码/富文本、换行、主题与 Zen；Ctrl+1/2 聚焦编辑组。文件夹搜索会显示范围、预算、跳过项和取消结果。\n保存、完整编码、跨窗口移动与设置尚未完成；菜单会说明原因。此版本内容仅留在内存。"),
+            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存新文件，或将现有文档另存为新文件。原位替换和指定编码保存仍待实现。\n查看菜单提供分屏、源码/富文本切换、源码自动换行、主题与 Zen。Ctrl+1/2 可聚焦编辑组。编辑和选择命令作用于当前视图。"),
             "texzi.help.about"=>self.explain("关于 texzi","texzi\n为日常文字、Markdown 与代码片段设计的 Windows 原生文本编辑器。"),
             _=>if let Some(command)=source_command(id){if let Err(e)=self.source_action(command){self.notice.set(e);}},
         }
@@ -1099,7 +1085,7 @@ impl Shell {
         }
     }
 }
-fn supported(id: &str) -> bool {
+pub(crate) fn supported(id: &str) -> bool {
     crate::rich_commands::handles(id)
         || source_command(id).is_some()
         || matches!(
@@ -1111,6 +1097,7 @@ fn supported(id: &str) -> bool {
                 | "texzi.file.saveAll"
                 | "texzi.folder.open"
                 | "texzi.folder.close"
+                | "texzi.window.new"
                 | "texzi.window.close"
                 | "texzi.tab.close"
                 | "texzi.tab.reopenClosed"
@@ -1124,6 +1111,9 @@ fn supported(id: &str) -> bool {
                 | "texzi.commandPalette.open"
                 | "texzi.navigation.quickOpen"
                 | "texzi.navigation.gotoLine"
+                | "texzi.group.splitRight"
+                | "texzi.group.splitDown"
+                | "texzi.group.joinAll"
                 | "texzi.group.focusIndex"
                 | "texzi.markdown.toggleSource"
                 | "texzi.find.open"
@@ -1131,6 +1121,7 @@ fn supported(id: &str) -> bool {
                 | "texzi.find.next"
                 | "texzi.find.previous"
                 | "texzi.find.close"
+                | "texzi.find.inFolder"
                 | "texzi.find.replaceOne"
                 | "texzi.find.replaceAll"
                 | "texzi.appearance.light"

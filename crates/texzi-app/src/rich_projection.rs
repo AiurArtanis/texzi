@@ -747,6 +747,20 @@ impl Projection {
             text = format!("\n\n{text}");
         }
         if old_end == first && first < self.blocks.len() {
+            // A heading or other block can be followed by a paragraph with
+            // only one LF. The projection needs four LFs for an empty
+            // paragraph between existing blocks. Extend that seam without
+            // serializing either neighboring block.
+            if first > 0
+                && new_end > first
+                && (first..new_end).all(|i| {
+                    let node = next.child(i);
+                    node.ty().name() == "paragraph" && node.content().size() == 0
+                })
+                && &self.source[self.blocks[first - 1].source.end..start] == "\n"
+            {
+                text.push('\n');
+            }
             text.push_str("\n\n");
         }
         Ok(Some((start..end, text)))

@@ -316,6 +316,11 @@ mod tests {
                     .iter()
                     .find(|c| c.id == *id)
                     .unwrap_or_else(|| panic!("missing command: {id}"));
+                assert_eq!(
+                    crate::app_shell::supported(id),
+                    !matches!(*id, "texzi.settings.open" | "texzi.settings.keybindings"),
+                    "expected application command route for {id}"
+                );
                 if let Some(stroke) = command.keys.first().and_then(|s| key(s)) {
                     nsh_core::desktop::Shortcut::parse(&stroke, false)
                         .unwrap_or_else(|e| panic!("{id}: {e}"));
