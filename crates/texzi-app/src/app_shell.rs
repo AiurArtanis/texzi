@@ -1430,6 +1430,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let table_controls = doc.controls.table.clone();
     let code_controls = doc.controls.code.clone();
     let image_document_path = doc.path;
+    let source_document_path = doc.path;
     let controls_owner = s.owner;
     let controls_shell = s.clone();
     let header_doc = doc.clone();
@@ -1546,8 +1547,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .auto_focus(true)
                     .on_focus(move |_: &()| source_focus.set(second))
                     .language(move || {
-                        let markdown = doc
-                            .path
+                        let markdown = source_document_path
                             .get()
                             .as_ref()
                             .and_then(|p| p.extension())
