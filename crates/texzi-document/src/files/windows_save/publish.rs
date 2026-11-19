@@ -8,9 +8,13 @@ use std::{
     io,
     os::windows::{ffi::OsStrExt, io::AsRawHandle},
 };
-use windows_sys::Win32::Storage::FileSystem::{
-    FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle,
+use windows_sys::Wdk::Storage::FileSystem::{
+    FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
 };
+use windows_sys::Win32::Foundation::{
+    NTSTATUS, RtlNtStatusToDosError, STATUS_PENDING, STATUS_SUCCESS,
+};
+use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 #[derive(Debug)]
 pub enum PublishIssue {
@@ -59,11 +63,18 @@ pub struct PublishFailure {
     security_policy: NewFileSecurity,
     resources: Arc<LockedStaged>,
     phase: Phase,
+    rename_failure_status: Option<NTSTATUS>,
     _guard: Option<Guard>,
 }
 impl std::fmt::Debug for PublishFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PublishFailure")
+            .field(
+                "rename_failure_status",
+                &self
+                    .rename_failure_status
+                    .map(|status| format!("0x{:08X}", status as u32)),
+            )
             .field("issue", &self.issue)
             .field("operation", &self.capture().operation)
             .finish()
@@ -117,8 +128,12 @@ impl PublishFailure {
                     _ => None,
                 },
                 message: format!(
-                    "new-target publication ({:?}): {:?}; candidate recovery paths require verification",
-                    self.security_policy, self.issue
+                    "new-target publication ({:?}): {:?}{}; candidate recovery paths require verification",
+                    self.security_policy,
+                    self.issue,
+                    self.rename_failure_status
+                        .map(|status| format!(" (NTSTATUS 0x{:08X})", status as u32))
+                        .unwrap_or_default()
                 ),
                 recovery_paths: paths,
             },
@@ -219,6 +234,7 @@ impl LockedStaged {
                 security_policy,
                 resources: Arc::new(self),
                 phase: Phase::BeforePermit,
+                rename_failure_status: None,
                 _guard: None,
             }),
         }
@@ -239,6 +255,7 @@ impl NewReady {
                 security_policy: self.security_policy,
                 resources: self.resources,
                 phase: Phase::BeforePermit,
+                rename_failure_status: None,
                 _guard: None,
             });
         }
@@ -273,14 +290,20 @@ impl NewReady {
                     security_policy: self.security_policy,
                     resources: self.resources,
                     phase: Phase::BeforePermit,
+                    rename_failure_status: None,
                     _guard: None,
                 })
             }
         }
     }
 }
-fn rename_new(file: &File, parent: &File, name: &[u16], attempted: &mut bool) -> io::Result<()> {
-    let offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+fn rename_new(
+    file: &File,
+    parent: &File,
+    name: &[u16],
+    rename_status: &mut Option<NTSTATUS>,
+) -> io::Result<()> {
+    let offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
     let bytes = name
         .len()
         .checked_mul(2)
@@ -289,12 +312,16 @@ fn rename_new(file: &File, parent: &File, name: &[u16], attempted: &mut bool) ->
         .checked_add(bytes)
         .and_then(|n| n.checked_add(2))
         .ok_or_else(|| io::Error::other("rename buffer overflow"))?
-        .max(std::mem::size_of::<FILE_RENAME_INFO>());
+        .max(std::mem::size_of::<FILE_RENAME_INFORMATION>());
     let size_u32 = u32::try_from(size).map_err(|_| io::Error::other("rename buffer too large"))?;
     let mut buffer = vec![0u64; size.div_ceil(8)];
-    let header = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    // SAFETY: aligned, initialized allocation is large enough for the structure
-    // and variable UTF16 name. Both handles remain owned/live throughout the call.
+    let header = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    let mut completion = IO_STATUS_BLOCK::default();
+    completion.Anonymous.Status = STATUS_PENDING;
+    // SAFETY: the aligned buffer holds the header and full UTF-16 name.
+    // Both handles remain live. Staging opens this File without
+    // FILE_FLAG_OVERLAPPED, so the call completes on the synchronous handle
+    // before the input buffer and completion block can be dropped.
     unsafe {
         (*header).Anonymous.ReplaceIfExists = false;
         (*header).RootDirectory = parent.as_raw_handle();
@@ -304,15 +331,23 @@ fn rename_new(file: &File, parent: &File, name: &[u16], attempted: &mut bool) ->
             std::ptr::addr_of_mut!((*header).FileName).cast::<u16>(),
             name.len(),
         );
-        *attempted = true;
-        if SetFileInformationByHandle(
+        let returned = NtSetInformationFile(
             file.as_raw_handle(),
-            FileRenameInfo,
+            &mut completion,
             header.cast(),
             size_u32,
-        ) == 0
-        {
-            return Err(io::Error::last_os_error());
+            FileRenameInformation,
+        );
+        let status = if returned == STATUS_SUCCESS {
+            completion.Anonymous.Status
+        } else {
+            returned
+        };
+        *rename_status = Some(status);
+        if status != STATUS_SUCCESS {
+            return Err(io::Error::from_raw_os_error(
+                RtlNtStatusToDosError(status) as i32
+            ));
         }
     }
     Ok(())
@@ -358,6 +393,7 @@ impl NewPublication {
                 security_policy: self.security_policy,
                 resources: self.resources,
                 phase: Phase::Permitted,
+                rename_failure_status: None,
                 _guard: self.guard,
             });
         }
@@ -369,16 +405,17 @@ impl NewPublication {
                     security_policy: self.security_policy,
                     resources: self.resources,
                     phase: Phase::Permitted,
+                    rename_failure_status: None,
                     _guard: self.guard,
                 });
             }
         }
         let path = self.resources.staged.target_path();
-        let mut attempted = false;
+        let mut rename_status = None;
         let result = (|| -> Result<FileVersion, PublishIssue> {
             let mut file = self.resources.staged.staged.created_file()?;
             file.sync_all()?;
-            rename_new(&file, &self.parent, &self.name, &mut attempted)?;
+            rename_new(&file, &self.parent, &self.name, &mut rename_status)?;
             if self.security_policy == NewFileSecurity::CreationDefault {
                 // Never broaden a sibling temporary name. Prove that the same
                 // exclusive File has reached the intended final name first.
@@ -451,7 +488,8 @@ impl NewPublication {
                 security_policy: self.security_policy,
                 resources: self.resources,
                 _guard: self.guard,
-                phase: if attempted {
+                rename_failure_status: rename_status.filter(|&status| status != STATUS_SUCCESS),
+                phase: if rename_status.is_some() {
                     Phase::Attempted
                 } else {
                     Phase::Permitted
@@ -501,6 +539,7 @@ impl PublishedNew {
                     security_policy: self.security_policy,
                     resources: self.resources,
                     phase: Phase::Attempted,
+                    rename_failure_status: None,
                     _guard: self.guard,
                 });
             }
@@ -530,6 +569,7 @@ impl PublishedNew {
                 security_policy: self.security_policy,
                 resources: self.resources,
                 phase: Phase::Attempted,
+                rename_failure_status: None,
                 _guard: self.guard,
             }),
         }
