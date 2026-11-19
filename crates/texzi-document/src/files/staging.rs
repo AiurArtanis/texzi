@@ -380,6 +380,12 @@ impl StagingWork {
             .map_err(|e| failed(StageIssue::Io(e)))?;
         #[cfg(windows)]
         if let Some(required) = required_security {
+            // Fresh siblings commonly inherit the exact required descriptor.
+            // Applying an already identical unprotected DACL can cause Windows
+            // to recompute inheritance and change its representation.
+            let needs_copy = required != &created_security;
+            #[cfg(test)]
+            let needs_copy = needs_copy || self.copy_handle_hook.is_some();
             #[cfg(test)]
             let duplicate = self
                 .copy_handle_hook
@@ -391,9 +397,11 @@ impl StagingWork {
             let copy_file = duplicate.as_ref().unwrap_or(&file);
             #[cfg(not(test))]
             let copy_file = &file;
-            required
-                .apply_to_new_file(copy_file)
-                .map_err(|e| failed(StageIssue::Io(e)))?;
+            if needs_copy {
+                required
+                    .apply_to_new_file(copy_file)
+                    .map_err(|e| failed(StageIssue::Io(e)))?;
+            }
         } else {
             super::windows_security::SecurityDescriptor::protect_new_file(&file)
                 .map_err(|e| failed(StageIssue::Io(e)))?;
