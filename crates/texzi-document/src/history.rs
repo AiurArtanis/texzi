@@ -2,10 +2,14 @@ use crate::{
     ActiveSaveState, BaselineKind, BaselineState, FileAttention, GlobalMetadata, HistoryGroupId,
     HistoryObservation, MergeObservation, SaveObservation, SaveResult, SaveTerminal, Unimplemented,
 };
+mod failure_ack;
+#[cfg(windows)]
+mod verified_open;
 use crate::{
     Body, DocId, Eol, Error, Profile, Revision, SourceByte, StateToken, coordinates::boundary,
 };
 use crate::{FenceReason, InputKind, SelectionSet, ViewId, ViewState, ViewTransaction};
+pub use failure_ack::PreReplaceAcknowledgement;
 use std::{
     collections::{HashMap, VecDeque},
     ops::Range,
@@ -14,6 +18,8 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+#[cfg(windows)]
+pub(crate) use verified_open::OpenDocument;
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -85,9 +91,13 @@ struct Entry {
     charge: usize,
 }
 pub(crate) struct Document {
+    failures: Vec<SaveFailureRecord>,
+    recovery_snapshots: Vec<(u64, Snapshot)>,
+    save_blocked: bool,
     pub(crate) closed_views: std::collections::BTreeMap<ViewId, crate::ClosedView>,
     baseline_kind: BaselineKind,
     bound_target: Option<TargetKey>,
+    binding_epoch: u64,
     save_terminal: Option<SaveTerminal>,
     pub(crate) views: HashMap<ViewId, ViewState>,
     pub(crate) merge: Option<MergeState>,
@@ -117,6 +127,16 @@ impl Default for HistoryBudget {
 
 /// All mutating APIs require &mut Store: one serial owner, no callback reentrancy.
 pub struct Store {
+    #[cfg(all(test, windows))]
+    verified_open_doc_counter: Option<Arc<AtomicU64>>,
+    #[cfg(windows)]
+    opened_identities: HashMap<DocId, crate::files::windows_identity::OpenAnchor>,
+    #[cfg(windows)]
+    pub(crate) publication_recovery: Arc<crate::files::windows_save::recovery::Registry>,
+    scope_parents: HashMap<TargetKey, ScopeLease>,
+    scope_objects: HashMap<TargetKey, ScopeLease>,
+    bound_targets: HashMap<TargetKey, DocId>,
+    unresolved_targets: HashMap<TargetKey, DocId>,
     pub(crate) observer: crate::observe::ObserverHub,
     pub(crate) docs: HashMap<DocId, Document>,
     pub(crate) view_docs: HashMap<ViewId, DocId>,
@@ -132,6 +152,13 @@ static NEXT_DOC: AtomicU64 = AtomicU64::new(1);
 /// Canonical identity supplied by a future T07 resolver; not a path normalizer.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TargetKey(pub String);
+/// Explicit, separate lock domains supplied by the filesystem resolver. Equality
+/// of a file key and a directory key never stands in for a hierarchy check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveScope {
+    pub parent: TargetKey,
+    pub object: Option<TargetKey>,
+}
 #[derive(Clone, Debug)]
 pub struct SaveCapture {
     pub operation: u64,
@@ -148,9 +175,43 @@ pub enum SaveStage {
     Replacing,
     Verifying,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveFailureOutcome {
+    BeforeReplace,
+    ReplaceFailed,
+    OutcomeUnknown,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveFailure {
+    pub outcome: SaveFailureOutcome,
+    pub conflict: bool,
+    pub os_error: Option<i32>,
+    pub message: String,
+    pub recovery_paths: Vec<std::path::PathBuf>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveFailureRecord {
+    pub scope: Option<SaveScope>,
+    pub operation: u64,
+    pub target: TargetKey,
+    pub binding_epoch: u64,
+    pub revision: Revision,
+    pub token: StateToken,
+    pub stage: SaveStage,
+    pub detail: SaveFailure,
+    /// Explicit owner acknowledgement of an eligible pre-replace failure only.
+    /// This does not prove a disk save or release any filesystem protection.
+    pub acknowledged_before_replace: bool,
+}
 struct ActiveSave {
+    scope: Option<SaveScope>,
     capture: SaveCapture,
     stage: SaveStage,
+}
+#[derive(Clone, Copy)]
+struct ScopeLease {
+    operation: u64,
+    held: bool,
 }
 
 impl Store {
@@ -161,8 +222,56 @@ impl Store {
         target: TargetKey,
         guard: String,
     ) -> Result<SaveCapture, Error> {
+        self.begin_save_with_scope(doc, target, guard, None)
+    }
+    pub(crate) fn begin_scoped_save_unpublished(
+        &mut self,
+        doc: DocId,
+        target: TargetKey,
+        guard: String,
+        scope: SaveScope,
+    ) -> Result<SaveCapture, Error> {
+        self.begin_save_with_scope(doc, target, guard, Some(scope))
+    }
+    fn begin_save_with_scope(
+        &mut self,
+        doc: DocId,
+        target: TargetKey,
+        guard: String,
+        scope: Option<SaveScope>,
+    ) -> Result<SaveCapture, Error> {
         let s = self.snapshot(doc)?;
+        if let Some(scope) = &scope {
+            if scope
+                .object
+                .as_ref()
+                .is_some_and(|object| object != &target)
+            {
+                return Err(Error::InvalidSave);
+            }
+            let parent = self.scope_parents.get(&scope.parent);
+            let object = scope
+                .object
+                .as_ref()
+                .and_then(|key| self.scope_objects.get(key));
+            if parent.is_some_and(|lease| lease.held) || object.is_some_and(|lease| lease.held) {
+                return Err(Error::UnresolvedConflict);
+            }
+            if parent.is_some() || object.is_some() {
+                return Err(Error::Busy);
+            }
+        }
+        if self.docs[&doc].save_blocked || self.unresolved_targets.contains_key(&target) {
+            return Err(Error::UnresolvedConflict);
+        }
         if self.saves.contains_key(&doc) || self.targets.contains_key(&target) {
+            return Err(Error::Busy);
+        }
+        if self
+            .bound_targets
+            .get(&target)
+            .is_some_and(|owner| *owner != doc)
+        {
             return Err(Error::Busy);
         }
         let operation = self.next_save;
@@ -170,13 +279,24 @@ impl Store {
         let capture = SaveCapture {
             operation,
             snapshot: s,
-            binding_epoch: 0,
+            binding_epoch: self.docs[&doc].binding_epoch,
             target: target.clone(),
             guard,
         };
+        if let Some(scope) = &scope {
+            let lease = ScopeLease {
+                operation,
+                held: false,
+            };
+            self.scope_parents.insert(scope.parent.clone(), lease);
+            if let Some(object) = &scope.object {
+                self.scope_objects.insert(object.clone(), lease);
+            }
+        }
         self.saves.insert(
             doc,
             ActiveSave {
+                scope,
                 capture: capture.clone(),
                 stage: SaveStage::Encoding,
             },
@@ -190,14 +310,38 @@ impl Store {
         let a = self.saves.get(&c.snapshot.doc).ok_or(Error::InvalidSave)?;
         if a.capture.operation != c.operation
             || a.capture.binding_epoch != c.binding_epoch
+            || self.docs[&c.snapshot.doc].binding_epoch != c.binding_epoch
             || a.capture.target != c.target
             || a.capture.guard != c.guard
             || a.capture.snapshot.revision != c.snapshot.revision
             || a.capture.snapshot.token != c.snapshot.token
+            || !Arc::ptr_eq(&a.capture.snapshot.body, &c.snapshot.body)
         {
             return Err(Error::InvalidSave);
         }
         Ok(a)
+    }
+    pub(crate) fn captured_save_stage(&self, c: &SaveCapture) -> Result<SaveStage, Error> {
+        self.active_save(c).map(|a| a.stage)
+    }
+    pub(crate) fn permit_bound_new_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        scope: &SaveScope,
+    ) -> Result<(), Error> {
+        let active = self.active_save(c)?;
+        if active.stage != SaveStage::WritingTemp
+            || active.scope.as_ref() != Some(scope)
+            || scope.object.is_some()
+        {
+            return Err(Error::InvalidSave);
+        }
+        self.docs[&c.snapshot.doc]
+            .binding_epoch
+            .checked_add(1)
+            .ok_or(Error::CounterExhausted)?;
+        self.advance_save_unpublished(c, SaveStage::ReadyToReplace)?;
+        self.commit_permit_unpublished(c)
     }
     pub(crate) fn advance_save_unpublished(
         &mut self,
@@ -236,12 +380,96 @@ impl Store {
             result: SaveResult::Cancelled,
             error: None,
         });
-        self.release_save(c);
+        self.release_save(c, false);
+        #[cfg(windows)]
+        self.publication_recovery.recorded(c.operation);
         Ok(())
     }
-    fn release_save(&mut self, c: &SaveCapture) {
-        self.saves.remove(&c.snapshot.doc);
+    fn release_save(&mut self, c: &SaveCapture, hold_scope: bool) {
+        if let Some(active) = self.saves.remove(&c.snapshot.doc) {
+            if let Some(scope) = active.scope {
+                if hold_scope {
+                    if let Some(lease) = self.scope_parents.get_mut(&scope.parent) {
+                        assert_eq!(lease.operation, c.operation);
+                        lease.held = true;
+                    }
+                    if let Some(lease) = scope
+                        .object
+                        .as_ref()
+                        .and_then(|key| self.scope_objects.get_mut(key))
+                    {
+                        assert_eq!(lease.operation, c.operation);
+                        lease.held = true;
+                    }
+                } else {
+                    self.scope_parents.remove(&scope.parent);
+                    if let Some(object) = scope.object {
+                        self.scope_objects.remove(&object);
+                    }
+                }
+            }
+        }
         self.targets.remove(&c.target);
+    }
+    pub(crate) fn finish_save_failure_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        detail: SaveFailure,
+    ) -> Result<(), Error> {
+        let stage = self.active_save(c)?.stage;
+        let before = matches!(
+            stage,
+            SaveStage::Encoding | SaveStage::WritingTemp | SaveStage::ReadyToReplace
+        );
+        if (detail.outcome == SaveFailureOutcome::BeforeReplace) != before {
+            return Err(Error::InvalidSave);
+        }
+        let held = detail.conflict || !before;
+        let record = SaveFailureRecord {
+            scope: self.active_save(c)?.scope.clone(),
+            operation: c.operation,
+            target: c.target.clone(),
+            binding_epoch: c.binding_epoch,
+            revision: c.snapshot.revision,
+            token: c.snapshot.token,
+            stage,
+            detail,
+            acknowledged_before_replace: false,
+        };
+        let d = self
+            .docs
+            .get_mut(&c.snapshot.doc)
+            .ok_or(Error::InvalidDoc)?;
+        d.save_terminal = Some(SaveTerminal {
+            operation: c.operation,
+            result: if record.detail.outcome == SaveFailureOutcome::OutcomeUnknown {
+                SaveResult::OutcomeUnknown
+            } else {
+                SaveResult::Failed
+            },
+            error: Some(record.detail.message.clone()),
+        });
+        d.recovery_snapshots.push((c.operation, c.snapshot.clone()));
+        d.failures.push(record);
+        d.save_blocked |= held;
+        if held {
+            self.unresolved_targets
+                .insert(c.target.clone(), c.snapshot.doc);
+        }
+        self.release_save(c, held);
+        #[cfg(windows)]
+        self.publication_recovery.recorded(c.operation);
+        Ok(())
+    }
+    pub fn recovery_snapshot(&self, doc: DocId, operation: u64) -> Result<Snapshot, Error> {
+        self.docs
+            .get(&doc)
+            .ok_or(Error::InvalidDoc)?
+            .recovery_snapshots
+            .iter()
+            .find(|(op, _)| *op == operation)
+            .map(|(_, s)| s.clone())
+            .ok_or(Error::InvalidSave)
     }
     /// TRUST BOUNDARY: T07 IO owner must supply a truly verified durable result.
     /// Component tests simulate that result; they provide no disk-save evidence.
@@ -249,8 +477,47 @@ impl Store {
         &mut self,
         c: &SaveCapture,
     ) -> Result<(), Error> {
-        if self.active_save(c)?.stage != SaveStage::Verifying {
+        self.accept_result_unpublished(c, c.target.clone(), false)
+            .map(|_| ())
+    }
+    pub(crate) fn accept_published_new_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        final_target: TargetKey,
+    ) -> Result<u64, Error> {
+        self.accept_result_unpublished(c, final_target, true)
+    }
+    fn accept_result_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        final_target: TargetKey,
+        published_new: bool,
+    ) -> Result<u64, Error> {
+        let active = self.active_save(c)?;
+        let required = if published_new {
+            SaveStage::Replacing
+        } else {
+            SaveStage::Verifying
+        };
+        if active.stage != required
+            || (published_new && active.scope.as_ref().is_none_or(|s| s.object.is_some()))
+        {
             return Err(Error::InvalidSave);
+        }
+        if self
+            .bound_targets
+            .get(&final_target)
+            .is_some_and(|owner| *owner != c.snapshot.doc)
+        {
+            return Err(Error::Busy);
+        }
+        // Check every fallible precondition before changing baseline or binding.
+        let next_epoch = self.docs[&c.snapshot.doc]
+            .binding_epoch
+            .checked_add(1)
+            .ok_or(Error::CounterExhausted)?;
+        if published_new {
+            self.saves.get_mut(&c.snapshot.doc).unwrap().stage = SaveStage::Verifying;
         }
         let d = self
             .docs
@@ -259,17 +526,38 @@ impl Store {
         d.baseline = c.snapshot.token;
         d.backed = true;
         d.baseline_kind = BaselineKind::SavedByCaller;
-        d.bound_target = Some(c.target.clone());
+        let previous = d.bound_target.clone();
+        d.bound_target = Some(final_target.clone());
+        d.binding_epoch = next_epoch;
         d.save_terminal = Some(SaveTerminal {
             operation: c.operation,
             result: SaveResult::SucceededByCaller,
             error: None,
         });
-        self.release_save(c);
-        Ok(())
+        if let Some(previous) = previous {
+            self.bound_targets.remove(&previous);
+        }
+        self.bound_targets.insert(final_target, c.snapshot.doc);
+        // Generic/save publication receipts do not transfer a lifetime witness.
+        #[cfg(windows)]
+        self.opened_identities.remove(&c.snapshot.doc);
+        self.release_save(c, false);
+        #[cfg(windows)]
+        self.publication_recovery.complete(c.operation);
+        Ok(next_epoch)
     }
     pub fn new(budget: HistoryBudget) -> Self {
         Self {
+            #[cfg(all(test, windows))]
+            verified_open_doc_counter: None,
+            #[cfg(windows)]
+            opened_identities: HashMap::new(),
+            #[cfg(windows)]
+            publication_recovery: Arc::default(),
+            scope_parents: HashMap::new(),
+            scope_objects: HashMap::new(),
+            bound_targets: HashMap::new(),
+            unresolved_targets: HashMap::new(),
             observer: crate::observe::ObserverHub::new(),
             docs: HashMap::new(),
             view_docs: HashMap::new(),
@@ -281,6 +569,13 @@ impl Store {
             next_save: 1,
         }
     }
+    /// Binding counter boundary fixture; absent from normal product builds.
+    #[cfg(all(test, windows))]
+    pub(crate) fn test_set_binding_epoch(&mut self, doc: DocId, epoch: u64) {
+        assert!(!self.saves.contains_key(&doc));
+        let document = self.docs.get_mut(&doc).unwrap();
+        document.binding_epoch = epoch;
+    }
     pub fn open_utf8(
         &mut self,
         raw: &str,
@@ -288,6 +583,34 @@ impl Store {
         backed_by_disk: bool,
     ) -> Result<Snapshot, Error> {
         if profile.version != 1 {
+            return Err(Error::InvalidProfile);
+        }
+        self.open_import(raw, profile, backed_by_disk, false)
+    }
+    pub fn open_decoded(
+        &mut self,
+        text: &str,
+        format: crate::files::Format,
+    ) -> Result<Snapshot, Error> {
+        self.open_import(
+            text,
+            Profile {
+                version: 2,
+                file_format: Some(format),
+                ..Profile::default()
+            },
+            false,
+            true,
+        )
+    }
+    fn open_import(
+        &mut self,
+        raw: &str,
+        profile: Profile,
+        backed_by_disk: bool,
+        decoded: bool,
+    ) -> Result<Snapshot, Error> {
+        if !profile.valid() {
             return Err(Error::InvalidProfile);
         }
         let id = NEXT_DOC
@@ -298,11 +621,18 @@ impl Store {
             doc: DocId(id),
             revision: Revision(0),
             token,
-            body: Arc::new(Body::import_utf8(raw, profile)),
+            body: Arc::new(if decoded {
+                Body::import_decoded(raw, profile)
+            } else {
+                Body::import_utf8(raw, profile)
+            }),
         };
         self.docs.insert(
             current.doc,
             Document {
+                failures: Vec::new(),
+                recovery_snapshots: Vec::new(),
+                save_blocked: false,
                 closed_views: std::collections::BTreeMap::new(),
                 baseline_kind: if backed_by_disk {
                     BaselineKind::ExternalLoadClaim
@@ -312,6 +642,7 @@ impl Store {
                     BaselineKind::MemoryImport
                 },
                 bound_target: None,
+                binding_epoch: 0,
                 save_terminal: None,
                 current: current.clone(),
                 views: HashMap::new(),
@@ -471,7 +802,7 @@ impl Store {
         profile: Profile,
         eol: Option<Eol>,
     ) -> Result<Receipt, Error> {
-        if profile.version != 1 {
+        if !profile.valid() {
             return Err(Error::InvalidProfile);
         }
         let s = self.snapshot(doc)?;
@@ -781,13 +1112,34 @@ impl Store {
             },
             dirty: d.current.token != d.baseline,
             attention: FileAttention {
+                recoveries: d.failures.clone(),
                 needs_target: d.bound_target.is_none(),
-                binding_epoch: 0,
+                binding_epoch: d.binding_epoch,
                 target: d.bound_target.clone(),
                 known_fingerprint: None,
-                conflict: Unimplemented::NotImplemented,
-                save_outcome_unknown: Unimplemented::NotImplemented,
-                display_error: None,
+                conflict: if d.save_blocked {
+                    let r = d.failures.last().unwrap();
+                    Unimplemented::NeedsVerification {
+                        operation: r.operation,
+                        target: r.target.clone(),
+                    }
+                } else {
+                    Unimplemented::NotImplemented
+                },
+                save_outcome_unknown: if let Some(r) = d
+                    .failures
+                    .iter()
+                    .rev()
+                    .find(|r| r.detail.outcome == SaveFailureOutcome::OutcomeUnknown)
+                {
+                    Unimplemented::NeedsVerification {
+                        operation: r.operation,
+                        target: r.target.clone(),
+                    }
+                } else {
+                    Unimplemented::NotImplemented
+                },
+                display_error: d.save_terminal.as_ref().and_then(|t| t.error.clone()),
             },
             save: SaveObservation {
                 active,
@@ -814,7 +1166,21 @@ impl Store {
         self.saves.contains_key(&doc)
     }
     pub(crate) fn remove_memory_document(&mut self, doc: DocId) -> Result<(), Error> {
+        let d = self.docs.get(&doc).ok_or(Error::InvalidDoc)?;
+        if d.save_blocked
+            || d.failures.iter().any(|failure| {
+                !failure.acknowledged_before_replace
+                    || !failure_ack::is_eligible_pre_replace_failure(failure)
+            })
+        {
+            return Err(Error::UnresolvedConflict);
+        }
         let d = self.docs.remove(&doc).ok_or(Error::InvalidDoc)?;
+        #[cfg(windows)]
+        self.opened_identities.remove(&doc);
+        if let Some(target) = &d.bound_target {
+            self.bound_targets.remove(target);
+        }
         for id in d.views.keys() {
             self.view_docs.remove(id);
         }

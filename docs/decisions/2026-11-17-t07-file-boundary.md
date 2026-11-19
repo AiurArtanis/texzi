@@ -1,0 +1,14 @@
+# T07 本地第一段与安全保存前的接口差异
+
+本轮已实现files模块：严格UTF8/UTF16LEBE、BOM冲突与无效序列拒绝；显式Windows1252（未定义字节拒绝）；独立GBK字节形态检查，明确编码库Web映射；只读文件载入；原字节Arc保留；绑定DocId/token/不可变Body的原字节透传；从唯一Store准备保存payload，后续编辑不影响捕获内容，不发保存成功回执。4个集成Rust用例加入既有contracts入口，运行NOT_RUN。
+
+GBK936和严格GB18030-2022仍保留正式选项但返回UnsupportedStandard，不能静默替代。encoding_rs0.8.44源码明确GBK编码仅roughly matches CP936且decoder等同gb18030；GB18030对A3A0和19个PUA等存在Web例外。显式WebEncodingRs0844选项单列，绝不宣称严格标准已完成。未新增库版本或安装工具。
+
+以下为开始真实安全保存前提交原审核的具体不变量差异，未擅自修改现有Store协议：
+
+1. Body::import_utf8会剥离开头U+FEFF并设utf8_bom。需要明确的decoded-import API，区分源文件BOM与正文U+FEFF；它只解码一次，不丢首字符，不重置EOL/provenance。当前decode保留正文字符，attach遇正文首FEFF明确拒绝，不以吞字绕过。
+2. 当前Profile只承载内部UTF8序列化。编码/BOM的转换需作为可撤销序列化状态与StateToken关联，并在成功保存后原子更新file binding；不能在同token外更改目标编码却误清dirty。当前prepare拒绝目标Format变化，纯encode可产生转换字节但不作为保存成功。
+3. 当前Store仅有cancel和accept_verified_save，cancel在Replacing/Verifying后TooLate。真实IO需要失败终态API，验证operation/target/epoch/捕获token，不更改baseline、保留当前N+1及恢复副本路径，释放busy/target reservation；替换失败可能已改变名字/备份，不能一概当原文件未变。
+4. SaveAs需要文件身份协调（同一文件不可绑定另一DocId）、外变指纹及替换前后核查；TargetKey是调用者提供的逻辑key，不是已实现的Windows文件ID解析。读取只得到字节，不宣称文件读取期间无外部竞争。
+
+后续保持同目录create_new临时文件、严格编码完成后flush、替换前复核、已有文件ReplaceFileW+备份、新文件无覆盖发布、事后核查及恢复线索。不能用rename覆盖或截断原文件降级。接口差异先审，再接真实IO；本段没有写用户文件、没有真实Save/SaveAs/外变故障运行结论，不取消任何T07范围。

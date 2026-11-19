@@ -1,7 +1,17 @@
 use texzi_document::*;
+mod binding_epochs;
+mod file_codecs;
+mod file_staging;
 mod native_plans;
 mod observers;
+mod save_failure_ack;
+mod save_failures;
+mod save_scopes;
 mod views;
+#[cfg(windows)]
+mod windows_bound_staging;
+#[cfg(windows)]
+mod windows_identity;
 
 fn store(raw: &str) -> (Store, Snapshot) {
     let mut store = Store::new(HistoryBudget::default());

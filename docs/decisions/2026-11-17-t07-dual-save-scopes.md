@@ -1,0 +1,11 @@
+# T07 显式父目录/文件双域预约
+
+继3eb绑定代次继续实现必要协调。SaveScope明确parent和可选object两个域；begin_scoped_save同一个observed_write核scope/object与target一致、目录及文件占用、doc/目标/binding占用和计数后一起预约。所有scoped保存都持父目录域，已有文件还持file-ID域，不存在目标仅持父目录。当前保守串行同目录所有写操作；不同目录但同文件的硬链接仍冲突，不把new-in-directory/file-ID字符串相等当层级锁。
+
+Windows ObservedTarget新增save_scope，parent始终取实际父目录ID，已有object取实际文件ID key；仅观察不升级成发布许可。begin_save原API保留为未提供resolver的内存协议入口，不能用于最终磁盘发布；本步没有声称未scoped的任意逻辑调用也具有父目录保护。真实IO适配器必须统一走scoped入口，捕获same epoch/op/parent/file/temp对象后才可能得到后续发布凭据，此接线仍待完成。
+
+cancel与成功回执释放本操作双域；BeforeReplace无冲突失败也释放；冲突、替换后失败、OutcomeUnknown在释放活动预约后继续持两域，标记held。撞活动域Busy，撞held域UnresolvedConflict。未知scope写入失败记录/一致快照和probe恢复记录；不新增自动解锁，原恢复文档不允许close的限制保持。域租约保operation，迟到旧回执不能释放新操作；无跨Doc正文修改，不增加文本history。
+
+新增2内存Store fixture覆盖absent→同目录已有object冲突、不同目录hardlink冲突、无关目录允许、cancel后新预约及旧cancel拒绝、非法object/target零预约、失败时两域释放/保留并包含恢复快照；Windows已有两用例追加save_scope映射断言。全运行NOT_RUN，不将模拟scope或终态当真实文件系统运行。累计22新增T07命名用例未执行。
+
+本步仅内存协调和观察映射，没有实现read-open绑定、最终fileID迁移、物理temp身份/ACL、ReplaceFile或SaveAs发布、目录/文件跨进程锁、磁盘结果核验及恢复处理。recheck仍不是CAS，未知占用只在本进程Store保留；启动后恢复/硬预算未证明。原STAGE-01运行PARTIAL/失败历史保持，不扩大源码PASS为磁盘成功。

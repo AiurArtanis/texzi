@@ -1,0 +1,13 @@
+# T07 create_new 句柄与创建身份贯穿暂存
+
+承接Rusty对30c有限审核的后续条件：写后重开路径观察ID不等于证明创建时ID。原30c/998代码与报告按其固定版本保留，本次不将历史写后观察倒填为创建证明。
+
+StagingWork在create_new成功后、写入payload前，从该创建句柄记录fileID及owner/group/DACL。Windows创建句柄read+write且仅FILE_SHARE_READ，未共享write/delete；从创建开始保留该File，写入/sync_all/rewind/read_to_end都用此句柄，并再次核创建ID/描述符。File随StagedSave→BoundStaged→LockedStaged移动，不先关闭再重开。底层兼容非Windows路径也用同句柄读回，不假称非Windows文件锁行为。
+
+BoundWork仍按路径作独立观察，但必须与创建ID、创建描述符、固定payload/父目录/卷相符，不能只比bytes。BoundStaged.temporary_identity现在来自创建记录。lock_temporary不另开File，而从保留创建句柄读取复核，同一对象移动到LockedStaged；既不通过路径重建创建证明，也不释放锁去替换目标。真实发布/最终fileID尚未实现，没有Ready/permit/成功入口。
+
+另加已有目标的pre-payload权限安全闸：受绑定链用write_temp_protected把已观察目标描述符交给创建阶段；temp描述符不完全一致即SecurityMismatch，在写任何payload前失败、保空temp路径/操作责任。不宣称描述符字节相等等价完整安全策略，等价表示差异或自定义ACL会保守拒绝，仍须真正ACL保留适配。SaveAs不存在目标暂遵新目录继承，父目录描述符仍复核；没有写ACL/提权。裸write_temp仅兼容组件fixture，不作为最终真实保存入口。
+
+更新原Windows篡改fixture：同bytes不同ID替代文件先独立创建；创建句柄存续时write/移走temp/替代temp应sharing32，实际路径ID等于创建ID、payload与替代文件均保留、无permit、原目标不动；Drop后只关闭句柄、可再写恢复文件。总命名用例仍26，全部NOT_RUN。原可写temp再拒绝的旧fixture留在旧commit，不套到新生命周期。
+
+失败/Drop不自动cancel Store或删除临时文件；bound错误带原capture/已知恢复路径，owner必须明确处理。失败导致创建句柄关闭后，恢复路径不再是身份凭据，需独立核实，不能直接发布。普通cancel也不阻止已交出的worker在隔离temp里完成，仅owner的原capture结果校验拒绝旧回执。没有声称崩溃恢复持久化或任意跨进程写入保证。

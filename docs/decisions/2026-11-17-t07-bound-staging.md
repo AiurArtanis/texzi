@@ -1,0 +1,13 @@
+# T07 同操作绑定的 Windows 暂存链
+
+继efac双域预约，实际加入windows_save的BoundPrepared/BoundWork/BoundStaged。ObservedTarget.prepare_bound消耗原观察，先recheck，再从唯一Store快照读取精确Format，FileBinding编码固定payload后begin_scoped_save。对象私有字段/构造器，调用者不能把另一条capture或任意path装进结果。原prepare/write_temp作为组件兼容底层入口保留；未来真实发布仅接受此类已绑定链，不接受裸capture+路径。
+
+BoundPrepared.begin只短暂借用Store，推进WritingTemp并交单次owned worker；BoundWork.write无Store借用、无path/guard参数，原观察及父目录handle随worker持有。其固定ContentGuard来自该观察原字节/不存在状态；写前/后实际身份与原字节复核。暂存后重新观察temp，核parent ID/卷、payload精确字节以及不与原目标同文件。结果保原operation/epoch/token/body、Format/payload、原target观察、temp实际ID和父目录handle，不自动释放预约或删除恢复文件。
+
+BoundStaged.check_owner只读核Store仍活动的完整capture及WritingTemp，取消后旧结果无法核过新操作；recheck_files核原target及temp当前身份/字节。二者均不是原子CAS、ACL核实或最终发布凭据，本步没有Ready/permit/ReplaceFile/MoveFile/成功回执入口，也不把temp file ID或原预约key当作事后最终目标file ID。尚无真实磁盘binding刷新。
+
+错误携带可用的原capture和已知恢复temp路径，便于owner调用已有finish_save_failure并保全恢复线索；错误不替调用者取消/释放。prepare失败未预约时capture=None，begin/worker失败则原capture返回。未提供UI owner自动处理、drop隐式清理或重启恢复，结果丢弃可能仍留busy预约/临时文件，调用者必须显式处理；不宣称可用保存UI。
+
+新增3Windows Store/IO链fixture源码，仅独占生成目录：固定N payload及N+1继续编辑/同卷与不同temp ID/取消旧结果不核过新预约；写前外变零temp并返回capture、保外部文件；temp写后篡改拒绝且不Ready/不改target。运行NOT_RUN，累计25新增T07命名fixture未执行。Windows API/文件系统与组件行为不能由fmt或metadata判PASS；不重试缺linker、不安装工具/CI/GUI/剪贴板/远端。
+
+后续仍需临时文件锁定与ACL策略、安全替换保留竞态外部版、SaveAs无覆盖发布、最终目标身份/格式/payload核验后Store原子接受与binding刷新，以及失败核实/处置。严格GB标准映射等原范围保持，不能以当前保守拒绝当功能完成。

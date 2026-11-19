@@ -1,4 +1,6 @@
 //! C08 memory publication, bounded replay, complete-batch client recovery.
+#[cfg(test)]
+mod failure_ack_tests;
 use crate::*;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
@@ -48,11 +50,13 @@ pub enum BaselineKind {
     InitialEmpty,
     MemoryImport,
     ExternalLoadClaim,
+    VerifiedOpen,
     SavedByCaller,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unimplemented {
     NotImplemented,
+    NeedsVerification { operation: u64, target: TargetKey },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BaselineState {
@@ -62,6 +66,7 @@ pub struct BaselineState {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileAttention {
+    pub recoveries: Vec<crate::SaveFailureRecord>,
     pub needs_target: bool,
     pub binding_epoch: u64,
     pub target: Option<TargetKey>,
@@ -85,6 +90,8 @@ pub struct ActiveSaveState {
 pub enum SaveResult {
     SucceededByCaller,
     Cancelled,
+    Failed,
+    OutcomeUnknown,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveTerminal {
@@ -456,6 +463,10 @@ impl Store {
                 log: VecDeque::new(),
             },
         );
+    }
+    #[cfg(all(test, windows))]
+    pub(crate) fn test_observer_document_count(&self) -> usize {
+        self.observer.journals.len()
     }
     pub(crate) fn observed_write<T>(
         &mut self,

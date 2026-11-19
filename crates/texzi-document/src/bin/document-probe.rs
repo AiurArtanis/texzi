@@ -7,6 +7,8 @@ use std::{
 use texzi_document::*;
 #[path = "document_probe/observe.rs"]
 mod observe_probe;
+#[path = "document_probe/save.rs"]
+mod save_probe;
 type Result<T> = std::result::Result<T, String>;
 fn text<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
     v.get(k)
@@ -159,6 +161,12 @@ impl Probe {
                 .map_err(error)?;
             self.docs.insert(name, s.doc);
             return self.state(s.doc);
+        }
+        if matches!(
+            op,
+            "save_advance_simulated" | "save_fail_simulated" | "save_ack_pre_replace"
+        ) {
+            return save_probe::request(self, v);
         }
         let doc = self.doc(v)?;
         let s = self.store.snapshot(doc).map_err(error)?;

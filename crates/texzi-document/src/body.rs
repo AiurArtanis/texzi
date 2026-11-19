@@ -32,9 +32,11 @@ impl Eol {
         }
     }
 }
-/// This component strictly supports UTF-8 only; other decoders belong to T07.
+/// Body coordinates/provenance are decoded UTF-8; disk codecs are separate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Profile {
+    /// Version 2 disk format. Version 1 retains the legacy UTF-8/BOM contract.
+    pub file_format: Option<crate::files::Format>,
     pub utf8_bom: bool,
     pub version: u32,
     pub default_eol: Eol,
@@ -42,9 +44,28 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
+            file_format: None,
             utf8_bom: false,
             version: 1,
             default_eol: Eol::CrLf,
+        }
+    }
+}
+impl Profile {
+    pub(crate) fn valid(self) -> bool {
+        match (self.version, self.file_format) {
+            (1, None) => true,
+            (2, Some(f)) => {
+                !self.utf8_bom
+                    && (!f.bom
+                        || matches!(
+                            f.encoding,
+                            crate::files::Encoding::Utf8
+                                | crate::files::Encoding::Utf16Le
+                                | crate::files::Encoding::Utf16Be
+                        ))
+            }
+            _ => false,
         }
     }
 }
@@ -69,6 +90,10 @@ impl Body {
         } else {
             raw
         };
+        Self::import_decoded(raw, profile)
+    }
+    /// Text is already decoded: a leading FEFF is content, never a BOM signature.
+    pub fn import_decoded(raw: &str, profile: Profile) -> Self {
         let mut logical = String::with_capacity(raw.len());
         let mut codes = String::new();
         let mut chars = raw.chars().peekable();
