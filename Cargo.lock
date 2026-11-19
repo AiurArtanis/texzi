@@ -2417,6 +2417,7 @@ dependencies = [
  "nsh-platform-windows",
  "serde_json",
  "texzi-document",
+ "tokio",
  "unicode-segmentation",
 ]
 

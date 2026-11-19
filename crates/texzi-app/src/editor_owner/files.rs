@@ -2,20 +2,42 @@ use super::*;
 use doc::files::{
     LoadedBytes,
     windows_identity::{IdentityError, ObservedTarget, OpenOutcome},
-    windows_save::{BoundFailure, BoundIssue, LockFailure, PublishFailure},
+    windows_save::{
+        BoundFailure, BoundIssue, LockFailure, PublishFailure, recovery::PublicationRecovery,
+    },
 };
 use std::path::{Path, PathBuf};
 
 pub(super) struct FileState {
     binding: Option<doc::files::FileBinding>,
     recovery: Option<Recovery>,
+    #[cfg(test)]
+    before_publish: Option<BeforePublish>,
 }
+
+#[cfg(test)]
+type BeforePublish = Box<dyn FnOnce(&doc::SaveCapture) + Send>;
 
 // Keep the original handles alive while the owner has an unresolved failure.
 enum Recovery {
-    Write { _failure: BoundFailure },
-    Lock { _failure: LockFailure },
-    Publish { _failure: PublishFailure },
+    Write {
+        _failure: BoundFailure,
+    },
+    Lock {
+        _failure: LockFailure,
+    },
+    Publish {
+        _failure: PublishFailure,
+    },
+    WorkerLost {
+        _publications: Vec<PublicationRecovery>,
+    },
+}
+
+enum StagingFailure {
+    Write(BoundFailure),
+    Lock(LockFailure),
+    Prepare(PublishFailure),
 }
 
 impl FileState {
@@ -23,6 +45,8 @@ impl FileState {
         Self {
             binding,
             recovery: None,
+            #[cfg(test)]
+            before_publish: None,
         }
     }
 
@@ -91,10 +115,15 @@ impl NativeView {
         self.owner.files.borrow().recovery.is_some()
     }
 
+    #[cfg(test)]
+    pub(crate) fn before_next_publication(&self, hook: BeforePublish) {
+        self.owner.files.borrow_mut().before_publish = Some(hook);
+    }
+
     // The product has a verified new-target publisher. For a dirty bound
     // file, run current-target guards and stop before staging an overwrite.
-    pub fn check_current_save(&self, path: &Path) -> Result<(), String> {
-        let target = ObservedTarget::inspect(path).map_err(|e| format!("{e:?}"))?;
+    pub async fn check_current_save(&self, path: PathBuf) -> Result<(), String> {
+        let target = inspect_destination(path).await?;
         let files = self.owner.files.borrow();
         if files.recovery.is_some() {
             return Err("请先检查上次保存的恢复结果".into());
@@ -108,59 +137,159 @@ impl NativeView {
         Err("此候选版本尚未提供安全的原位替换。请另存为一个新文件。".into())
     }
 
-    pub fn save_new_destination(&self, path: &Path) -> Result<(), String> {
-        let target = ObservedTarget::inspect(path).map_err(|e| format!("{e:?}"))?;
+    pub async fn save_new_destination(&self, path: PathBuf) -> Result<(), String> {
+        let target = inspect_destination(path).await?;
         if target.version().is_some() {
             return Err("目标文件已存在。请选择新文件名。".into());
         }
-        let mut files = self.owner.files.borrow_mut();
-        if files.recovery.is_some() {
-            return Err("请先检查上次保存的恢复结果".into());
+        let (capture, work) = {
+            let mut files = self.owner.files.borrow_mut();
+            if files.recovery.is_some() {
+                return Err("请先检查上次保存的恢复结果".into());
+            }
+            let binding = files.binding.as_ref().ok_or("缺少文档绑定")?;
+            let mut store = self.owner.store.borrow_mut();
+            let prepared = target
+                .prepare_save_as(binding, &mut store)
+                .map_err(|e| format!("{e:?}"))?;
+            let capture = prepared.capture().clone();
+            let work = prepared.begin(&mut store).map_err(|failure| {
+                retain_staging_failure(
+                    &mut files,
+                    &mut store,
+                    &capture,
+                    StagingFailure::Write(failure),
+                )
+            })?;
+            (capture, work)
+        };
+        let staged = blocking(move || {
+            let staged = work.write().map_err(StagingFailure::Write)?;
+            let locked = staged.lock_temporary().map_err(StagingFailure::Lock)?;
+            locked
+                .prepare_new_owner_only()
+                .map_err(StagingFailure::Prepare)
+        })
+        .await
+        .map_err(|error| self.record_lost_save_worker(&capture, false, error.to_string()))?;
+        let permitted = {
+            let mut files = self.owner.files.borrow_mut();
+            let mut store = self.owner.store.borrow_mut();
+            let ready = staged.map_err(|failure| {
+                retain_staging_failure(&mut files, &mut store, &capture, failure)
+            })?;
+            ready
+                .permit(&mut store)
+                .map_err(|failure| files.retain_publication(failure, &mut store))?
+        };
+        #[cfg(test)]
+        let before_publish = self.owner.files.borrow_mut().before_publish.take();
+        let published = blocking(move || {
+            #[cfg(test)]
+            if let Some(hook) = before_publish {
+                hook(permitted.capture());
+            }
+            permitted.run()
+        })
+        .await
+        .map_err(|error| self.record_lost_save_worker(&capture, true, error.to_string()))?;
+        {
+            let mut files = self.owner.files.borrow_mut();
+            let mut store = self.owner.store.borrow_mut();
+            let committed = published
+                .and_then(|published| published.accept(&mut store))
+                .map_err(|failure| files.retain_publication(failure, &mut store))?;
+            files.binding = Some(committed.binding);
         }
-        let binding = files.binding.as_ref().ok_or("缺少文档绑定")?;
+        self.owner.changed.update(|revision| *revision += 1);
+        Ok(())
+    }
+
+    fn record_lost_save_worker(
+        &self,
+        capture: &doc::SaveCapture,
+        permitted: bool,
+        error: String,
+    ) -> String {
         let mut store = self.owner.store.borrow_mut();
-        let prepared = target
-            .prepare_save_as(binding, &mut store)
-            .map_err(|e| format!("{e:?}"))?;
-        let capture = prepared.capture().clone();
-        let staged = prepared.begin(&mut store).and_then(|work| work.write());
-        let staged = staged.map_err(|failure| {
+        let publications = if permitted {
+            store.drain_dropped_publications()
+        } else {
+            Vec::new()
+        };
+        let details = format!("保存后台任务未返回：{error}");
+        let current = publications
+            .iter()
+            .find(|notice| notice.capture().operation == capture.operation);
+        let recorded = if let Some(notice) = current {
+            notice.owner_error.clone().map_or(Ok(()), Err)
+        } else {
+            store.finish_save_failure(
+                capture,
+                doc::SaveFailure {
+                    outcome: if permitted {
+                        doc::SaveFailureOutcome::OutcomeUnknown
+                    } else {
+                        doc::SaveFailureOutcome::BeforeReplace
+                    },
+                    conflict: permitted,
+                    os_error: None,
+                    message: details.clone(),
+                    recovery_paths: Vec::new(),
+                },
+            )
+        };
+        self.owner.files.borrow_mut().recovery = Some(Recovery::WorkerLost {
+            _publications: publications,
+        });
+        match recorded {
+            Ok(()) => format!("{details}\n已记录恢复状态，文档仍保留。"),
+            Err(error) => format!("{details}\n无法记录恢复状态：{error:?}。文档仍保留。"),
+        }
+    }
+}
+
+async fn inspect_destination(path: PathBuf) -> Result<ObservedTarget, String> {
+    blocking(move || ObservedTarget::inspect(&path))
+        .await
+        .map_err(|error| format!("无法完成保存路径检查：{error}"))?
+        .map_err(|error| format!("{error:?}"))
+}
+
+fn retain_staging_failure(
+    files: &mut FileState,
+    store: &mut doc::Store,
+    capture: &doc::SaveCapture,
+    failure: StagingFailure,
+) -> String {
+    match failure {
+        StagingFailure::Write(failure) => {
             let conflict = matches!(failure.issue, BoundIssue::Identity(IdentityError::Changed));
             let path = failure.recovery_temp.clone();
             let details = format!("{failure:?}");
             files.retain(
                 Recovery::Write { _failure: failure },
-                &mut store,
-                &capture,
+                store,
+                capture,
                 conflict,
                 path,
                 details,
             )
-        })?;
-        let locked = staged.lock_temporary().map_err(|failure| {
+        }
+        StagingFailure::Lock(failure) => {
             let conflict = matches!(failure.issue, IdentityError::Changed);
             let path = Some(failure.staged.recovery_temp().to_owned());
             let details = format!("{failure:?}");
             files.retain(
                 Recovery::Lock { _failure: failure },
-                &mut store,
-                &capture,
+                store,
+                capture,
                 conflict,
                 path,
                 details,
             )
-        })?;
-        let committed = locked
-            .prepare_new_owner_only()
-            .and_then(|ready| ready.permit(&mut store))
-            .and_then(|permitted| permitted.run())
-            .and_then(|published| published.accept(&mut store))
-            .map_err(|failure| files.retain_publication(failure, &mut store))?;
-        files.binding = Some(committed.binding);
-        drop(store);
-        drop(files);
-        self.owner.changed.update(|revision| *revision += 1);
-        Ok(())
+        }
+        StagingFailure::Prepare(failure) => files.retain_publication(failure, store),
     }
 }
 
@@ -170,6 +299,9 @@ mod tests {
 
     #[test]
     fn save_as_preserves_format_updates_shared_dirty_and_rechecks_bound_file() {
+        let worker = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         let runtime = nsh_core::element::Runtime::default();
         let _entered = runtime.enter();
         let dir = std::env::temp_dir().join(format!(
@@ -201,10 +333,16 @@ mod tests {
             )
             .unwrap();
         assert!(source.is_dirty().unwrap());
-        assert!(source.save_new_destination(&original).is_err());
+        assert!(
+            worker
+                .block_on(source.save_new_destination(original.clone()))
+                .is_err()
+        );
         assert_eq!(std::fs::read(&original).unwrap(), bytes);
         assert!(rich.is_dirty().unwrap());
-        rich.save_new_destination(&destination).unwrap();
+        worker
+            .block_on(rich.save_new_destination(destination.clone()))
+            .unwrap();
         assert!(!rich.is_dirty().unwrap());
         assert!(!source.is_dirty().unwrap());
         assert_eq!(
@@ -229,14 +367,15 @@ mod tests {
             )
             .unwrap();
         assert!(
-            source
-                .check_current_save(&destination)
+            worker
+                .block_on(source.check_current_save(destination.clone()))
                 .unwrap_err()
                 .contains("原位替换")
         );
         std::fs::write(&destination, b"external").unwrap();
         assert!(
-            rich.check_current_save(&destination)
+            worker
+                .block_on(rich.check_current_save(destination.clone()))
                 .unwrap_err()
                 .contains("Changed")
         );

@@ -101,6 +101,9 @@ impl RichControlSet {
     }
 }
 #[cfg(test)]
+#[path = "save_overlap_tests.rs"]
+mod save_overlap_tests;
+#[cfg(test)]
 #[path = "shell_markdown_tests.rs"]
 mod shell_markdown_tests;
 #[cfg(test)]
@@ -640,7 +643,7 @@ impl Shell {
         });
     }
     async fn save_documents(
-        &self,
+        self: &Rc<Self>,
         targets: Vec<Rc<Document>>,
         save_as: bool,
     ) -> Result<bool, String> {
@@ -652,7 +655,7 @@ impl Shell {
             let original = doc.path.get();
             if !save_as && let Some(path) = &original {
                 if doc.source.is_dirty()? {
-                    doc.source.check_current_save(path)?;
+                    doc.source.check_current_save(path.clone()).await?;
                 }
                 self.notice.set(format!("{} 没有未保存的修改", doc.name()));
                 continue;
@@ -696,11 +699,22 @@ impl Shell {
             let Some(path) = answer.await? else {
                 return Ok(false);
             };
-            doc.source.save_new_destination(&path)?;
+            // Keep the save command and close handlers gated until the worker
+            // returns, while the normal editor input regains focus.
+            self.restore_editor_focus();
+            self.notice.set(format!("正在保存 {}", doc.name()));
+            doc.source.save_new_destination(path.clone()).await?;
             self.remember(&path);
             doc.path.set(Some(path));
-            self.notice
-                .set(format!("已保存 {} · 仅所有者和 SYSTEM 可访问", doc.name()));
+            let newer = if doc.source.is_dirty().unwrap_or(true) {
+                " · 仍有较新的未保存修改"
+            } else {
+                ""
+            };
+            self.notice.set(format!(
+                "已保存 {} · 仅所有者和 SYSTEM 可访问{newer}",
+                doc.name()
+            ));
         }
         Ok(true)
     }
@@ -1604,7 +1618,10 @@ fn groups(s: Rc<Shell>) -> AnyElement {
 }
 
 pub fn view_shell() -> impl IntoElement {
-    let s = Shell::new();
+    render_shell(Shell::new())
+}
+
+fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let toolbar = s.clone();
     let tabs = s.clone();
     let side = s.clone();
