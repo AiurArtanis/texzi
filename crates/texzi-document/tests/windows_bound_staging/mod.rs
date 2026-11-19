@@ -39,6 +39,75 @@ fn loaded(store: &mut Store) -> (Snapshot, FileBinding) {
         .attach(store)
         .unwrap()
 }
+
+#[test]
+fn creation_default_native_save_as_preserves_the_directory_creation_descriptor() {
+    let dir = fixture();
+    let original = dir.join("original.txt");
+    let destination = dir.join("saved.txt");
+    fs::write(&original, b"A").unwrap();
+    let mut store = Store::new(HistoryBudget::default());
+    let OpenOutcome::Imported { snapshot, binding } = ObservedTarget::inspect(&original)
+        .unwrap()
+        .open_existing(None)
+        .unwrap()
+        .attach(&mut store)
+        .unwrap()
+    else {
+        unreachable!();
+    };
+    let n = input(&mut store, &snapshot, 1, "B");
+    let staged = ObservedTarget::inspect(&destination)
+        .unwrap()
+        .prepare_save_as(&binding, &mut store)
+        .unwrap()
+        .begin(&mut store)
+        .unwrap()
+        .write()
+        .unwrap();
+    let expected = staged.creation_security().clone();
+    let private = staged.temporary_security().clone();
+    let temporary = staged.temporary_identity();
+    let published = staged
+        .lock_temporary()
+        .unwrap()
+        .prepare_new_creation_default()
+        .unwrap()
+        .permit(&mut store)
+        .unwrap()
+        .run()
+        .unwrap_or_else(|failure| {
+            if let Ok(actual) = failure.current_version() {
+                let before = expected.as_bytes();
+                let after = actual.security.as_bytes();
+                let different: Vec<_> = before
+                    .iter()
+                    .zip(after)
+                    .enumerate()
+                    .filter_map(|(index, (left, right))| (left != right).then_some(index))
+                    .collect();
+                eprintln!(
+                    "CreationDefault diagnostic: expected_len={}, actual_len={}, expected_control={:02X?}, actual_control={:02X?}, differing_offsets={different:?}, private_match={}, identity_match={}, bytes_match={}, at_destination={}",
+                    before.len(),
+                    after.len(),
+                    &before[2..4],
+                    &after[2..4],
+                    actual.security == private,
+                    actual.identity == temporary,
+                    actual.bytes.as_ref() == b"AB",
+                    failure.current_path().is_ok_and(|path| path.file_name() == destination.file_name()),
+                );
+            }
+            panic!("{failure:?}");
+        });
+    let committed = published.accept(&mut store).unwrap();
+    assert_eq!(committed.saved_snapshot.token, n.token);
+    assert_eq!(committed.version.identity, temporary);
+    assert_eq!(committed.version.security, expected);
+    assert_eq!(fs::read(&original).unwrap(), b"A");
+    assert_eq!(fs::read(&destination).unwrap(), b"AB");
+    assert!(!store.dirty(n.doc).unwrap());
+}
 #[test]
 fn bound_worker_retains_target_format_payload_and_rejects_cancelled_late_result() {
     let dir = fixture();
