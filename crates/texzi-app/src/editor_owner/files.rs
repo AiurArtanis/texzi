@@ -12,13 +12,15 @@ pub(super) struct FileState {
     binding: Option<doc::files::FileBinding>,
     recovery: Option<Recovery>,
     #[cfg(test)]
+    after_staging: Option<fn()>,
+    #[cfg(test)]
     before_publish: Option<BeforePublish>,
 }
 
 #[cfg(test)]
 type BeforePublish = Box<dyn FnOnce(&doc::SaveCapture) + Send>;
 
-// Keep the original handles alive while the owner has an unresolved failure.
+// Keep recovery resources that reached the owner while a failure is unresolved.
 enum Recovery {
     Write {
         _failure: BoundFailure,
@@ -45,6 +47,8 @@ impl FileState {
         Self {
             binding,
             recovery: None,
+            #[cfg(test)]
+            after_staging: None,
             #[cfg(test)]
             before_publish: None,
         }
@@ -163,8 +167,14 @@ impl NativeView {
             })?;
             (capture, work)
         };
+        #[cfg(test)]
+        let after_staging = self.owner.files.borrow_mut().after_staging.take();
         let staged = blocking(move || {
             let staged = work.write().map_err(StagingFailure::Write)?;
+            #[cfg(test)]
+            if let Some(hook) = after_staging {
+                hook();
+            }
             let locked = staged.lock_temporary().map_err(StagingFailure::Lock)?;
             locked
                 .prepare_new_owner_only()
@@ -296,6 +306,169 @@ fn retain_staging_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn observed_save(view: &NativeView) -> doc::GlobalMetadata {
+        let mut store = view.owner.store.borrow_mut();
+        let id = store.view(view.view).unwrap().doc;
+        let (observed, subscription) = store
+            .observe_and_subscribe(id, doc::ObserverScope::new(vec![view.view]), 8)
+            .unwrap();
+        store.unsubscribe(&subscription).unwrap();
+        observed.state.global.metadata.clone()
+    }
+
+    #[test]
+    fn save_worker_panic_before_permit_records_failure_without_retained_resources() {
+        assert_worker_panic(doc::SaveStage::WritingTemp);
+    }
+
+    #[test]
+    fn save_worker_panic_after_permit_retains_registry_receipt_and_records_unknown() {
+        assert_worker_panic(doc::SaveStage::Replacing);
+    }
+
+    fn assert_worker_panic(stage: doc::SaveStage) {
+        let worker = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let runtime = nsh_core::element::Runtime::default();
+        let _entered = runtime.enter();
+        let dir = std::env::temp_dir().join(format!(
+            "texzi-save-worker-{}-{:?}-{}",
+            std::process::id(),
+            stage,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let destination = dir.join("saved.txt");
+        let source = NativeView::new_file();
+        let blank = source.snapshot().unwrap();
+        source
+            .edit(
+                blank.revision,
+                blank.view_epoch,
+                vec![(0..0, "N".into())],
+                ExternalSelections {
+                    primary: 0,
+                    ranges: vec![(1, 1)],
+                },
+                ExternalEditKind::Typing,
+            )
+            .unwrap();
+        let before = observed_save(&source);
+        let snapshot =
+            source.inspect(|store, view| store.snapshot(store.view(view).unwrap().doc).unwrap());
+        match stage {
+            doc::SaveStage::WritingTemp => {
+                source.owner.files.borrow_mut().after_staging = Some(|| {
+                    panic!("test panic after staging, before publication permit");
+                });
+            }
+            doc::SaveStage::Replacing => source.before_next_publication(Box::new(|_| {
+                panic!("test panic after publication permit, before publish");
+            })),
+            _ => unreachable!(),
+        }
+        let error = worker
+            .block_on(source.save_new_destination(destination.clone()))
+            .unwrap_err();
+        assert!(error.contains("保存后台任务未返回"));
+        assert!(error.contains("已记录恢复状态"));
+        assert!(source.needs_save_recovery());
+        assert!(!destination.exists());
+        let after = observed_save(&source);
+        assert!(after.dirty);
+        assert_eq!(after.baseline, before.baseline);
+        assert_eq!(
+            after.attention.binding_epoch,
+            before.attention.binding_epoch
+        );
+        assert_eq!(after.attention.target, before.attention.target);
+        assert_eq!(after.history.undo_groups, before.history.undo_groups);
+        assert_eq!(after.history.redo_groups, before.history.redo_groups);
+        assert_eq!(
+            after.history.last_undo_group,
+            before.history.last_undo_group
+        );
+        assert!(after.save.active.is_none());
+        let [failure] = after.attention.recoveries.as_slice() else {
+            panic!("expected exactly one save failure");
+        };
+        assert_eq!(failure.stage, stage);
+        assert_eq!(failure.revision, snapshot.revision);
+        assert_eq!(failure.token, snapshot.token);
+        assert_eq!(failure.binding_epoch, before.attention.binding_epoch);
+        let terminal = after.save.last_terminal.unwrap();
+        assert_eq!(terminal.operation, failure.operation);
+        let registry = source.inspect(|store, _| store.retained_publication_recoveries());
+        {
+            let files = source.owner.files.borrow();
+            let Some(Recovery::WorkerLost { _publications }) = &files.recovery else {
+                panic!("expected retained worker failure state");
+            };
+            if stage == doc::SaveStage::WritingTemp {
+                assert_eq!(terminal.result, doc::SaveResult::Failed);
+                assert_eq!(
+                    failure.detail.outcome,
+                    doc::SaveFailureOutcome::BeforeReplace
+                );
+                assert!(!failure.detail.conflict);
+                assert!(failure.detail.recovery_paths.is_empty());
+                assert!(registry.is_empty() && _publications.is_empty());
+            } else {
+                assert_eq!(terminal.result, doc::SaveResult::OutcomeUnknown);
+                assert_eq!(
+                    failure.detail.outcome,
+                    doc::SaveFailureOutcome::OutcomeUnknown
+                );
+                assert!(failure.detail.conflict);
+                assert!(
+                    failure
+                        .detail
+                        .recovery_paths
+                        .iter()
+                        .any(|path| path.file_name() == destination.file_name())
+                );
+                assert!(
+                    failure
+                        .detail
+                        .recovery_paths
+                        .iter()
+                        .any(|path| path.file_name() != destination.file_name())
+                );
+                assert_eq!(registry.len(), 1);
+                assert_eq!(_publications.len(), 1);
+                for receipt in [&registry[0], &_publications[0]] {
+                    assert!(receipt.terminal_recorded && receipt.owner_error.is_none());
+                    assert_eq!(receipt.capture().operation, failure.operation);
+                    assert_eq!(receipt.capture().binding_epoch, failure.binding_epoch);
+                    assert_eq!(receipt.capture().snapshot.token, failure.token);
+                    assert_eq!(receipt.capture().target, failure.target);
+                }
+            }
+        }
+        assert_eq!(source.text().unwrap(), "N");
+        assert!(
+            worker
+                .block_on(source.save_new_destination(destination.clone()))
+                .unwrap_err()
+                .contains("请先检查上次保存的恢复结果")
+        );
+        assert!(!destination.exists());
+        eprintln!(
+            "save worker panic: stage={stage:?}, terminal={:?}, dirty={}, recovery_paths={}, registry_receipts={}",
+            terminal.result,
+            after.dirty,
+            failure.detail.recovery_paths.len(),
+            registry.len(),
+        );
+        drop(registry);
+        drop(source);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn save_as_preserves_format_updates_shared_dirty_and_rechecks_bound_file() {
