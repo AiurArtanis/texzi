@@ -62,6 +62,8 @@ mod rich_images;
 mod rich_owner;
 #[cfg(windows)]
 mod rich_projection;
+#[cfg(all(windows, feature = "save-overlap-diagnostics"))]
+mod save_overlap_diagnostics;
 #[cfg(windows)]
 mod startup_fault;
 #[cfg(windows)]
@@ -141,6 +143,11 @@ fn main() -> std::process::ExitCode {
     log::set_max_level(log::LevelFilter::Info);
     #[cfg(windows)]
     {
+        #[cfg(feature = "save-overlap-diagnostics")]
+        if let Err(error) = save_overlap_diagnostics::configure() {
+            log::error!("Cannot arm TX07 save overlap diagnosis: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
         if std::env::args_os().any(|arg| arg == "--tx00-fail-window-create") {
             if let Err(error) = startup_fault::arm() {
                 log::error!("Cannot arm TX00 startup fixture (not an NSH failure result): {error}");

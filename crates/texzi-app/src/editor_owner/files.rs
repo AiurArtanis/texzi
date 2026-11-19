@@ -146,6 +146,8 @@ impl NativeView {
         if target.version().is_some() {
             return Err("目标文件已存在。请选择新文件名。".into());
         }
+        #[cfg(feature = "save-overlap-diagnostics")]
+        let gate = crate::save_overlap_diagnostics::for_destination(&target);
         let (capture, work) = {
             let mut files = self.owner.files.borrow_mut();
             if files.recovery.is_some() {
@@ -166,6 +168,25 @@ impl NativeView {
                 )
             })?;
             (capture, work)
+        };
+        #[cfg(feature = "save-overlap-diagnostics")]
+        let trace = if let Some(gate) = gate {
+            match gate
+                .wait(&capture, || self.overlap_observation(capture.snapshot.doc))
+                .await
+            {
+                Ok(trace) => trace,
+                Err(reason) => {
+                    self.owner
+                        .store
+                        .borrow_mut()
+                        .cancel_save(&capture)
+                        .map_err(err)?;
+                    return Err(reason);
+                }
+            }
+        } else {
+            None
         };
         #[cfg(test)]
         let after_staging = self.owner.files.borrow_mut().after_staging.take();
@@ -212,7 +233,27 @@ impl NativeView {
             files.binding = Some(committed.binding);
         }
         self.owner.changed.update(|revision| *revision += 1);
+        #[cfg(feature = "save-overlap-diagnostics")]
+        if let Some(trace) = trace
+            && let Ok(state) = self.overlap_observation(capture.snapshot.doc)
+        {
+            trace.complete(state);
+        }
         Ok(())
+    }
+
+    #[cfg(feature = "save-overlap-diagnostics")]
+    fn overlap_observation(
+        &self,
+        id: doc::DocId,
+    ) -> Result<crate::save_overlap_diagnostics::EditState, String> {
+        let store = self.owner.store.borrow();
+        let current = store.snapshot(id).map_err(err)?;
+        Ok(crate::save_overlap_diagnostics::EditState {
+            revision: current.revision,
+            dirty: store.dirty(id).map_err(err)?,
+            fixture_edit: current.body.len_bytes() == 2 && current.body.to_utf8() == b"NX",
+        })
     }
 
     fn record_lost_save_worker(
@@ -315,6 +356,59 @@ mod tests {
             .unwrap();
         store.unsubscribe(&subscription).unwrap();
         observed.state.global.metadata.clone()
+    }
+
+    #[cfg(feature = "save-overlap-diagnostics")]
+    #[test]
+    fn diagnostic_gate_rejects_premature_release_before_writing_and_is_one_shot() {
+        let worker = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let runtime = nsh_core::element::Runtime::default();
+        let _entered = runtime.enter();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("texzi-tx07-overlap-{nonce:032x}"));
+        std::fs::create_dir(&dir).unwrap();
+        crate::save_overlap_diagnostics::arm_test_fixture(&dir).unwrap();
+        std::fs::File::create(dir.join("release")).unwrap();
+        let target = dir.join("capture.txt");
+        let source = NativeView::new_file();
+        let blank = source.snapshot().unwrap();
+        source
+            .edit(
+                blank.revision,
+                blank.view_epoch,
+                vec![(0..0, "N".into())],
+                ExternalSelections {
+                    primary: 0,
+                    ranges: vec![(1, 1)],
+                },
+                ExternalEditKind::Typing,
+            )
+            .unwrap();
+        assert!(
+            worker
+                .block_on(source.save_new_destination(target.clone()))
+                .unwrap_err()
+                .contains("没有已确认的下一修订")
+        );
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let retained = observed_save(&source);
+        assert!(retained.dirty && retained.attention.recoveries.is_empty());
+        assert!(retained.save.active.is_none());
+        assert_eq!(
+            retained.save.last_terminal.unwrap().result,
+            doc::SaveResult::Cancelled
+        );
+        worker
+            .block_on(source.save_new_destination(target.clone()))
+            .unwrap();
+        assert_eq!(std::fs::read(target).unwrap(), b"N");
+        assert!(!source.is_dirty().unwrap());
     }
 
     #[test]

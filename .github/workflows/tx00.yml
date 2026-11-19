@@ -8,6 +8,10 @@ on:
         description: 'Build only the reviewed fixed 5a14645 independent oracle'
         type: boolean
         default: false
+      save_overlap_diagnostics:
+        description: 'Build a private T07 save-overlap diagnostic package'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -40,11 +44,13 @@ jobs:
           persist-credentials: false
       - name: Build locked private test candidate
         shell: pwsh
-        run: ./scripts/build-candidate.ps1
+        env:
+          TX07_SAVE_OVERLAP_DIAGNOSTICS: ${{ inputs.save_overlap_diagnostics && 'true' || 'false' }}
+        run: ./scripts/build-candidate.ps1 -SaveOverlapDiagnostics:($env:TX07_SAVE_OVERLAP_DIAGNOSTICS -eq 'true')
       - name: Upload complete candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: texzi-tx00-${{ github.sha }}
+          name: texzi-tx00-${{ github.sha }}${{ inputs.save_overlap_diagnostics && '-save-overlap-diag' || '' }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
