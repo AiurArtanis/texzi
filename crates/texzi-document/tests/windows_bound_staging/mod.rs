@@ -103,7 +103,21 @@ fn creation_default_native_save_as_preserves_the_directory_creation_descriptor()
     let committed = published.accept(&mut store).unwrap();
     assert_eq!(committed.saved_snapshot.token, n.token);
     assert_eq!(committed.version.identity, temporary);
-    assert_eq!(committed.version.security, expected);
+    let before = expected.as_bytes();
+    let after = committed.version.security.as_bytes();
+    assert_eq!(before.len(), after.len());
+    if before != after {
+        assert_eq!(before[..3], after[..3]);
+        assert_eq!(before[3] ^ after[3], 0x04);
+        assert_eq!(after[3] & 0x04, 0x04);
+        assert_eq!(before[4..], after[4..]);
+    }
+    eprintln!(
+        "CreationDefault verified: expected_control={:02X?}, persisted_control={:02X?}, security_equal_except_stamp={}",
+        &before[2..4],
+        &after[2..4],
+        before != after,
+    );
     assert_eq!(fs::read(&original).unwrap(), b"A");
     assert_eq!(fs::read(&destination).unwrap(), b"AB");
     assert!(!store.dirty(n.doc).unwrap());

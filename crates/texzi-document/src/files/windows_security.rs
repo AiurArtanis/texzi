@@ -220,6 +220,41 @@ impl SecurityDescriptor {
     pub(super) fn validate_creation_dacl_restore(&self) -> io::Result<()> {
         self.creation_dacl_restore_parts().map(|_| ())
     }
+    /// SetSecurityInfo can mark an unprotected creation DACL as auto-inherited
+    /// when it restores the same owner, group and ACE bytes. Only that stamp
+    /// may be added. Protection, ACE inheritance flags and order stay exact.
+    pub(super) fn matches_restored_creation(&self, actual: &Self) -> bool {
+        if self == actual {
+            return true;
+        }
+        let start = std::mem::offset_of!(SECURITY_DESCRIPTOR_RELATIVE, Control);
+        let end = start + std::mem::size_of::<u16>();
+        let expected = self.as_bytes();
+        let actual = actual.as_bytes();
+        let expected_control = u16::from_le_bytes(expected[start..end].try_into().unwrap());
+        let actual_control = u16::from_le_bytes(actual[start..end].try_into().unwrap());
+        expected_control & (SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED) == 0
+            && actual_control == (expected_control | SE_DACL_AUTO_INHERITED)
+            && expected[..start] == actual[..start]
+            && expected[end..] == actual[end..]
+    }
+    #[cfg(test)]
+    pub(super) fn with_auto_inherited_for_test(&self, enabled: bool) -> Self {
+        let mut copy = self.clone();
+        // SAFETY: this is an aligned copy of a live, validated self-relative
+        // descriptor. Alter only the DACL control stamp for the fixture.
+        assert_ne!(
+            unsafe {
+                SetSecurityDescriptorControl(
+                    copy.storage.as_mut_ptr().cast(),
+                    SE_DACL_AUTO_INHERITED,
+                    if enabled { SE_DACL_AUTO_INHERITED } else { 0 },
+                )
+            },
+            0
+        );
+        copy
+    }
     /// Internal caller must retain the original FILE_SHARE_NONE create_new File
     /// and prove that its no-overwrite publication succeeded before this call.
     /// This does not authorize an arbitrary path or an existing document. Only

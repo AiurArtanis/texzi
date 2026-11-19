@@ -40,6 +40,14 @@ impl NewFileSecurity {
             Self::CreationDefault => resources.creation_security(),
         }
     }
+
+    fn matches_published(self, resources: &LockedStaged, actual: &SecurityDescriptor) -> bool {
+        let expected = self.expected(resources);
+        match self {
+            Self::OwnerOnly => expected == actual,
+            Self::CreationDefault => expected.matches_restored_creation(actual),
+        }
+    }
 }
 impl From<io::Error> for PublishIssue {
     fn from(e: io::Error) -> Self {
@@ -468,7 +476,9 @@ impl NewPublication {
             if super::super::windows_identity::volume_path(&file)? != path
                 || version.identity != self.resources.staged.temporary_identity()
                 || version.bytes.as_ref() != self.resources.payload()
-                || &version.security != self.security_policy.expected(&self.resources)
+                || !self
+                    .security_policy
+                    .matches_published(&self.resources, &version.security)
                 || self.capture().snapshot.body.profile.file_format != Some(format)
             {
                 return Err(PublishIssue::VerificationMismatch);
@@ -522,7 +532,9 @@ impl PublishedNew {
             self.resources.staged.recheck_historical_source()?;
             self.resources.staged.observed.recheck_parent()?;
             let mut file = self.resources.staged.staged.created_file()?;
-            if &self.version.security != self.security_policy.expected(&self.resources)
+            if !self
+                .security_policy
+                .matches_published(&self.resources, &self.version.security)
                 || super::super::windows_identity::read_version_handle(&mut file)? != self.version
             {
                 return Err(PublishIssue::VerificationMismatch);

@@ -192,6 +192,39 @@ fn newer_edit(store: &mut Store, n: &crate::Snapshot) -> crate::Snapshot {
 }
 
 #[test]
+fn creation_default_publishes_when_windows_adds_legacy_dacl_inheritance_stamp() {
+    let CreationFixture {
+        target,
+        mut store,
+        n,
+        mut locked,
+        created,
+        private_probe,
+        ..
+    } = creation_fixture("legacy-inheritance-stamp");
+    drop(private_probe);
+    let legacy = created.security.with_auto_inherited_for_test(false);
+    locked.set_creation_security_for_test(legacy.clone());
+    let committed = locked
+        .prepare_new_creation_default()
+        .unwrap()
+        .permit(&mut store)
+        .unwrap()
+        .run()
+        .unwrap()
+        .accept(&mut store)
+        .unwrap();
+    assert_ne!(committed.version.security, legacy);
+    assert_eq!(
+        committed.version.security,
+        legacy.with_auto_inherited_for_test(true)
+    );
+    assert_eq!(committed.version.identity, created.identity);
+    assert_eq!(fs::read(&target).unwrap(), CAPTURED_UTF16);
+    assert!(!store.dirty(n.doc).unwrap());
+}
+
+#[test]
 fn creation_default_publishes_captured_descriptor_and_binds_n_without_reverting_newer_edit() {
     let CreationFixture {
         target,

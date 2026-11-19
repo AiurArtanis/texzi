@@ -131,3 +131,18 @@ fn creation_dacl_restore_accepts_present_empty_acl() {
         assert_eq!(flags, DACL_SECURITY_INFORMATION | inheritance);
     }
 }
+
+#[test]
+fn creation_dacl_verification_accepts_only_an_added_auto_inherited_stamp() {
+    let captured = assert_creation_dacl_representation(TestCreationDacl::Empty);
+    let stamped = captured.with_auto_inherited_for_test(true);
+    assert_ne!(stamped, captured);
+    assert!(captured.matches_restored_creation(&captured));
+    assert!(captured.matches_restored_creation(&stamped));
+    assert!(!stamped.matches_restored_creation(&captured));
+    assert!(!captured.matches_restored_creation(&stamped.with_flipped_dacl_protection().unwrap()));
+    let protected = captured.with_flipped_dacl_protection().unwrap();
+    assert!(!protected.matches_restored_creation(&protected.with_auto_inherited_for_test(true)));
+    let null = assert_creation_dacl_representation(TestCreationDacl::Null);
+    assert!(!null.matches_restored_creation(&stamped));
+}
