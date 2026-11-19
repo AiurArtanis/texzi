@@ -31,6 +31,110 @@ struct Probe {
     answers: Cell<usize>,
 }
 
+#[component]
+fn SavePolicyFixture() -> impl IntoElement {
+    super::view_shell()
+}
+
+#[test]
+fn saving_new_files_requires_permission_confirmation_before_requesting_a_path() {
+    let mut core = Core::new(
+        ApproxTextEngine,
+        Size {
+            width: px(960.0),
+            height: px(640.0),
+        },
+    );
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    environment.file_requests = true;
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<SavePolicyFixture>(|| ()));
+    let drain = |core: &mut Core<ApproxTextEngine>| {
+        let mut keymap = None;
+        let mut commands = Vec::new();
+        for _ in 0..4 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    match item {
+                        MountItem::Keymap(keys) => keymap = Some(keys),
+                        MountItem::Command { command, .. } => commands.push(command),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (keymap, commands)
+    };
+    let keys = drain(&mut core).0.expect("Shell registers save shortcuts");
+    let open_warning = |core: &mut Core<ApproxTextEngine>, key| {
+        let stroke = Keystroke::parse_with(key, false).unwrap();
+        let binding = keys.find(stroke, true, false).fired().unwrap();
+        assert!(core.component_event(
+            ROOT_ID,
+            EventKind::KeyCommand,
+            &EventPayload::Value(PayloadValue::Number(binding as f64)),
+        ));
+        let (_, commands) = drain(core);
+        assert!(
+            !commands
+                .iter()
+                .any(|cmd| matches!(cmd, Command::FileRequest { .. }))
+        );
+        let warning = commands
+            .into_iter()
+            .find_map(|cmd| match cmd {
+                Command::Dialog(dialog) => Some(dialog),
+                _ => None,
+            })
+            .expect("permission warning precedes native picker");
+        let message = warning.message.as_deref().unwrap();
+        assert!(message.contains("文件所有者和 SYSTEM") && message.contains("不继承目标文件夹"));
+        assert_eq!(warning.buttons[0].text, "取消");
+        assert_eq!(warning.buttons[1].text, "继续选择路径");
+        warning.id
+    };
+    let answer_warning = |core: &mut Core<ApproxTextEngine>, id, index| {
+        assert!(core.component_event(
+            ROOT_ID,
+            EventKind::Dialog,
+            &EventPayload::Map(vec![
+                ("id", PayloadValue::Number(id as f64)),
+                ("index", PayloadValue::Number(index)),
+            ]),
+        ));
+        drain(core).1
+    };
+    let cancelled = open_warning(&mut core, "ctrl+s");
+    assert!(
+        !answer_warning(&mut core, cancelled, 0.0)
+            .iter()
+            .any(|cmd| matches!(cmd, Command::FileRequest { .. }))
+    );
+    let accepted = open_warning(&mut core, "ctrl+shift+s");
+    let requests = answer_warning(&mut core, accepted, 1.0);
+    let (id, title) = requests
+        .into_iter()
+        .find_map(|cmd| match cmd {
+            Command::FileRequest { id, request } => match *request {
+                FileRequest::SaveDialog(dialog) => Some((id, dialog.title)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("confirmation opens native Save As");
+    assert_eq!(title.as_deref(), Some("另存为受限权限的新文件"));
+    assert!(core.component_event(
+        ROOT_ID,
+        EventKind::FileRequest,
+        &EventPayload::file_answer(id, Vec::new()),
+    ));
+    drain(&mut core);
+    let reopened = open_warning(&mut core, "ctrl+s");
+    answer_warning(&mut core, reopened, 0.0);
+}
+
 impl Probe {
     fn new(install_shell: bool) -> Rc<Self> {
         Rc::new(Self {
