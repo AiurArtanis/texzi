@@ -441,7 +441,7 @@ fn enter_at_chinese_heading_end_creates_room_for_h3_before_entity_paragraph() {
         "empty paragraph below H1",
         initial_gap,
         7,
-        18,
+        16,
     );
     for _ in 0..3 {
         input(&source, &gate, "hash in new paragraph", "#", 1);

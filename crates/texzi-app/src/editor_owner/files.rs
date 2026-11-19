@@ -151,7 +151,7 @@ impl NativeView {
             )
         })?;
         let committed = locked
-            .prepare_new_creation_default()
+            .prepare_new_owner_only()
             .and_then(|ready| ready.permit(&mut store))
             .and_then(|permitted| permitted.run())
             .and_then(|published| published.accept(&mut store))
