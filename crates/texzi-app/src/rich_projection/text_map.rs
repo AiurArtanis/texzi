@@ -273,18 +273,32 @@ impl TextMap {
             before += atom.text.len();
         }
         let mut units = Vec::new();
+        let mut source_units = source_units.into_iter().peekable();
         let mut before = 0;
         for (at, text) in leaves {
-            for (r, source) in &source_units {
-                if r.start >= before && r.end <= before + text.len() {
-                    units.push(Unit {
-                        rich: at + text[..r.start - before].encode_utf16().count()
-                            ..at + text[..r.end - before].encode_utf16().count(),
-                        source: source.clone(),
-                    });
+            let end = before + text.len();
+            let mut byte = 0;
+            let mut rich = at;
+            // Text leaves and decoded units both follow visible byte order.
+            // Visit each unit once and count UTF-16 only over new bytes.
+            while source_units.peek().is_some_and(|(r, _)| r.start < end) {
+                let (r, source) = source_units.next().unwrap();
+                if r.end > end {
+                    // An entity spanning leaves has no exact per-leaf mapping.
+                    continue;
                 }
+                let start = r.start - before;
+                let stop = r.end - before;
+                rich += text[byte..start].encode_utf16().count();
+                let rich_start = rich;
+                rich += text[start..stop].encode_utf16().count();
+                units.push(Unit {
+                    rich: rich_start..rich,
+                    source,
+                });
+                byte = stop;
             }
-            before += text.len();
+            before = end;
         }
         fn inline_atoms(node: &mdast::Node, out: &mut Vec<(&'static str, Range<usize>)>) {
             let kind = match node {
@@ -360,6 +374,26 @@ mod tests {
     };
     use nsh_base::{editor::ExternalDocument, rich_editor::state::TextSelection};
     use nsh_core::prelude::*;
+
+    #[test]
+    fn long_mixed_paragraph_keeps_utf16_mapping_across_marked_leaves() {
+        let manager = manager();
+        let prefix = "中a😀".repeat(8192);
+        let raw = format!("{prefix} **文😀** &amp; 尾");
+        let projection = Projection::parse(manager.schema(), raw.clone()).unwrap();
+
+        let marked_byte = prefix.len() + " **".len();
+        let marked_position = 1 + 8192 * 4 + 1;
+        assert_eq!(projection.rich_position(marked_byte), Some(marked_position));
+        assert_eq!(
+            projection.source_position(marked_position + 1),
+            Some(marked_byte + "文".len())
+        );
+        let entity = raw.find("&amp;").unwrap();
+        let rich = projection.rich_position(entity).unwrap();
+        assert_eq!(projection.source_position(rich + 1), Some(entity + 5));
+        assert_eq!(projection.rich_position(entity + 2), None);
+    }
 
     #[test]
     fn gfm_code_cell_escaped_pipe_has_fixed_source_and_utf16_boundaries() {
