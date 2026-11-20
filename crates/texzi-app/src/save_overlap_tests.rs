@@ -17,7 +17,7 @@ type Hook = Box<dyn FnOnce(&SaveCapture) + Send>;
 
 struct Probe {
     pause: RefCell<Option<Hook>>,
-    state: RefCell<Option<EditorState>>,
+    states: RefCell<Vec<EditorState>>,
 }
 
 #[derive(Clone)]
@@ -38,28 +38,36 @@ thread_local! {
 fn SaveOverlapFixture() -> impl IntoElement {
     let probe = PROBE.with(|slot| slot.borrow_mut().take().unwrap());
     let shell = Shell::new();
-    let doc = shell.current().unwrap();
-    doc.source
-        .before_next_publication(probe.pause.borrow_mut().take().unwrap());
+    if let Some(pause) = probe.pause.borrow_mut().take() {
+        shell
+            .current()
+            .unwrap()
+            .source
+            .before_next_publication(pause);
+    }
+    let menu = shell.clone();
+    on_key("f8", move |_| menu.run("texzi.file.saveAll"));
+    let menu = shell.clone();
+    on_key("f9", move |_| menu.run("texzi.file.new"));
     let observed = shell.clone();
     on_key("f7", move |_| {
-        let (bytes, revision, token, dirty) = doc.source.inspect(|store, view| {
-            let id = store.view(view).unwrap().doc;
-            let snapshot = store.snapshot(id).unwrap();
-            (
-                snapshot.body.to_utf8(),
-                snapshot.revision,
-                snapshot.token,
-                store.dirty(id).unwrap(),
-            )
-        });
-        *probe.state.borrow_mut() = Some(EditorState {
-            bytes,
-            revision,
-            token,
-            dirty,
-            path: doc.path.get(),
-            notice: observed.notice.get(),
+        *probe.states.borrow_mut() = observed.docs.with(|docs| {
+            docs.iter()
+                .map(|doc| {
+                    doc.source.inspect(|store, view| {
+                        let id = store.view(view).unwrap().doc;
+                        let snapshot = store.snapshot(id).unwrap();
+                        EditorState {
+                            bytes: snapshot.body.to_utf8(),
+                            revision: snapshot.revision,
+                            token: snapshot.token,
+                            dirty: store.dirty(id).unwrap(),
+                            path: doc.path.get(),
+                            notice: observed.notice.get(),
+                        }
+                    })
+                })
+                .collect()
         });
     });
     render_shell(shell)
@@ -129,34 +137,55 @@ impl Harness {
     }
 
     fn sample(&mut self, core: &mut Core<ApproxTextEngine>, probe: &Probe) -> EditorState {
+        self.samples(core, probe).pop().unwrap()
+    }
+
+    fn samples(&mut self, core: &mut Core<ApproxTextEngine>, probe: &Probe) -> Vec<EditorState> {
         self.key(core, "f7");
-        probe.state.borrow_mut().take().unwrap()
+        probe.states.take()
+    }
+
+    fn wait_for_notice(
+        &mut self,
+        core: &mut Core<ApproxTextEngine>,
+        probe: &Probe,
+        expected: &str,
+    ) -> Vec<EditorState> {
+        let deadline = Instant::now() + Duration::from_secs(12);
+        loop {
+            self.drain(core);
+            let states = self.samples(core, probe);
+            let notice = &states.last().unwrap().notice;
+            if notice == expected {
+                return states;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected {expected}; got {notice}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn picker(&mut self, core: &mut Core<ApproxTextEngine>, title: &str) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(12);
+        loop {
+            self.drain(core);
+            for command in self.commands.drain(..) {
+                if let Command::FileRequest { id, request } = command
+                    && let nsh_core::file_dialog::FileRequest::SaveDialog(dialog) = *request
+                {
+                    assert_eq!(dialog.title.as_deref(), Some(title));
+                    return id;
+                }
+            }
+            assert!(Instant::now() < deadline, "missing picker: {title}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
-#[test]
-fn source_input_during_real_menu_save_keeps_newer_revision_dirty() {
-    let root = std::env::temp_dir().join(format!(
-        "texzi-app-save-overlap-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let destination = root.join("overlap.txt");
-    let (started_tx, started_rx) = mpsc::channel();
-    let (resume_tx, resume_rx) = mpsc::channel();
-    let ui = std::thread::current().id();
-    let probe = Rc::new(Probe {
-        pause: RefCell::new(Some(Box::new(move |capture: &SaveCapture| {
-            assert_ne!(ui, std::thread::current().id());
-            started_tx.send(capture.snapshot.clone()).unwrap();
-            resume_rx.recv_timeout(Duration::from_secs(15)).unwrap();
-        }))),
-        state: RefCell::new(None),
-    });
+fn open_shell(probe: &Rc<Probe>) -> (tokio::runtime::Runtime, Core<ApproxTextEngine>, Harness) {
     PROBE.with(|slot| *slot.borrow_mut() = Some(probe.clone()));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -181,6 +210,110 @@ fn source_input_during_real_menu_save_keeps_newer_revision_dirty() {
         EventKind::Focus,
         &EventPayload::None
     ));
+    (runtime, core, harness)
+}
+
+#[test]
+fn selector_cancel_save_all_partial_then_save_as_new_target() {
+    let root = std::env::temp_dir().join(format!(
+        "texzi-save-all-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let first = root.join("first.txt");
+    let second = root.join("second.txt");
+    let probe = Rc::new(Probe {
+        pause: RefCell::new(None),
+        states: RefCell::new(Vec::new()),
+    });
+    let (_runtime, mut core, mut harness) = open_shell(&probe);
+    let answer = |core: &mut Core<ApproxTextEngine>, id, paths| {
+        assert!(core.component_event(
+            ROOT_ID,
+            EventKind::FileRequest,
+            &EventPayload::file_answer(id, paths),
+        ));
+    };
+    harness.change_input(&mut core, "first");
+    harness.key(&mut core, "ctrl+s");
+    let canceled = harness.picker(&mut core, "保存新文件");
+    harness.focus = None;
+    answer(&mut core, canceled, vec![]);
+    let canceled_state = harness
+        .wait_for_notice(&mut core, &probe, "已取消保存")
+        .pop()
+        .unwrap();
+    assert!(canceled_state.dirty && canceled_state.path.is_none());
+    assert_eq!(harness.focus, harness.source_input);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+
+    harness.key(&mut core, "f9");
+    harness.change_input(&mut core, "second");
+    harness.key(&mut core, "f8");
+    let request = harness.picker(&mut core, "保存新文件");
+    answer(&mut core, request, vec![first.clone()]);
+    let request = harness.picker(&mut core, "保存新文件");
+    assert_eq!(std::fs::read(&first).unwrap(), b"first");
+    harness.focus = None;
+    answer(&mut core, request, vec![]);
+    let states = harness.wait_for_notice(&mut core, &probe, "已保存 1 个文档，已取消剩余保存");
+    assert_eq!(states.len(), 2);
+    assert_eq!(states[0].path.as_ref(), Some(&first));
+    assert!(!states[0].dirty);
+    assert!(states[1].dirty && states[1].path.is_none());
+    assert_eq!(states[1].bytes, b"second");
+    assert_eq!(harness.focus, harness.source_input);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+
+    harness.key(&mut core, "ctrl+shift+s");
+    let request = harness.picker(&mut core, "另存为新文件");
+    answer(&mut core, request, vec![second.clone()]);
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        let state = harness.sample(&mut core, &probe);
+        if state.path.as_ref() == Some(&second) {
+            assert!(!state.dirty);
+            break;
+        }
+        assert!(Instant::now() < deadline, "Save As: {}", state.notice);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(std::fs::read(&first).unwrap(), b"first");
+    assert_eq!(std::fs::read(&second).unwrap(), b"second");
+    drop(core);
+    std::fs::remove_file(first).unwrap();
+    std::fs::remove_file(second).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[test]
+fn source_input_during_real_menu_save_keeps_newer_revision_dirty() {
+    let root = std::env::temp_dir().join(format!(
+        "texzi-app-save-overlap-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let destination = root.join("overlap.txt");
+    let (started_tx, started_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let ui = std::thread::current().id();
+    let probe = Rc::new(Probe {
+        pause: RefCell::new(Some(Box::new(move |capture: &SaveCapture| {
+            assert_ne!(ui, std::thread::current().id());
+            started_tx.send(capture.snapshot.clone()).unwrap();
+            resume_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        }))),
+        states: RefCell::new(Vec::new()),
+    });
+    let (_runtime, mut core, mut harness) = open_shell(&probe);
     harness.change_input(&mut core, "N");
     let n = harness.sample(&mut core, &probe);
     assert_eq!(n.bytes, b"N");

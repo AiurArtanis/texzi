@@ -635,10 +635,8 @@ impl Shell {
         spawn(async move {
             let result = shell.save_documents(targets, save_as).await;
             shell.modal.set(false);
-            match result {
-                Ok(true) => {}
-                Ok(false) => shell.notice.set("已取消保存".into()),
-                Err(error) => shell.explain("保存失败", &error),
+            if let Err(error) = result {
+                shell.explain("保存失败", &error);
             }
         });
     }
@@ -646,7 +644,8 @@ impl Shell {
         self: &Rc<Self>,
         targets: Vec<Rc<Document>>,
         save_as: bool,
-    ) -> Result<bool, String> {
+    ) -> Result<(), String> {
+        let mut saved = 0;
         for doc in targets {
             if doc.source.needs_save_recovery() {
                 return Err(format!("{} 有待检查的保存恢复结果", doc.name()));
@@ -656,6 +655,7 @@ impl Shell {
                 if doc.source.is_dirty()? {
                     self.notice.set(format!("正在保存 {}", doc.name()));
                     doc.source.replace_current(path.clone()).await?;
+                    saved += 1;
                     self.show_saved(&doc);
                 } else {
                     self.notice.set(format!("{} 没有未保存的修改", doc.name()));
@@ -682,7 +682,13 @@ impl Shell {
             }
             let answer = self.owner.run(|| pick_save_path(dialog));
             let Some(path) = answer.await? else {
-                return Ok(false);
+                self.restore_editor_focus();
+                self.notice.set(if saved == 0 {
+                    "已取消保存".into()
+                } else {
+                    format!("已保存 {saved} 个文档，已取消剩余保存")
+                });
+                return Ok(());
             };
             // Keep the save command and close handlers gated until the worker
             // returns, while the normal editor input regains focus.
@@ -691,9 +697,10 @@ impl Shell {
             doc.source.save_new_destination(path.clone()).await?;
             self.remember(&path);
             doc.path.set(Some(path));
+            saved += 1;
             self.show_saved(&doc);
         }
-        Ok(true)
+        Ok(())
     }
     fn show_saved(&self, doc: &Document) {
         let newer = if doc.source.is_dirty().unwrap_or(true) {
