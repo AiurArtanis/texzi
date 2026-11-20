@@ -1,5 +1,7 @@
 # texzi 产品约束
 
+> **2026-11-20 起本文只作参考。** v1 的范围和验收只看 [docs/V1-SCOPE.md](../V1-SCOPE.md)。
+
 <!-- impeccable:product-schema 1 -->
 
 ## Platform

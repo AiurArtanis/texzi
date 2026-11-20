@@ -1,5 +1,7 @@
 # texzi
 
+> **v1 范围与验收：** 见 [docs/V1-SCOPE.md](docs/V1-SCOPE.md)（2026-11-20 起唯一约束）。下文的构建与证据说明待按 V1-SCOPE §5 精简。
+
 Windows native text and Markdown editor built with Rust and NSH.
 
 ## Status

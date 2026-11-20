@@ -1,5 +1,7 @@
 # texzi 技术设计 v1
 
+> **2026-11-20 起本文只作参考。** v1 的范围和验收只看 [docs/V1-SCOPE.md](../../V1-SCOPE.md)。本文中的「必须」「阻断发布」「Gate」「验收」不再构成门禁；与 V1-SCOPE 冲突时，以 V1-SCOPE 为准。
+
 状态：可供实施的设计基线，尚未实现或完成 Windows 实机验证。日期：2026-11-15。
 
 本文件解释实现路径和工程约束；产品规则以 [PRD.md](PRD.md)、交互以 [UI_SPEC.md](UI_SPEC.md) 为准，测量方法以 [PERFORMANCE_PLAN.md](PERFORMANCE_PLAN.md) 为准，任务依赖见 [HANDOFF.md](HANDOFF.md)。所有“建议”“工程默认值”均为本方案的选择，不伪装为用户原话；“待验证”不等于已经支持。
