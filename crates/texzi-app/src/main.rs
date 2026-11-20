@@ -121,8 +121,13 @@ mod app {
     }
 
     pub fn run() -> std::process::ExitCode {
+        let mut main_window = nsh_core::desktop::MainWindowOptions::default();
+        let mut title_bar = nsh_core::desktop::TitleBarOptions::default();
+        title_bar.style = nsh_core::desktop::TitleBarStyle::Hidden;
+        title_bar.height = Some(px(crate::app_shell::TITLE_BAR_HEIGHT));
+        main_window.attributes.title_bar = Some(title_bar);
         platform::run_app(
-            platform::AppSource::Rust(platform::Root::of::<Window>()),
+            platform::AppSource::Rust(platform::Root::of::<Window>().main_window(main_window)),
             platform::AppOptions {
                 title: "texzi — 原生编辑".to_owned(),
                 app_id: "dev.texzi.tx00".to_owned(),

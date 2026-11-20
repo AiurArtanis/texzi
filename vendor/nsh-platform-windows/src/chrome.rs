@@ -255,7 +255,7 @@ fn framed_attrs(hwnd: HWND) -> Option<crate::shell::Attrs> {
 
 /// The window's title bar is hidden now: the system frame stays, the
 /// caption buttons are drawn over the app.
-fn hidden(hwnd: HWND) -> bool {
+pub(crate) fn hidden(hwnd: HWND) -> bool {
     framed_attrs(hwnd).is_some_and(|a| a.hidden_title_bar())
 }
 

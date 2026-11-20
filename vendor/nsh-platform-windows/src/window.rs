@@ -1342,6 +1342,25 @@ fn handle(
             // Alt+F4 and the system menu keep working.
         }
         WM_SYSCHAR if data.sys_char.replace(false) => return Some(LRESULT(0)),
+        WM_SYSCOMMAND
+            if (wparam.0 & 0xFFF0) as u32 == SC_KEYMENU
+                && lparam.0 == 0
+                && crate::chrome::hidden(hwnd) =>
+        {
+            // A hidden native menu has no Alt focus destination. Give an app
+            // with its own title bar the same menu shortcut as F10.
+            if crate::input::key(
+                surface,
+                KeyEvent {
+                    vk: 0x79,
+                    down: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            ) {
+                return Some(LRESULT(0));
+            }
+        }
         WM_CHAR => {
             let unit = wparam.0 as u16;
             if (0xD800..0xDC00).contains(&unit) {
