@@ -209,6 +209,21 @@ struct ActiveSave {
     stage: SaveStage,
 }
 #[derive(Clone, Copy)]
+pub(crate) enum BoundPublication {
+    New,
+    #[cfg(windows)]
+    Replace,
+}
+impl BoundPublication {
+    fn matches(self, capture: &SaveCapture, scope: &SaveScope) -> bool {
+        match self {
+            Self::New => scope.object.is_none(),
+            #[cfg(windows)]
+            Self::Replace => scope.object.as_ref() == Some(&capture.target),
+        }
+    }
+}
+#[derive(Clone, Copy)]
 struct ScopeLease {
     operation: u64,
     held: bool,
@@ -329,10 +344,19 @@ impl Store {
         c: &SaveCapture,
         scope: &SaveScope,
     ) -> Result<(), Error> {
+        self.permit_bound_publication_unpublished(c, scope, BoundPublication::New)
+    }
+
+    pub(crate) fn permit_bound_publication_unpublished(
+        &mut self,
+        c: &SaveCapture,
+        scope: &SaveScope,
+        publication: BoundPublication,
+    ) -> Result<(), Error> {
         let active = self.active_save(c)?;
         if active.stage != SaveStage::WritingTemp
             || active.scope.as_ref() != Some(scope)
-            || scope.object.is_some()
+            || !publication.matches(c, scope)
         {
             return Err(Error::InvalidSave);
         }
@@ -477,7 +501,7 @@ impl Store {
         &mut self,
         c: &SaveCapture,
     ) -> Result<(), Error> {
-        self.accept_result_unpublished(c, c.target.clone(), false)
+        self.accept_result_unpublished(c, c.target.clone(), None)
             .map(|_| ())
     }
     pub(crate) fn accept_published_new_unpublished(
@@ -485,22 +509,27 @@ impl Store {
         c: &SaveCapture,
         final_target: TargetKey,
     ) -> Result<u64, Error> {
-        self.accept_result_unpublished(c, final_target, true)
+        self.accept_result_unpublished(c, final_target, Some(BoundPublication::New))
     }
-    fn accept_result_unpublished(
+    pub(crate) fn accept_result_unpublished(
         &mut self,
         c: &SaveCapture,
         final_target: TargetKey,
-        published_new: bool,
+        publication: Option<BoundPublication>,
     ) -> Result<u64, Error> {
         let active = self.active_save(c)?;
-        let required = if published_new {
+        let required = if publication.is_some() {
             SaveStage::Replacing
         } else {
             SaveStage::Verifying
         };
         if active.stage != required
-            || (published_new && active.scope.as_ref().is_none_or(|s| s.object.is_some()))
+            || publication.is_some_and(|kind| {
+                !active
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| kind.matches(c, scope))
+            })
         {
             return Err(Error::InvalidSave);
         }
@@ -516,7 +545,7 @@ impl Store {
             .binding_epoch
             .checked_add(1)
             .ok_or(Error::CounterExhausted)?;
-        if published_new {
+        if publication.is_some() {
             self.saves.get_mut(&c.snapshot.doc).unwrap().stage = SaveStage::Verifying;
         }
         let d = self

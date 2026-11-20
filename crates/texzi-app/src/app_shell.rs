@@ -654,9 +654,12 @@ impl Shell {
             let original = doc.path.get();
             if !save_as && let Some(path) = &original {
                 if doc.source.is_dirty()? {
-                    doc.source.check_current_save(path.clone()).await?;
+                    self.notice.set(format!("正在保存 {}", doc.name()));
+                    doc.source.replace_current(path.clone()).await?;
+                    self.show_saved(&doc);
+                } else {
+                    self.notice.set(format!("{} 没有未保存的修改", doc.name()));
                 }
-                self.notice.set(format!("{} 没有未保存的修改", doc.name()));
                 continue;
             }
             let mut dialog = SaveDialog::new().title(if save_as {
@@ -688,14 +691,17 @@ impl Shell {
             doc.source.save_new_destination(path.clone()).await?;
             self.remember(&path);
             doc.path.set(Some(path));
-            let newer = if doc.source.is_dirty().unwrap_or(true) {
-                " · 仍有较新的未保存修改"
-            } else {
-                ""
-            };
-            self.notice.set(format!("已保存 {}{newer}", doc.name()));
+            self.show_saved(&doc);
         }
         Ok(true)
+    }
+    fn show_saved(&self, doc: &Document) {
+        let newer = if doc.source.is_dirty().unwrap_or(true) {
+            " · 仍有较新的未保存修改"
+        } else {
+            ""
+        };
+        self.notice.set(format!("已保存 {}{newer}", doc.name()));
     }
     fn close_window(self: &Rc<Self>) {
         if self.modal.get() {
@@ -1074,7 +1080,7 @@ impl Shell {
             "texzi.find.next"=>self.find(false),"texzi.find.previous"=>self.find(true),"texzi.find.close"=>self.close_panel(),
             "texzi.find.replaceOne"|"texzi.find.replaceAll"=>if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}match doc.source.replace_literal(&self.query.get(),&self.replacement.get(),id.ends_with("All")){Ok(n)=>{self.notice.set(format!("源码 · 已替换 {n} 处，可一次撤销"));self.restore_editor_focus();},Err(e)=>self.notice.set(e)}},
             "texzi.appearance.light"=>set_color_scheme(Appearance::Light),"texzi.appearance.dark"=>set_color_scheme(Appearance::Dark),
-            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存新文件，或将现有文档另存为新文件。新文件继承目标文件夹权限，保存时会核验。原位替换和指定编码保存仍待实现。\n查看菜单提供分屏、源码/富文本切换、源码自动换行、主题与 Zen。Ctrl+1/2 可聚焦编辑组。编辑和选择命令作用于当前视图。"),
+            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存新文件，或将现有文档另存为新文件。新文件继承目标文件夹权限。保存已有文件会核验版本和权限，并保留原文件备份。指定编码保存仍待实现。\n查看菜单提供分屏、源码/富文本切换、源码自动换行、主题与 Zen。Ctrl+1/2 可聚焦编辑组。编辑和选择命令作用于当前视图。"),
             "texzi.help.about"=>self.explain("关于 texzi","texzi\n为日常文字、Markdown 与代码片段设计的 Windows 原生文本编辑器。"),
             _=>if let Some(command)=source_command(id){if let Err(e)=self.source_action(command){self.notice.set(e);}},
         }

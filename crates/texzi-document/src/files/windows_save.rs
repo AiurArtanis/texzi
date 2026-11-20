@@ -1,10 +1,11 @@
-//! Bound Windows staging and limited new-target publication; replacement pending.
+//! Bound Windows staging and publication.
 #[cfg(test)]
 mod current_tests;
 #[forbid(unsafe_code)]
 mod existing;
 mod publish;
 pub mod recovery;
+mod replace;
 #[cfg(test)]
 mod tests;
 use super::{
@@ -24,6 +25,7 @@ pub use publish::{
     CommittedNew, NewFileSecurity, NewPublication, NewReady, PublishFailure, PublishIssue,
     PublishedNew,
 };
+pub use replace::{PreparedReplacement, ReplacementFailure};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

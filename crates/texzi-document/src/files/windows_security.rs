@@ -1,6 +1,11 @@
 //! Owner/group/DACL observation and copying onto a new temporary file only.
 //! No SACL access or privilege changes.
-use std::{fs::File, io, os::windows::io::AsRawHandle};
+use std::{
+    fs::File,
+    io,
+    os::windows::{ffi::OsStrExt, io::AsRawHandle},
+    path::Path,
+};
 use windows_sys::Win32::{
     Foundation::LocalFree,
     Security::{
@@ -10,6 +15,7 @@ use windows_sys::Win32::{
         },
         *,
     },
+    Storage::FileSystem::CreateDirectoryW,
 };
 
 struct LocalDescriptor(PSECURITY_DESCRIPTOR);
@@ -36,9 +42,7 @@ impl std::fmt::Debug for SecurityDescriptor {
     }
 }
 impl SecurityDescriptor {
-    /// Seal a new, empty temporary file without inheriting broader reader ACEs.
-    /// Keep its actual owner/group. OWNER_RIGHTS is the file owner, not everyone.
-    pub(super) fn protect_new_file(file: &File) -> io::Result<()> {
+    fn private_descriptor() -> io::Result<LocalDescriptor> {
         let sddl: Vec<u16> = "D:P(A;;FA;;;OW)(A;;FA;;;SY)\0".encode_utf16().collect();
         let mut descriptor = std::ptr::null_mut();
         // SAFETY: terminated static-policy input and a valid output pointer.
@@ -59,7 +63,30 @@ impl SecurityDescriptor {
                 "missing private descriptor",
             ));
         }
-        let owned = LocalDescriptor(descriptor);
+        Ok(LocalDescriptor(descriptor))
+    }
+
+    /// Create the recovery directory with its restrictive DACL already in place.
+    pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
+        let descriptor = Self::private_descriptor()?;
+        let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        // SAFETY: the internally allocated sibling name, SECURITY_ATTRIBUTES and
+        // self-relative descriptor remain live for this synchronous call.
+        if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Seal a new, empty temporary file without inheriting broader reader ACEs.
+    /// Keep its actual owner/group. OWNER_RIGHTS is the file owner, not everyone.
+    pub(super) fn protect_new_file(file: &File) -> io::Result<()> {
+        let owned = Self::private_descriptor()?;
         let mut present = 0;
         let mut defaulted = 0;
         let mut dacl = std::ptr::null_mut();

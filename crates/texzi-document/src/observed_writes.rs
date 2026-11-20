@@ -1,6 +1,26 @@
 //! Only public write entrypoints; nested writes publish once at the outer return.
 use crate::*;
 impl Store {
+    #[cfg(windows)]
+    pub(crate) fn permit_bound_replacement(
+        &mut self,
+        c: &SaveCapture,
+        scope: &SaveScope,
+    ) -> Result<(), Error> {
+        self.observed_write(c.snapshot.doc, |s| {
+            s.permit_bound_publication_unpublished(c, scope, history::BoundPublication::Replace)
+        })
+    }
+    #[cfg(windows)]
+    pub(crate) fn accept_published_replacement(
+        &mut self,
+        c: &SaveCapture,
+        final_target: TargetKey,
+    ) -> Result<u64, Error> {
+        self.observed_write(c.snapshot.doc, |s| {
+            s.accept_result_unpublished(c, final_target, Some(history::BoundPublication::Replace))
+        })
+    }
     pub(crate) fn permit_bound_new(
         &mut self,
         c: &SaveCapture,

@@ -4,17 +4,29 @@ use std::{
     fs::{File, OpenOptions},
     os::windows::fs::OpenOptionsExt,
 };
-use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+};
 
 /// Only the parent module can request this capture, from its own observation.
 /// Sharing failures are returned without retrying with broader permissions.
 pub(super) fn hold_existing_read(observed: &ObservedTarget) -> Result<File, IdentityError> {
+    hold(observed, FILE_SHARE_READ)
+}
+
+/// ReplaceFileW requires delete sharing on the victim. Keep the checked
+/// handle to verify the backup and continue to exclude ordinary writers.
+pub(super) fn hold_replacement_victim(observed: &ObservedTarget) -> Result<File, IdentityError> {
+    hold(observed, FILE_SHARE_READ | FILE_SHARE_DELETE)
+}
+
+fn hold(observed: &ObservedTarget, share: u32) -> Result<File, IdentityError> {
     let expected = observed.version.as_ref().ok_or(IdentityError::WrongKind)?;
     observed.recheck_parent()?;
     let path = observed.resolved_path();
     let mut file = OpenOptions::new()
         .read(true)
-        .share_mode(FILE_SHARE_READ)
+        .share_mode(share)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(&path)?;
     check_kind(&file, false)?;

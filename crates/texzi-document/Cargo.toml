@@ -11,6 +11,7 @@ unicode-segmentation = "=1.13.3"
 encoding_rs = "=0.8.44"
 
 [target.'cfg(windows)'.dependencies]
+getrandom = "=0.3.4"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Wdk_Storage_FileSystem", "Win32_System_IO"] }
 
 [target.'cfg(windows)'.dev-dependencies]

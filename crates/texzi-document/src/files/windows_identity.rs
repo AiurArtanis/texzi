@@ -229,6 +229,9 @@ impl ObservedTarget {
     pub(super) fn hold_existing_read(&self) -> Result<File, IdentityError> {
         existing_read::hold_existing_read(self)
     }
+    pub(super) fn hold_replacement_victim(&self) -> Result<File, IdentityError> {
+        existing_read::hold_replacement_victim(self)
+    }
     pub(super) fn target_name(&self) -> &OsStr {
         &self.name
     }

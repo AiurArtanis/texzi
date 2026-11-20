@@ -539,7 +539,7 @@ fn creation_default_dacl_access_denial_after_real_rename_retains_n_and_original_
     assert_eq!(notices.len(), 1);
     assert_eq!(
         notices[0].security_policy(),
-        NewFileSecurity::CreationDefault
+        Some(NewFileSecurity::CreationDefault)
     );
     assert!(notices[0].terminal_recorded);
     assert!(notices[0].owner_error.is_none());

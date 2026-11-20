@@ -115,7 +115,7 @@ fn assert_recovery_contract(
     created: &CreationReceipt,
     actual_path: &Path,
 ) {
-    assert_eq!(receipt.security_policy(), policy);
+    assert_eq!(receipt.security_policy(), Some(policy));
     assert!(receipt.expected_security() == expected_security);
     assert_same_capture(receipt.capture(), capture);
     assert!(receipt.terminal_recorded);
@@ -530,7 +530,7 @@ fn dropped_security_policy_contract(after_rename: bool) {
         assert_eq!(unrecorded.len(), 1);
         assert!(!unrecorded[0].terminal_recorded);
         assert!(unrecorded[0].owner_error.is_none());
-        assert_eq!(unrecorded[0].security_policy(), policy);
+        assert_eq!(unrecorded[0].security_policy(), Some(policy));
         assert!(unrecorded[0].expected_security() == &expected_security);
         assert_same_capture(unrecorded[0].capture(), &capture);
         let actual_path = unrecorded[0].current_path().unwrap();

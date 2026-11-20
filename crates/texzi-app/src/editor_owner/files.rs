@@ -3,7 +3,8 @@ use doc::files::{
     LoadedBytes,
     windows_identity::{IdentityError, ObservedTarget, OpenOutcome},
     windows_save::{
-        BoundFailure, BoundIssue, LockFailure, PublishFailure, recovery::PublicationRecovery,
+        BoundFailure, BoundIssue, BoundWork, LockFailure, PublishFailure, ReplacementFailure,
+        recovery::PublicationRecovery,
     },
 };
 use std::path::{Path, PathBuf};
@@ -30,6 +31,9 @@ enum Recovery {
     },
     Publish {
         _failure: PublishFailure,
+    },
+    Replace {
+        _failure: ReplacementFailure,
     },
     WorkerLost {
         _publications: Vec<PublicationRecovery>,
@@ -83,6 +87,17 @@ impl FileState {
         self.recovery = Some(Recovery::Publish { _failure: failure });
         failure_message(details, result)
     }
+
+    fn retain_replacement(
+        &mut self,
+        failure: ReplacementFailure,
+        store: &mut doc::Store,
+    ) -> String {
+        let details = format!("{failure:?}");
+        let result = failure.record_failure(store);
+        self.recovery = Some(Recovery::Replace { _failure: failure });
+        failure_message(details, result)
+    }
 }
 
 fn failure_message(details: String, recorded: Result<(), doc::Error>) -> String {
@@ -124,21 +139,43 @@ impl NativeView {
         self.owner.files.borrow_mut().before_publish = Some(hook);
     }
 
-    // The product has a verified new-target publisher. For a dirty bound
-    // file, run current-target guards and stop before staging an overwrite.
-    pub async fn check_current_save(&self, path: PathBuf) -> Result<(), String> {
+    pub async fn replace_current(&self, path: PathBuf) -> Result<(), String> {
         let target = inspect_destination(path).await?;
-        let files = self.owner.files.borrow();
-        if files.recovery.is_some() {
-            return Err("请先检查上次保存的恢复结果".into());
+        let (capture, work) = self.begin_bound_save(target, true)?;
+        let staged = blocking(move || {
+            work.write()
+                .map_err(StagingFailure::Write)?
+                .lock_temporary()
+                .map_err(StagingFailure::Lock)
+                .map(|locked| locked.prepare_replacement())
+        })
+        .await
+        .map_err(|error| self.record_lost_save_worker(&capture, false, error.to_string()))?;
+        let permitted = {
+            let mut files = self.owner.files.borrow_mut();
+            let mut store = self.owner.store.borrow_mut();
+            let ready = staged
+                .map_err(|failure| {
+                    retain_staging_failure(&mut files, &mut store, &capture, failure)
+                })?
+                .map_err(|failure| files.retain_replacement(failure, &mut store))?;
+            ready
+                .permit(&mut store)
+                .map_err(|failure| files.retain_replacement(failure, &mut store))?
+        };
+        let published = blocking(move || permitted.run())
+            .await
+            .map_err(|error| self.record_lost_save_worker(&capture, true, error.to_string()))?;
+        {
+            let mut files = self.owner.files.borrow_mut();
+            let mut store = self.owner.store.borrow_mut();
+            let binding = published
+                .and_then(|verified| verified.accept(&mut store))
+                .map_err(|failure| files.retain_replacement(failure, &mut store))?;
+            files.binding = Some(binding);
         }
-        let binding = files.binding.as_ref().ok_or("缺少磁盘绑定")?;
-        let mut store = self.owner.store.borrow_mut();
-        let prepared = target
-            .prepare_current(binding, &mut store)
-            .map_err(|e| format!("{e:?}"))?;
-        store.cancel_save(prepared.capture()).map_err(err)?;
-        Err("此候选版本尚未提供安全的原位替换。请另存为一个新文件。".into())
+        self.owner.changed.update(|revision| *revision += 1);
+        Ok(())
     }
 
     pub async fn save_new_destination(&self, path: PathBuf) -> Result<(), String> {
@@ -148,27 +185,7 @@ impl NativeView {
         }
         #[cfg(feature = "save-overlap-diagnostics")]
         let gate = crate::save_overlap_diagnostics::for_destination(&target);
-        let (capture, work) = {
-            let mut files = self.owner.files.borrow_mut();
-            if files.recovery.is_some() {
-                return Err("请先检查上次保存的恢复结果".into());
-            }
-            let binding = files.binding.as_ref().ok_or("缺少文档绑定")?;
-            let mut store = self.owner.store.borrow_mut();
-            let prepared = target
-                .prepare_save_as(binding, &mut store)
-                .map_err(|e| format!("{e:?}"))?;
-            let capture = prepared.capture().clone();
-            let work = prepared.begin(&mut store).map_err(|failure| {
-                retain_staging_failure(
-                    &mut files,
-                    &mut store,
-                    &capture,
-                    StagingFailure::Write(failure),
-                )
-            })?;
-            (capture, work)
-        };
+        let (capture, work) = self.begin_bound_save(target, false)?;
         #[cfg(feature = "save-overlap-diagnostics")]
         let trace = if let Some(gate) = gate {
             match gate
@@ -240,6 +257,35 @@ impl NativeView {
             trace.complete(state);
         }
         Ok(())
+    }
+
+    fn begin_bound_save(
+        &self,
+        target: ObservedTarget,
+        current: bool,
+    ) -> Result<(doc::SaveCapture, BoundWork), String> {
+        let mut files = self.owner.files.borrow_mut();
+        if files.recovery.is_some() {
+            return Err("请先检查上次保存的恢复结果".into());
+        }
+        let binding = files.binding.as_ref().ok_or("缺少文档绑定")?;
+        let mut store = self.owner.store.borrow_mut();
+        let prepared = if current {
+            target.prepare_current(binding, &mut store)
+        } else {
+            target.prepare_save_as(binding, &mut store)
+        }
+        .map_err(|error| format!("{error:?}"))?;
+        let capture = prepared.capture().clone();
+        let work = prepared.begin(&mut store).map_err(|failure| {
+            retain_staging_failure(
+                &mut files,
+                &mut store,
+                &capture,
+                StagingFailure::Write(failure),
+            )
+        })?;
+        Ok((capture, work))
     }
 
     #[cfg(feature = "save-overlap-diagnostics")]
@@ -645,16 +691,39 @@ mod tests {
                 ExternalEditKind::Typing,
             )
             .unwrap();
-        assert!(
-            worker
-                .block_on(source.check_current_save(destination.clone()))
-                .unwrap_err()
-                .contains("原位替换")
+        worker
+            .block_on(source.replace_current(destination.clone()))
+            .unwrap();
+        assert!(!source.is_dirty().unwrap());
+        assert!(!rich.is_dirty().unwrap());
+        let after = ObservedTarget::inspect(&destination).unwrap();
+        let version = after.version().unwrap();
+        assert_eq!(
+            version.bytes.as_ref(),
+            &[0xff, 0xfe, 0x4e, 0, 0x41, 0, 0x42, 0, 0x0d, 0, 0x0a, 0]
         );
+        assert_eq!(&version.security, &saved.version().unwrap().security);
+        assert_eq!(
+            NativeView::open_file(&destination).unwrap().text().unwrap(),
+            "NAB\n"
+        );
+        let before = source.snapshot().unwrap();
+        source
+            .edit(
+                before.revision,
+                before.view_epoch,
+                vec![(3..3, "C".into())],
+                ExternalSelections {
+                    primary: 0,
+                    ranges: vec![(4, 4)],
+                },
+                ExternalEditKind::Typing,
+            )
+            .unwrap();
         std::fs::write(&destination, b"external").unwrap();
         assert!(
             worker
-                .block_on(rich.check_current_save(destination.clone()))
+                .block_on(rich.replace_current(destination.clone()))
                 .unwrap_err()
                 .contains("Changed")
         );
@@ -662,6 +731,9 @@ mod tests {
         assert_eq!(std::fs::read(&destination).unwrap(), b"external");
         drop(rich);
         drop(source);
+        drop(reference);
+        drop(saved);
+        drop(after);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

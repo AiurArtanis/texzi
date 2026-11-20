@@ -12,7 +12,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 static NEXT: AtomicU64 = AtomicU64::new(1);
-fn fixture() -> (PathBuf, Store, crate::Snapshot, FileBinding) {
+pub(super) fn fixture() -> (PathBuf, Store, crate::Snapshot, FileBinding) {
     let dir = std::env::temp_dir().join(format!(
         "texzi-current-binding-{}-{}-{}",
         std::process::id(),

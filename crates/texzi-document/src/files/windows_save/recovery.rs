@@ -1,4 +1,5 @@
 //! Process-local ownership after a publication permit. No crash journal or rollback.
+use super::replace::ReplacementWorkspace;
 use super::*;
 use crate::{SaveFailure, SaveFailureOutcome};
 use std::{
@@ -9,9 +10,11 @@ use std::{
 
 #[derive(Default)]
 pub(crate) struct Registry(Mutex<BTreeMap<u64, Entry>>);
+#[derive(Clone)]
 struct Entry {
     resources: Arc<LockedStaged>,
-    security_policy: NewFileSecurity,
+    security_policy: Option<NewFileSecurity>,
+    workspace: Option<Arc<ReplacementWorkspace>>,
     dropped: bool,
     recorded: bool,
 }
@@ -39,6 +42,21 @@ impl Registry {
         resources: Arc<LockedStaged>,
         security_policy: NewFileSecurity,
     ) -> Guard {
+        self.register_entry(resources, Some(security_policy), None)
+    }
+    pub(super) fn register_replacement(
+        self: &Arc<Self>,
+        resources: Arc<LockedStaged>,
+        workspace: Arc<ReplacementWorkspace>,
+    ) -> Guard {
+        self.register_entry(resources, None, Some(workspace))
+    }
+    fn register_entry(
+        self: &Arc<Self>,
+        resources: Arc<LockedStaged>,
+        security_policy: Option<NewFileSecurity>,
+        workspace: Option<Arc<ReplacementWorkspace>>,
+    ) -> Guard {
         let operation = resources.capture().operation;
         let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
         // Only the owner can grant a permit, once per monotonically allocated operation.
@@ -48,6 +66,7 @@ impl Registry {
             Entry {
                 resources,
                 security_policy,
+                workspace,
                 dropped: false,
                 recorded: false,
             },
@@ -73,13 +92,13 @@ impl Registry {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&operation);
     }
-    fn dropped(&self) -> Vec<(Arc<LockedStaged>, bool, NewFileSecurity)> {
+    fn dropped(&self) -> Vec<Entry> {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
             .filter(|e| e.dropped)
-            .map(|e| (e.resources.clone(), e.recorded, e.security_policy))
+            .cloned()
             .collect()
     }
     #[cfg(test)]
@@ -92,19 +111,23 @@ impl Registry {
 /// Dropping this receipt does not release the Store's retained copy.
 pub struct PublicationRecovery {
     resources: Arc<LockedStaged>,
-    security_policy: NewFileSecurity,
+    security_policy: Option<NewFileSecurity>,
+    workspace: Option<Arc<ReplacementWorkspace>>,
     pub terminal_recorded: bool,
     pub owner_error: Option<Error>,
 }
 impl PublicationRecovery {
     /// Intended final policy, not proof it was applied or a recovery permit.
-    pub fn security_policy(&self) -> NewFileSecurity {
+    pub fn security_policy(&self) -> Option<NewFileSecurity> {
         self.security_policy
     }
     /// Frozen intended final descriptor from the original policy/resources,
     /// not evidence of current security or proof the DACL helper ran.
     pub fn expected_security(&self) -> &SecurityDescriptor {
-        self.security_policy.expected(&self.resources)
+        self.security_policy.map_or_else(
+            || self.resources.temporary_security(),
+            |policy| policy.expected(&self.resources),
+        )
     }
     pub fn capture(&self) -> &SaveCapture {
         self.resources.capture()
@@ -114,6 +137,9 @@ impl PublicationRecovery {
             self.resources.recovery_temp().to_owned(),
             self.resources.staged.target_path(),
         ];
+        if let Some(workspace) = &self.workspace {
+            paths.extend([workspace.backup_path(), workspace.source_path().to_owned()]);
+        }
         if let Ok(path) = self.current_path() {
             if !paths.contains(&path) {
                 paths.push(path);
@@ -148,10 +174,11 @@ impl Store {
         self.publication_recovery
             .dropped()
             .into_iter()
-            .map(|(resources, recorded, security_policy)| {
+            .map(|Entry { resources, recorded, security_policy, workspace, .. }| {
                 let mut notice = PublicationRecovery {
                     resources,
                     security_policy,
+                    workspace,
                     terminal_recorded: recorded,
                     owner_error: None,
                 };
@@ -186,9 +213,16 @@ impl Store {
             .dropped()
             .into_iter()
             .map(
-                |(resources, recorded, security_policy)| PublicationRecovery {
+                |Entry {
+                     resources,
+                     recorded,
+                     security_policy,
+                     workspace,
+                     ..
+                 }| PublicationRecovery {
                     resources,
                     security_policy,
+                    workspace,
                     terminal_recorded: recorded,
                     owner_error: None,
                 },
