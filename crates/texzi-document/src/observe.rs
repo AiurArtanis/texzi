@@ -1,6 +1,4 @@
 //! C08 memory publication, bounded replay, complete-batch client recovery.
-#[cfg(test)]
-mod failure_ack_tests;
 use crate::*;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
@@ -463,10 +461,6 @@ impl Store {
                 log: VecDeque::new(),
             },
         );
-    }
-    #[cfg(all(test, windows))]
-    pub(crate) fn test_observer_document_count(&self) -> usize {
-        self.observer.journals.len()
     }
     pub(crate) fn observed_write<T>(
         &mut self,

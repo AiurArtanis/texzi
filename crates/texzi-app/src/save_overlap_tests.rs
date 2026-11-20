@@ -11,9 +11,9 @@ use std::{
     sync::mpsc,
     time::{Duration, Instant},
 };
-use texzi_document::{Revision, SaveCapture, StateToken};
+use texzi_document::{Revision, Snapshot, StateToken};
 
-type Hook = Box<dyn FnOnce(&SaveCapture) + Send>;
+type Hook = Box<dyn FnOnce(&Snapshot) + Send>;
 
 struct Probe {
     pause: RefCell<Option<Hook>>,
@@ -61,7 +61,7 @@ fn SaveOverlapFixture() -> impl IntoElement {
                             bytes: snapshot.body.to_utf8(),
                             revision: snapshot.revision,
                             token: snapshot.token,
-                            dirty: store.dirty(id).unwrap(),
+                            dirty: doc.source.is_dirty().unwrap(),
                             path: doc.path.get(),
                             notice: observed.notice.get(),
                         }
@@ -306,9 +306,9 @@ fn source_input_during_real_menu_save_keeps_newer_revision_dirty() {
     let (resume_tx, resume_rx) = mpsc::channel();
     let ui = std::thread::current().id();
     let probe = Rc::new(Probe {
-        pause: RefCell::new(Some(Box::new(move |capture: &SaveCapture| {
+        pause: RefCell::new(Some(Box::new(move |capture: &Snapshot| {
             assert_ne!(ui, std::thread::current().id());
-            started_tx.send(capture.snapshot.clone()).unwrap();
+            started_tx.send(capture.clone()).unwrap();
             resume_rx.recv_timeout(Duration::from_secs(15)).unwrap();
         }))),
         states: RefCell::new(Vec::new()),

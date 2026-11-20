@@ -1,4 +1,5 @@
 //! Application shell. Native menus and the palette share command identities.
+use crate::editor_owner::SaveError;
 use crate::native_menu::SHELL_SHORTCUTS;
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
 use nsh_base::editor::{Editor, EditorApi, EditorCommand, ExternalDocument};
@@ -609,9 +610,7 @@ impl Shell {
         let targets = if all {
             self.docs.with(|docs| {
                 docs.iter()
-                    .filter(|doc| {
-                        doc.source.is_dirty().unwrap_or(true) || doc.source.needs_save_recovery()
-                    })
+                    .filter(|doc| doc.source.is_dirty().unwrap_or(true))
                     .cloned()
                     .collect::<Vec<_>>()
             })
@@ -647,60 +646,104 @@ impl Shell {
     ) -> Result<(), String> {
         let mut saved = 0;
         for doc in targets {
-            if doc.source.needs_save_recovery() {
-                return Err(format!("{} 有待检查的保存恢复结果", doc.name()));
-            }
             let original = doc.path.get();
-            if !save_as && let Some(path) = &original {
-                if doc.source.is_dirty()? {
-                    self.notice.set(format!("正在保存 {}", doc.name()));
-                    doc.source.replace_current(path.clone()).await?;
-                    saved += 1;
-                    self.show_saved(&doc);
-                } else {
-                    self.notice.set(format!("{} 没有未保存的修改", doc.name()));
+            let mut choose_path = save_as || original.is_none();
+            let mut use_utf8 = false;
+            let mut destination = original.clone();
+            loop {
+                if choose_path {
+                    let mut dialog = SaveDialog::new().title(if save_as || original.is_some() {
+                        "另存为新文件"
+                    } else {
+                        "保存新文件"
+                    });
+                    if let Some(path) = &original {
+                        if let Some(parent) = path.parent() {
+                            dialog = dialog.directory(parent);
+                        }
+                        if let Some(stem) = path.file_stem() {
+                            let extension = path
+                                .extension()
+                                .map(|ext| format!(".{}", ext.to_string_lossy()))
+                                .unwrap_or_default();
+                            dialog = dialog
+                                .file_name(format!("{}-副本{extension}", stem.to_string_lossy()));
+                        }
+                    }
+                    destination = self.owner.run(|| pick_save_path(dialog)).await?;
+                    if destination.is_none() {
+                        self.show_cancelled_save(saved);
+                        return Ok(());
+                    }
+                    choose_path = false;
                 }
-                continue;
-            }
-            let mut dialog = SaveDialog::new().title(if save_as {
-                "另存为新文件"
-            } else {
-                "保存新文件"
-            });
-            if let Some(path) = &original {
-                if let Some(parent) = path.parent() {
-                    dialog = dialog.directory(parent);
-                }
-                if let Some(stem) = path.file_stem() {
-                    let extension = path
-                        .extension()
-                        .map(|ext| format!(".{}", ext.to_string_lossy()))
-                        .unwrap_or_default();
-                    dialog =
-                        dialog.file_name(format!("{}-副本{extension}", stem.to_string_lossy()));
-                }
-            }
-            let answer = self.owner.run(|| pick_save_path(dialog));
-            let Some(path) = answer.await? else {
+                let path = destination.as_ref().unwrap();
+                let replace = original.as_ref().is_some_and(|old| old == path);
                 self.restore_editor_focus();
-                self.notice.set(if saved == 0 {
-                    "已取消保存".into()
-                } else {
-                    format!("已保存 {saved} 个文档，已取消剩余保存")
-                });
-                return Ok(());
-            };
-            // Keep the save command and close handlers gated until the worker
-            // returns, while the normal editor input regains focus.
-            self.restore_editor_focus();
-            self.notice.set(format!("正在保存 {}", doc.name()));
-            doc.source.save_new_destination(path.clone()).await?;
-            self.remember(&path);
-            doc.path.set(Some(path));
-            saved += 1;
-            self.show_saved(&doc);
+                self.notice.set(format!("正在保存 {}", doc.name()));
+                match doc.source.save_file(path.clone(), replace, use_utf8).await {
+                    Ok(()) => {
+                        self.remember(path);
+                        doc.path.set(Some(path.clone()));
+                        saved += 1;
+                        self.show_saved(&doc);
+                        break;
+                    }
+                    Err(SaveError::Encoding) => {
+                        let answer = self
+                            .owner
+                            .run(|| {
+                                nsh_base::alert_dialog()
+                                    .title("当前编码无法保存部分字符")
+                                    .action("utf8", "改存 UTF-8")
+                                    .cancel("cancel", "取消")
+                                    .close_on_escape(true)
+                                    .show()
+                            })
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        if answer.action.as_deref() != Some("utf8") {
+                            self.show_cancelled_save(saved);
+                            return Ok(());
+                        }
+                        use_utf8 = true;
+                    }
+                    Err(SaveError::Other(message)) => {
+                        let answer = self
+                            .owner
+                            .run(|| {
+                                nsh_base::alert_dialog()
+                                    .title("保存失败")
+                                    .description(format!("{message}\n保存未完成，编辑内容仍在。"))
+                                    .action("retry", "重试")
+                                    .action("save-as", "另存为")
+                                    .cancel("cancel", "取消")
+                                    .close_on_escape(true)
+                                    .show()
+                            })
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        match answer.action.as_deref() {
+                            Some("retry") => {}
+                            Some("save-as") => choose_path = true,
+                            _ => {
+                                self.show_cancelled_save(saved);
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
         }
         Ok(())
+    }
+    fn show_cancelled_save(self: &Rc<Self>, saved: usize) {
+        self.restore_editor_focus();
+        self.notice.set(if saved == 0 {
+            "已取消保存".into()
+        } else {
+            format!("已保存 {saved} 个文档，已取消剩余保存")
+        });
     }
     fn show_saved(&self, doc: &Document) {
         let newer = if doc.source.is_dirty().unwrap_or(true) {
@@ -712,13 +755,6 @@ impl Shell {
     }
     fn close_window(self: &Rc<Self>) {
         if self.modal.get() {
-            return;
-        }
-        if self
-            .docs
-            .with(|docs| docs.iter().any(|doc| doc.source.needs_save_recovery()))
-        {
-            self.explain("无法关闭窗口", "请先检查保存恢复结果。");
             return;
         }
         let dirty = self.docs.with(|ds| {
@@ -778,10 +814,6 @@ impl Shell {
             self.split.set(None);
             self.second_active.set(false);
             self.active.set(id);
-            return;
-        }
-        if doc.source.needs_save_recovery() {
-            self.explain("无法关闭文档", "请先检查保存恢复结果。");
             return;
         }
         if doc.source.is_dirty().unwrap_or(true) {
@@ -1619,6 +1651,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let side = s.clone();
     let content = s.clone();
     let panels = s.clone();
+    let status_shell = s.clone();
     let notice = s.notice;
     let zen = s.zen;
     let docs = s.docs;
@@ -1765,10 +1798,19 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
         .child(when(
             move || !zen.get(),
             move || {
+                let status_shell = status_shell.clone();
                 view()
                     .h(px(24.0))
                     .bg(frame)
+                    .flex_row()
+                    .justify_between()
                     .child(text(move || notice.get()))
+                    .child(text(move || {
+                        status_shell
+                            .current()
+                            .and_then(|doc| doc.source.file_status())
+                            .unwrap_or_default()
+                    }))
             },
         ))
 }

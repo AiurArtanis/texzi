@@ -1,20 +1,9 @@
-//! T07 codecs, captured payload and Windows save components. UI integration pending.
+//! Document file formats and serialization.
 use crate::{DocId, SaveCapture, Snapshot, Store, TargetKey};
-use std::{path::Path, sync::Arc};
-#[forbid(unsafe_code)]
-mod legacy_spans;
-#[forbid(unsafe_code)]
-pub mod staging;
-#[cfg(windows)]
-// Raw Windows calls stay in these three explicit adapters and their fixtures.
-#[allow(unsafe_code)]
-pub mod windows_identity;
+use std::sync::Arc;
 #[cfg(windows)]
 #[allow(unsafe_code)]
-pub mod windows_save;
-#[cfg(windows)]
-#[allow(unsafe_code)]
-pub mod windows_security;
+pub mod save;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -46,11 +35,6 @@ pub enum FileError {
     NeedsDecodedImportApi,
     WrongDocument,
     ProfileChangeNeedsCoordination,
-    ExternalChangeDuringRead,
-    UnsupportedFileKind,
-    NeedsLegacyByteMap,
-    UnverifiedDiskBinding,
-    StaleDiskBinding,
     Document(crate::Error),
 }
 impl From<crate::Error> for FileError {
@@ -65,26 +49,6 @@ pub struct LoadedBytes {
     format: Format,
 }
 impl LoadedBytes {
-    /// Reads bytes only. Filesystem identity/reparse resolution is not claimed.
-    pub fn read_only(path: &Path, explicit: Option<Encoding>) -> Result<Self, FileError> {
-        use std::io::Read;
-        let mut file = std::fs::File::open(path).map_err(FileError::Io)?;
-        let before = file.metadata().map_err(FileError::Io)?;
-        if !before.is_file() {
-            return Err(FileError::UnsupportedFileKind);
-        }
-        let modified = before.modified().map_err(FileError::Io)?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(FileError::Io)?;
-        let after = file.metadata().map_err(FileError::Io)?;
-        if before.len() != after.len()
-            || after.len() != bytes.len() as u64
-            || after.modified().map_err(FileError::Io)? != modified
-        {
-            return Err(FileError::ExternalChangeDuringRead);
-        }
-        Self::decode(bytes.into(), explicit)
-    }
     pub fn decode(original: Arc<[u8]>, explicit: Option<Encoding>) -> Result<Self, FileError> {
         let signature = if !matches!(explicit, Some(Encoding::Utf16Le | Encoding::Utf16Be))
             && (original.starts_with(&[0, 0, 0xfe, 0xff])
@@ -165,8 +129,6 @@ impl LoadedBytes {
             imported: snapshot.clone(),
             original: self.original,
             format: self.format,
-            #[cfg(windows)]
-            disk: None,
         };
         Ok((snapshot, binding))
     }
@@ -176,16 +138,6 @@ pub struct FileBinding {
     imported: Snapshot,
     original: Arc<[u8]>,
     format: Format,
-    #[cfg(windows)]
-    disk: Option<DiskBinding>,
-}
-#[cfg(windows)]
-struct DiskBinding {
-    anchor: windows_identity::OpenAnchor,
-    parent: windows_identity::FileIdentity,
-    version: windows_identity::FileVersion,
-    path: std::path::PathBuf,
-    epoch: u64,
 }
 pub struct PreparedSave {
     capture: SaveCapture,
@@ -204,20 +156,6 @@ impl PreparedSave {
     }
 }
 impl FileBinding {
-    #[cfg(windows)]
-    fn checked_disk_binding(&self, store: &Store) -> Result<&DiskBinding, FileError> {
-        let disk = self.disk.as_ref().ok_or(FileError::UnverifiedDiskBinding)?;
-        store.snapshot(self.doc())?; // Validate before indexing owner metadata.
-        let metadata = store.observer_metadata(self.doc());
-        if !metadata.baseline.backed_by_disk
-            || metadata.baseline.token != self.imported.token
-            || metadata.attention.binding_epoch != disk.epoch
-            || metadata.attention.target.as_ref() != Some(&disk.version.identity.target_key())
-        {
-            return Err(FileError::StaleDiskBinding);
-        }
-        Ok(disk)
-    }
     pub fn doc(&self) -> DocId {
         self.imported.doc
     }
@@ -238,17 +176,6 @@ impl FileBinding {
         {
             return Ok(self.original.clone());
         }
-        if format == self.format
-            && matches!(
-                format.encoding,
-                Encoding::GbkWebEncodingRs0844 | Encoding::Gb18030WebEncodingRs0844
-            )
-        {
-            // Same-format Web output must prove source coverage even where
-            // the latest disk baseline happened to be canonical. Undo may bring
-            // back an older origin for which this binding has no encoded bytes.
-            return legacy_spans::encode_preserving(self, s, format).map(Arc::from);
-        }
         let utf8 = s.body.to_utf8();
         let text = std::str::from_utf8(&utf8).map_err(|_| FileError::InvalidBytes)?;
         encode(text, format).map(Arc::from)
@@ -262,22 +189,9 @@ impl FileBinding {
         guard: String,
         format: Format,
     ) -> Result<PreparedSave, FileError> {
-        self.prepare_with_scope(store, target, guard, format, None)
-    }
-    pub(crate) fn prepare_with_scope(
-        &self,
-        store: &mut Store,
-        target: TargetKey,
-        guard: String,
-        format: Format,
-        scope: Option<crate::SaveScope>,
-    ) -> Result<PreparedSave, FileError> {
         let snapshot = store.snapshot(self.doc())?;
         let bytes = self.encode_snapshot(&snapshot, format)?;
-        let capture = match scope {
-            Some(scope) => store.begin_scoped_save(self.doc(), target, guard, scope)?,
-            None => store.begin_save(self.doc(), target, guard)?,
-        };
+        let capture = store.begin_save(self.doc(), target, guard)?;
         Ok(PreparedSave {
             capture,
             bytes,

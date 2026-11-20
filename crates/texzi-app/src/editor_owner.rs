@@ -6,6 +6,7 @@ use texzi_document as doc;
 
 mod commands;
 mod files;
+pub(crate) use files::SaveError;
 
 pub struct Owner {
     store: RefCell<doc::Store>,
@@ -25,12 +26,12 @@ impl NativeView {
         let s = store
             .open_utf8(raw, doc::Profile::default(), false)
             .expect("new document");
-        Self::from_store(store, s, None).expect("new logical view")
+        Self::from_store(store, s, files::FileState::default()).expect("new logical view")
     }
     fn from_store(
         mut store: doc::Store,
         s: doc::Snapshot,
-        binding: Option<doc::files::FileBinding>,
+        file_state: files::FileState,
     ) -> Result<Rc<Self>, String> {
         let set = doc::SelectionSet::caret(&s, 0);
         let v = store
@@ -47,7 +48,7 @@ impl NativeView {
                 store: RefCell::new(store),
                 changed: signal(0),
                 clock: Instant::now(),
-                files: RefCell::new(files::FileState::new(binding)),
+                files: RefCell::new(file_state),
             }),
             view: v.id,
             composing: signal(false),

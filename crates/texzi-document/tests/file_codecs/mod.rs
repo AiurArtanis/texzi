@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use texzi_document::{files::*, *};
-mod legacy_spans;
 fn format(encoding: Encoding, bom: bool) -> Format {
     Format { encoding, bom }
 }
@@ -212,31 +211,6 @@ fn unencodable_format_is_undoable_and_does_not_reserve_save_target() {
     let restored = store.undo(s.doc).unwrap().snapshot;
     assert_eq!(restored.token, s.token);
     assert!(!store.dirty(s.doc).unwrap());
-}
-#[test]
-fn noncanonical_legacy_bytes_preserve_untouched_alias_after_edit_and_undo() {
-    let f = format(Encoding::Gb18030WebEncodingRs0844, false);
-    let raw = vec![0xa3, 0xa0, 65];
-    let loaded = LoadedBytes::decode_exact(raw.clone().into(), f).unwrap();
-    assert_eq!(loaded.text(), "\u{3000}A");
-    let mut store = Store::new(HistoryBudget::default());
-    let (s, b) = loaded.attach(&mut store).unwrap();
-    assert_eq!(&*b.encode_snapshot(&s, f).unwrap(), raw);
-    let changed = store
-        .submit(Transaction {
-            doc: s.doc,
-            base: s.revision,
-            edits: vec![Edit::input(&s, 3..4, "B")],
-            boundary: BoundaryPolicy::Grapheme,
-            cancelled: false,
-        })
-        .unwrap()
-        .snapshot;
-    assert_eq!(&*b.encode_snapshot(&changed, f).unwrap(), &[0xa3, 0xa0, 66]);
-    let restored = store.undo(s.doc).unwrap().snapshot;
-    assert_eq!(&*b.encode_snapshot(&restored, f).unwrap(), raw);
-    let redone = store.redo(s.doc).unwrap().snapshot;
-    assert_eq!(&*b.encode_snapshot(&redone, f).unwrap(), &[0xa3, 0xa0, 66]);
 }
 #[test]
 fn legacy_choices_are_explicit_and_lossy_output_is_rejected() {

@@ -1,4 +1,4 @@
-param([switch]$FailureProbe,[switch]$SaveOverlapDiagnostics)
+param([switch]$FailureProbe)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location (Split-Path $PSScriptRoot -Parent)
@@ -6,12 +6,6 @@ if (Test-Path dist) { throw 'dist already exists; use a clean checkout to avoid 
 New-Item build-evidence -ItemType Directory -Force | Out-Null
 if (Test-Path build-evidence/build.log) { throw 'build-evidence/build.log already exists; preserve it and use a clean checkout.' }
 . "$PSScriptRoot/native-command.ps1"
-$appFeatures = @()
-$diagnosticIdentity = 'none'
-if ($SaveOverlapDiagnostics) {
-    $appFeatures = @('--features', 'texzi-app/save-overlap-diagnostics')
-    $diagnosticIdentity = 'save-overlap'
-}
 Start-Transcript -Path build-evidence/transcript.log
 try {
     if ($FailureProbe) {
@@ -64,7 +58,7 @@ try {
         Copy-Item $testExecutables[0] build-evidence/failed-document-contracts.exe
         throw
     }
-    Invoke-Checked cargo (@('test', '-p', 'texzi-app', '--bin', 'texzi-app', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc', '--no-run', '--message-format=json') + $appFeatures) -StdoutFile 'build-evidence/rich-test-build.jsonl'
+    Invoke-Checked cargo @('test', '-p', 'texzi-app', '--bin', 'texzi-app', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc', '--no-run', '--message-format=json') -StdoutFile 'build-evidence/rich-test-build.jsonl'
     $richTests = @(Get-Content build-evidence/rich-test-build.jsonl | Where-Object { $_.StartsWith('{') } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'texzi-app' -and $_.executable } | Select-Object -ExpandProperty executable)
     if ($richTests.Count -ne 1) { throw 'Expected exactly one app rich projection test executable' }
     try {
@@ -81,7 +75,7 @@ try {
         Copy-Item target/x86_64-pc-windows-msvc/release/document-probe.exe build-evidence/failed-document-probe.exe
         throw
     }
-    Invoke-Checked cargo (@('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc') + $appFeatures) -StdoutFile 'build-evidence/application-build.stdout.log'
+    Invoke-Checked cargo @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc') -StdoutFile 'build-evidence/application-build.stdout.log'
     $linkCommands = Get-Content build-evidence/application-build.stdout.log
     $finalLink = @($linkCommands | Where-Object { $_ -match '/OUT:.*texzi[-_]app.*\.exe' })
     if ($finalLink.Count -ne 1) { throw 'Cannot identify the actual final application linker invocation' }
@@ -137,7 +131,7 @@ try {
     }
     $sbom | ConvertTo-Json -Depth 6 | Set-Content dist/package/sbom.json
     Copy-Item build-evidence/metadata.json dist/package/
-    "commit=$commit`nrun=$env:GITHUB_RUN_ID`nattempt=$env:GITHUB_RUN_ATTEMPT`nimage=$env:ImageOS/$env:ImageVersion`ndiagnostics=$diagnosticIdentity`n" | Set-Content dist/package/build-identity.txt
+    "commit=$commit`nrun=$env:GITHUB_RUN_ID`nattempt=$env:GITHUB_RUN_ATTEMPT`nimage=$env:ImageOS/$env:ImageVersion`n" | Set-Content dist/package/build-identity.txt
     Get-FileHash dist/package/texzi-app.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  texzi-app.exe" } | Set-Content dist/package/SHA256SUMS.txt
 } catch {
     $_ | Out-String | Add-Content build-evidence/build.log

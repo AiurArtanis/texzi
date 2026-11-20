@@ -22,9 +22,12 @@ impl NativeView {
     }
     pub fn is_dirty(&self) -> Result<bool, String> {
         let store = self.owner.store.borrow();
-        store
-            .dirty(store.view(self.view).map_err(err)?.doc)
-            .map_err(err)
+        let id = store.view(self.view).map_err(err)?.doc;
+        if store.dirty(id).map_err(err)? {
+            return Ok(true);
+        }
+        let recent_save_edit = self.owner.files.borrow().keep_dirty_revision;
+        Ok(recent_save_edit == Some(store.snapshot(id).map_err(err)?.revision))
     }
     pub fn has_undo_redo(&self) -> Result<(bool, bool), String> {
         Ok(self.can_history())

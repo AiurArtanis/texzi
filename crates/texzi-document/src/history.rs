@@ -3,8 +3,6 @@ use crate::{
     HistoryObservation, MergeObservation, SaveObservation, SaveResult, SaveTerminal, Unimplemented,
 };
 mod failure_ack;
-#[cfg(windows)]
-mod verified_open;
 use crate::{
     Body, DocId, Eol, Error, Profile, Revision, SourceByte, StateToken, coordinates::boundary,
 };
@@ -18,8 +16,6 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-#[cfg(windows)]
-pub(crate) use verified_open::OpenDocument;
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -127,12 +123,6 @@ impl Default for HistoryBudget {
 
 /// All mutating APIs require &mut Store: one serial owner, no callback reentrancy.
 pub struct Store {
-    #[cfg(all(test, windows))]
-    verified_open_doc_counter: Option<Arc<AtomicU64>>,
-    #[cfg(windows)]
-    opened_identities: HashMap<DocId, crate::files::windows_identity::OpenAnchor>,
-    #[cfg(windows)]
-    pub(crate) publication_recovery: Arc<crate::files::windows_save::recovery::Registry>,
     scope_parents: HashMap<TargetKey, ScopeLease>,
     scope_objects: HashMap<TargetKey, ScopeLease>,
     bound_targets: HashMap<TargetKey, DocId>,
@@ -207,21 +197,6 @@ struct ActiveSave {
     scope: Option<SaveScope>,
     capture: SaveCapture,
     stage: SaveStage,
-}
-#[derive(Clone, Copy)]
-pub(crate) enum BoundPublication {
-    New,
-    #[cfg(windows)]
-    Replace,
-}
-impl BoundPublication {
-    fn matches(self, capture: &SaveCapture, scope: &SaveScope) -> bool {
-        match self {
-            Self::New => scope.object.is_none(),
-            #[cfg(windows)]
-            Self::Replace => scope.object.as_ref() == Some(&capture.target),
-        }
-    }
 }
 #[derive(Clone, Copy)]
 struct ScopeLease {
@@ -336,37 +311,6 @@ impl Store {
         }
         Ok(a)
     }
-    pub(crate) fn captured_save_stage(&self, c: &SaveCapture) -> Result<SaveStage, Error> {
-        self.active_save(c).map(|a| a.stage)
-    }
-    pub(crate) fn permit_bound_new_unpublished(
-        &mut self,
-        c: &SaveCapture,
-        scope: &SaveScope,
-    ) -> Result<(), Error> {
-        self.permit_bound_publication_unpublished(c, scope, BoundPublication::New)
-    }
-
-    pub(crate) fn permit_bound_publication_unpublished(
-        &mut self,
-        c: &SaveCapture,
-        scope: &SaveScope,
-        publication: BoundPublication,
-    ) -> Result<(), Error> {
-        let active = self.active_save(c)?;
-        if active.stage != SaveStage::WritingTemp
-            || active.scope.as_ref() != Some(scope)
-            || !publication.matches(c, scope)
-        {
-            return Err(Error::InvalidSave);
-        }
-        self.docs[&c.snapshot.doc]
-            .binding_epoch
-            .checked_add(1)
-            .ok_or(Error::CounterExhausted)?;
-        self.advance_save_unpublished(c, SaveStage::ReadyToReplace)?;
-        self.commit_permit_unpublished(c)
-    }
     pub(crate) fn advance_save_unpublished(
         &mut self,
         c: &SaveCapture,
@@ -405,8 +349,6 @@ impl Store {
             error: None,
         });
         self.release_save(c, false);
-        #[cfg(windows)]
-        self.publication_recovery.recorded(c.operation);
         Ok(())
     }
     fn release_save(&mut self, c: &SaveCapture, hold_scope: bool) {
@@ -481,8 +423,6 @@ impl Store {
                 .insert(c.target.clone(), c.snapshot.doc);
         }
         self.release_save(c, held);
-        #[cfg(windows)]
-        self.publication_recovery.recorded(c.operation);
         Ok(())
     }
     pub fn recovery_snapshot(&self, doc: DocId, operation: u64) -> Result<Snapshot, Error> {
@@ -501,38 +441,10 @@ impl Store {
         &mut self,
         c: &SaveCapture,
     ) -> Result<(), Error> {
-        self.accept_result_unpublished(c, c.target.clone(), None)
-            .map(|_| ())
-    }
-    pub(crate) fn accept_published_new_unpublished(
-        &mut self,
-        c: &SaveCapture,
-        final_target: TargetKey,
-    ) -> Result<u64, Error> {
-        self.accept_result_unpublished(c, final_target, Some(BoundPublication::New))
-    }
-    pub(crate) fn accept_result_unpublished(
-        &mut self,
-        c: &SaveCapture,
-        final_target: TargetKey,
-        publication: Option<BoundPublication>,
-    ) -> Result<u64, Error> {
-        let active = self.active_save(c)?;
-        let required = if publication.is_some() {
-            SaveStage::Replacing
-        } else {
-            SaveStage::Verifying
-        };
-        if active.stage != required
-            || publication.is_some_and(|kind| {
-                !active
-                    .scope
-                    .as_ref()
-                    .is_some_and(|scope| kind.matches(c, scope))
-            })
-        {
+        if self.active_save(c)?.stage != SaveStage::Verifying {
             return Err(Error::InvalidSave);
         }
+        let final_target = c.target.clone();
         if self
             .bound_targets
             .get(&final_target)
@@ -545,9 +457,6 @@ impl Store {
             .binding_epoch
             .checked_add(1)
             .ok_or(Error::CounterExhausted)?;
-        if publication.is_some() {
-            self.saves.get_mut(&c.snapshot.doc).unwrap().stage = SaveStage::Verifying;
-        }
         let d = self
             .docs
             .get_mut(&c.snapshot.doc)
@@ -567,22 +476,11 @@ impl Store {
             self.bound_targets.remove(&previous);
         }
         self.bound_targets.insert(final_target, c.snapshot.doc);
-        // Generic/save publication receipts do not transfer a lifetime witness.
-        #[cfg(windows)]
-        self.opened_identities.remove(&c.snapshot.doc);
         self.release_save(c, false);
-        #[cfg(windows)]
-        self.publication_recovery.complete(c.operation);
-        Ok(next_epoch)
+        Ok(())
     }
     pub fn new(budget: HistoryBudget) -> Self {
         Self {
-            #[cfg(all(test, windows))]
-            verified_open_doc_counter: None,
-            #[cfg(windows)]
-            opened_identities: HashMap::new(),
-            #[cfg(windows)]
-            publication_recovery: Arc::default(),
             scope_parents: HashMap::new(),
             scope_objects: HashMap::new(),
             bound_targets: HashMap::new(),
@@ -597,13 +495,6 @@ impl Store {
             targets: HashMap::new(),
             next_save: 1,
         }
-    }
-    /// Binding counter boundary fixture; absent from normal product builds.
-    #[cfg(all(test, windows))]
-    pub(crate) fn test_set_binding_epoch(&mut self, doc: DocId, epoch: u64) {
-        assert!(!self.saves.contains_key(&doc));
-        let document = self.docs.get_mut(&doc).unwrap();
-        document.binding_epoch = epoch;
     }
     pub fn open_utf8(
         &mut self,
@@ -703,6 +594,19 @@ impl Store {
     pub fn dirty(&self, doc: DocId) -> Result<bool, Error> {
         let d = self.docs.get(&doc).ok_or(Error::InvalidDoc)?;
         Ok(d.current.token != d.baseline)
+    }
+    /// Updates the saved baseline after the caller writes this captured revision.
+    pub fn record_disk_save(&mut self, saved: &Snapshot) -> Result<(), Error> {
+        self.observed_write(saved.doc, |store| {
+            let document = store.docs.get_mut(&saved.doc).ok_or(Error::InvalidDoc)?;
+            if saved.revision > document.current.revision {
+                return Err(Error::StaleRevision);
+            }
+            document.baseline = saved.token;
+            document.backed = true;
+            document.baseline_kind = BaselineKind::SavedByCaller;
+            Ok(())
+        })
     }
     pub fn backed_by_disk(&self, doc: DocId) -> Result<bool, Error> {
         Ok(self.docs.get(&doc).ok_or(Error::InvalidDoc)?.backed)
@@ -1205,8 +1109,6 @@ impl Store {
             return Err(Error::UnresolvedConflict);
         }
         let d = self.docs.remove(&doc).ok_or(Error::InvalidDoc)?;
-        #[cfg(windows)]
-        self.opened_identities.remove(&doc);
         if let Some(target) = &d.bound_target {
             self.bound_targets.remove(target);
         }

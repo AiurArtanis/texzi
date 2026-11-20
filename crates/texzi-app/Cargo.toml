@@ -6,9 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-[features]
-save-overlap-diagnostics = []
-
 [dependencies]
 log.workspace = true
 texzi-document = { path = "../texzi-document" }

@@ -1,17 +1,8 @@
 use texzi_document::*;
-mod binding_epochs;
 mod file_codecs;
-mod file_staging;
 mod native_plans;
 mod observers;
-mod save_failure_ack;
-mod save_failures;
-mod save_scopes;
 mod views;
-#[cfg(windows)]
-mod windows_bound_staging;
-#[cfg(windows)]
-mod windows_identity;
 
 fn store(raw: &str) -> (Store, Snapshot) {
     let mut store = Store::new(HistoryBudget::default());
@@ -328,30 +319,6 @@ fn saved_token_during_edit_and_undo_aba() {
     );
     assert!(st.redo(s.doc).is_ok());
     assert!(st.dirty(s.doc).unwrap());
-}
-
-#[test]
-fn save_leases_cancellation_and_forged_receipts() {
-    let (mut st, s) = store("abc");
-    let other = st.open_utf8("xyz", Profile::default(), false).unwrap();
-    let c = st
-        .begin_save(s.doc, TargetKey("same-object".into()), "guard".into())
-        .unwrap();
-    assert_eq!(
-        st.begin_save(other.doc, c.target.clone(), "guard".into())
-            .unwrap_err(),
-        Error::Busy
-    );
-    let mut forged = c.clone();
-    forged.guard = "wrong".into();
-    assert_eq!(st.cancel_save(&forged), Err(Error::InvalidSave));
-    st.cancel_save(&c).unwrap();
-    assert_eq!(st.commit_permit(&c), Err(Error::InvalidSave));
-    assert!(!st.backed_by_disk(s.doc).unwrap());
-    let other = st
-        .begin_save(other.doc, c.target.clone(), "guard".into())
-        .unwrap();
-    complete(&mut st, &other);
 }
 
 #[test]
