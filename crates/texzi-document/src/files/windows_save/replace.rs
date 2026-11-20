@@ -16,13 +16,14 @@ use std::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-    FileDispositionInfo, ReplaceFileW, SetFileInformationByHandle, WRITE_DAC, WRITE_OWNER,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FileDispositionInfo, READ_CONTROL, ReplaceFileW, SetFileInformationByHandle, WRITE_DAC,
 };
 
 pub(super) struct ReplacementWorkspace {
     backup: ObservedTarget,
     source: PathBuf,
-    source_anchor: OpenAnchor,
+    source_security: File,
     source_version: FileVersion,
     #[cfg(test)]
     before_replace: Option<Box<dyn Fn(&Path) + Send + Sync>>,
@@ -55,6 +56,8 @@ pub struct ReplacementFailure {
     paths: Vec<PathBuf>,
     permitted: bool,
     attempted: bool,
+    source_protection_error: Option<PublishIssue>,
+    _workspace: Option<Arc<ReplacementWorkspace>>,
     _guard: Option<Guard>,
 }
 
@@ -65,6 +68,7 @@ impl std::fmt::Debug for ReplacementFailure {
             .field("operation", &self.staged.capture().operation)
             .field("attempted", &self.attempted)
             .field("recovery_paths", &self.paths)
+            .field("source_protection_error", &self.source_protection_error)
             .finish()
     }
 }
@@ -114,6 +118,8 @@ impl LockedStaged {
                 paths,
                 permitted: false,
                 attempted: false,
+                source_protection_error: None,
+                _workspace: None,
                 _guard: None,
             }),
         }
@@ -149,6 +155,8 @@ impl PreparedReplacement {
             staged: self.staged,
             permitted: guard.is_some(),
             attempted,
+            source_protection_error: None,
+            _workspace: Some(self.workspace),
             _guard: guard,
         }
     }
@@ -162,7 +170,16 @@ impl PermittedReplacement {
                 permitted: self,
                 result,
             }),
-            Err(issue) => Err(self.ready.fail(issue, attempted, Some(self.guard))),
+            Err(issue) => {
+                let protection_error = if attempted {
+                    self.ready.workspace.reseal_unpublished_source().err()
+                } else {
+                    None
+                };
+                let mut failure = self.ready.fail(issue, attempted, Some(self.guard));
+                failure.source_protection_error = protection_error;
+                Err(failure)
+            }
         }
     }
 }
@@ -238,26 +255,35 @@ impl ReplacementWorkspace {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
-            .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | WRITE_DAC | WRITE_OWNER)
+            .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | WRITE_DAC)
             .share_mode(0)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .create_new(true)
             .open(&source)?;
         recovery_paths.push(source.clone());
-        // Keep the publication copy in the target's actual parent so Windows
-        // resolves inherited ACEs in the same namespace before and after rename.
-        // Verify the empty file's permissions before writing protected content.
-        if SecurityDescriptor::read(&file)? != original.security {
-            original.security.apply_to_new_file(&file)?;
-        }
+        // Same parent so ReplaceFileW can transfer the original inherited ACEs.
+        // The publication copy always starts private before it contains data.
+        SecurityDescriptor::protect_new_file(&file)?;
         let security = SecurityDescriptor::read(&file)?;
-        if !original.security.matches_restored_creation(&security) {
+        if !original.security.has_same_owner_and_group(&security)? {
+            return Err(PublishIssue::VerificationMismatch);
+        }
+        // No data access on this retained handle. It is compatible with the
+        // native replacement open and can reseal this object if a failed native
+        // call leaves it at the publication path with a partially merged ACL.
+        let source_security = OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&source)?;
+        if windows_identity::identity(&source_security)? != windows_identity::identity(&file)?
+            || windows_identity::volume_path(&source_security)? != source
+        {
             return Err(PublishIssue::VerificationMismatch);
         }
         file.write_all(staged.payload())?;
         file.sync_all()?;
         let source_version = windows_identity::read_version_handle(&mut file)?;
-        let source_anchor = OpenAnchor::from_retained(&file, &source)?;
         backup.recheck()?;
         if source_version.security != security || source_version.bytes.as_ref() != staged.payload()
         {
@@ -266,7 +292,7 @@ impl ReplacementWorkspace {
         Ok(Self {
             backup,
             source,
-            source_anchor,
+            source_security,
             source_version,
             #[cfg(test)]
             before_replace: None,
@@ -279,6 +305,16 @@ impl ReplacementWorkspace {
 
     pub(super) fn source_path(&self) -> &Path {
         &self.source
+    }
+
+    fn reseal_unpublished_source(&self) -> Result<(), PublishIssue> {
+        if windows_identity::volume_path(&self.source_security)? == self.source {
+            SecurityDescriptor::protect_new_file(&self.source_security)?;
+            if SecurityDescriptor::read(&self.source_security)? != self.source_version.security {
+                return Err(PublishIssue::VerificationMismatch);
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn run(
@@ -295,7 +331,8 @@ impl ReplacementWorkspace {
         let mut victim = observed.hold_replacement_victim()?;
         let source = ObservedTarget::inspect(&self.source)?;
         if source.version() != Some(&self.source_version)
-            || !self.source_anchor.retains(self.source_version.identity)?
+            || windows_identity::identity(&self.source_security)? != self.source_version.identity
+            || windows_identity::volume_path(&self.source_security)? != self.source
         {
             return Err(PublishIssue::VerificationMismatch);
         }
@@ -424,13 +461,20 @@ fn replace_file(target: &Path, source: &Path, backup: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
+mod private_access;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{BoundaryPolicy, Edit, ObserverScope, SaveResult, Transaction};
     use std::fs;
     use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
-    fn ready(path: &Path, store: &mut Store, binding: &FileBinding) -> PreparedReplacement {
+    pub(super) fn ready(
+        path: &Path,
+        store: &mut Store,
+        binding: &FileBinding,
+    ) -> PreparedReplacement {
         ObservedTarget::inspect(path)
             .unwrap()
             .prepare_current(binding, store)

@@ -265,6 +265,32 @@ impl SecurityDescriptor {
             && expected[..start] == actual[..start]
             && expected[end..] == actual[end..]
     }
+    pub(super) fn has_same_owner_and_group(&self, other: &Self) -> io::Result<bool> {
+        let identities = |security: &Self| {
+            let descriptor = security.storage.as_ptr().cast_mut().cast();
+            let mut owner = std::ptr::null_mut();
+            let mut group = std::ptr::null_mut();
+            let mut defaulted = 0;
+            // SAFETY: these functions read the live OS-produced descriptor.
+            if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted) } == 0
+                || unsafe { GetSecurityDescriptorGroup(descriptor, &mut group, &mut defaulted) }
+                    == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if owner.is_null() || group.is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "missing file owner or group",
+                ));
+            }
+            Ok((owner, group))
+        };
+        let (owner, group) = identities(self)?;
+        let (other_owner, other_group) = identities(other)?;
+        // SAFETY: both descriptors and their validated SID storage remain live.
+        Ok(unsafe { EqualSid(owner, other_owner) != 0 && EqualSid(group, other_group) != 0 })
+    }
     #[cfg(test)]
     pub(super) fn with_auto_inherited_for_test(&self, enabled: bool) -> Self {
         let mut copy = self.clone();
