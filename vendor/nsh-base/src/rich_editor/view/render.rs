@@ -1620,6 +1620,21 @@ impl Rv {
             .filter(|t| !t.is_empty())
     }
 
+    /// Geometry is written immediately. Notify its reactive readers once
+    /// after the frame's layout callbacks have reported their latest values.
+    fn notify_layout_changed(&self) {
+        if self.layout_notification_pending.replace(true) {
+            return;
+        }
+        let pending = self.layout_notification_pending.clone();
+        let revision = self.layout_rev;
+        spawn(async move {
+            nsh_core::element::next_frame().await;
+            pending.set(false);
+            revision.update(|r| *r += 1);
+        });
+    }
+
     /// Block (or slot) `id`'s frame in box `parent` (`None`: the content
     /// box).
     pub(crate) fn set_frame(&self, id: u64, parent: Option<u64>, frame: Bounds<Points>) {
@@ -1629,7 +1644,7 @@ impl Rv {
         }
         geo.frames.insert(id, (parent, frame));
         drop(geo);
-        self.layout_rev.update(|r| *r += 1);
+        self.notify_layout_changed();
     }
 
     /// The width of the inline view or image at `offset` in textblock
@@ -1644,7 +1659,7 @@ impl Rv {
         }
         text.widths.insert(offset, width);
         drop(geo);
-        self.layout_rev.update(|r| *r += 1);
+        self.notify_layout_changed();
     }
 
     /// Where block `id`'s children start in its box (see
@@ -1656,7 +1671,7 @@ impl Rv {
         }
         geo.insets.insert(id, origin);
         drop(geo);
-        self.layout_rev.update(|r| *r += 1);
+        self.notify_layout_changed();
     }
 
     /// Textblock `id`'s text frame, in box `owner`.
@@ -1671,7 +1686,7 @@ impl Rv {
         text.frame = frame;
         text.owner = Some(owner);
         drop(geo);
-        self.layout_rev.update(|r| *r += 1);
+        self.notify_layout_changed();
     }
 
     /// Sets the `checked` attribute of the task item at `pos`.
@@ -1715,7 +1730,7 @@ impl Rv {
         if let Some(text) = self.geo.borrow_mut().texts.get_mut(&id) {
             text.lines = lines;
         }
-        self.layout_rev.update(|r| *r += 1);
+        self.notify_layout_changed();
     }
 }
 

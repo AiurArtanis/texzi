@@ -159,6 +159,7 @@ pub(crate) struct Rv {
     pub(crate) deco_rev: Signal<u64>,
     /// A block's frame or a text's lines changed.
     pub(crate) layout_rev: Signal<u64>,
+    pub(crate) layout_notification_pending: Rc<Cell<bool>>,
     /// The session has a state the view has not taken yet.
     notified: Signal<u64>,
     pub(crate) focused: Signal<bool>,
@@ -230,6 +231,7 @@ impl Rv {
             sel_rev: signal(0),
             deco_rev: signal(0),
             layout_rev: signal(0),
+            layout_notification_pending: Rc::default(),
             notified: signal(0),
             focused: signal(false),
             blink: signal(true),
