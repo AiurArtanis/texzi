@@ -8,3 +8,6 @@ tests/oracles/** -text
 vendor/nsh-base/** -text
 vendor/nsh-platform-windows/** -text
 crates/texzi-app/tests/fixtures/markdown/** -text
+
+# The build verifies the exact bytes of the current v1 scope.
+/docs/V1-SCOPE.md text eol=lf

@@ -15,6 +15,10 @@ try {
     Invoke-Checked git @('rev-parse', 'HEAD') -StdoutFile 'build-evidence/checkout-commit.txt'
     $commit = (Get-Content build-evidence/checkout-commit.txt -Raw).Trim()
     if ($env:GITHUB_SHA -and $commit -ne $env:GITHUB_SHA) { throw 'Checkout SHA mismatch' }
+    Invoke-Checked git @('status', '--porcelain', '--untracked-files=all') -StdoutFile 'build-evidence/checkout-status.txt'
+    if ((Get-Item -LiteralPath 'build-evidence/checkout-status.txt').Length -ne 0) {
+        throw 'Checkout is not clean. See build-evidence/checkout-status.txt.'
+    }
     Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture | Format-List
     Write-Host "commit=$commit run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT image=$env:ImageOS/$env:ImageVersion"
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -42,6 +46,12 @@ try {
         }
     }
     Write-Host "Design manifest: $($manifest.files.Count) entries verified"
+    $scope = 'docs/V1-SCOPE.md'
+    $expectedScopeHash = (Get-Content -LiteralPath 'docs/V1-SCOPE.sha256' -Raw).Trim()
+    if ((Get-FileHash -LiteralPath $scope -Algorithm SHA256).Hash -ne $expectedScopeHash) {
+        throw "V1 scope hash mismatch: $scope"
+    }
+    Write-Host "V1 scope SHA256 verified: $scope"
     Invoke-Checked cargo @('fmt', '--all', '--', '--check')
     Invoke-Checked cargo @('tree', '--locked', '--target', 'x86_64-pc-windows-msvc', '-e', 'features')
     Invoke-Checked cargo @('tree', '-p', 'texzi-document', '--features', 'probe', '--locked', '--target', 'x86_64-pc-windows-msvc', '-e', 'features')
