@@ -9,7 +9,7 @@ use nsh_core::{
     element::{
         ImageSrc,
         desktop::{WindowRef, current_window, popup_menu_at},
-        image, input,
+        image, input, scroll,
     },
     file_dialog::{OpenDialog, SaveDialog},
     geometry::point,
@@ -172,6 +172,8 @@ struct Shell {
     closed: RefCell<Vec<Rc<Document>>>,
     root: Signal<Option<PathBuf>>,
     sidebar: Signal<bool>,
+    sidebar_width: Signal<f32>,
+    sidebar_drag_start: Signal<f32>,
     notice: Signal<String>,
     panel: Signal<String>,
     query: Signal<String>,
@@ -240,6 +242,8 @@ impl Shell {
             closed: RefCell::new(vec![]),
             root: signal(None),
             sidebar: signal(true),
+            sidebar_width: signal(232.0),
+            sidebar_drag_start: signal(232.0),
             notice: signal(String::new()),
             panel: signal(String::new()),
             query: signal(String::new()),
@@ -1771,18 +1775,148 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
         .child(view().flex_1().min_w(px(18.0)).h_full())
 }
 
+fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
+    let files = s.clone();
+    let search = s.clone();
+    view()
+        .w(px(44.0))
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(4.0))
+        .py(px(4.0))
+        .bg(frame)
+        .child(shell_icon("▤", "资源管理器").on_press(move |_: &()| {
+            files.run("texzi.sidebar.toggle");
+        }))
+        .child(shell_icon("⌕", "在文件夹中搜索").on_press(move |_: &()| {
+            search.run("texzi.find.inFolder");
+        }))
+        .child(view().flex_1())
+        .child(shell_icon("⚙", "设置").on_press(move |_: &()| {
+            s.panel.set("settings".into());
+        }))
+}
+
+fn shell_icon(glyph: &'static str, label: &'static str) -> nsh_base::ButtonElement {
+    nsh_base::button()
+        .w(px(36.0))
+        .h(px(32.0))
+        .accessibility_label(label)
+        .child(text(glyph).text_size(px(16.0)))
+}
+
+fn file_sidebar(s: Rc<Shell>) -> impl IntoElement {
+    let width = s.sidebar_width;
+    let start = s.sidebar_drag_start;
+    let window = s.window.clone();
+    let max_width = move || {
+        window.state().map_or(560.0, |state| {
+            (state.content_bounds.size.width.0 - 244.0).clamp(160.0, 560.0)
+        })
+    };
+    let layout_max = max_width.clone();
+    let drag_max = max_width.clone();
+    view()
+        .relative()
+        .w(move || px(width.get().min(layout_max())))
+        .flex_shrink_0()
+        .p(px(8.0))
+        .gap(px(8.0))
+        .bg(frame)
+        .child(text("资源管理器"))
+        .child(button("打开文件夹", s.clone(), "texzi.folder.open"))
+        .child(dynamic(move || folder(s.clone())))
+        .child(
+            nsh_base::resize_handle()
+                .edge(nsh_base::HandleEdge::Trailing)
+                .accessibility_label("调整资源管理器宽度")
+                .on_drag_start(move || start.set(width.get_untracked().min(max_width())))
+                .on_drag_move(move |offset: &Points| {
+                    width.set((start.get_untracked() + offset.0).clamp(160.0, drag_max()));
+                }),
+        )
+}
+
+fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
+    let docs = s.docs;
+    let active = s.active;
+    let new_tab = s.clone();
+    view()
+        .h(px(38.0))
+        .flex_shrink_0()
+        .items_center()
+        .flex_row()
+        .bg(frame)
+        .child(scroll().horizontal().scrollbar(false).min_w(px(0.0)).child(
+            view().flex_row().child(each(
+                move || docs.get(),
+                |doc: &Rc<Document>| doc.id,
+                move |doc, _| {
+                    let doc = doc.get_untracked();
+                    let tab = s.clone();
+                    let close = s.clone();
+                    let id = doc.id;
+                    view()
+                        .relative()
+                        .h(px(38.0))
+                        .flex_row()
+                        .items_center()
+                        .child(
+                            nsh_base::button()
+                                .selected(move || active.get() == id)
+                                .child(text(move || {
+                                    doc.source.track();
+                                    let dirty = if doc.source.is_dirty().unwrap_or(true) {
+                                        " ●"
+                                    } else {
+                                        ""
+                                    };
+                                    format!("{}{dirty}", doc.name())
+                                }))
+                                .on_press(move |_: &()| {
+                                    tab.active.set(id);
+                                    tab.second_active.set(false);
+                                }),
+                        )
+                        .child(
+                            shell_icon("×", "关闭此标签")
+                                .on_press(move |_: &()| close.close_tab(id)),
+                        )
+                        .child(when(
+                            move || active.get() == id,
+                            || {
+                                view()
+                                    .absolute()
+                                    .bottom(px(0.0))
+                                    .left(px(0.0))
+                                    .right(px(0.0))
+                                    .h(px(2.0))
+                                    .bg(|| -> Hsla {
+                                        rgb(if dark() { 0x79aaef } else { 0x3267b0 }).into()
+                                    })
+                            },
+                        ))
+                },
+            )),
+        ))
+        .child(
+            shell_icon("+", "新建标签")
+                .flex_shrink_0()
+                .on_press(move |_: &()| new_tab.run("texzi.file.new")),
+        )
+}
+
 fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let toolbar = s.clone();
     let tabs = s.clone();
     let side = s.clone();
+    let activity = s.clone();
     let content = s.clone();
     let panels = s.clone();
     let quick = s.clone();
     let status_shell = s.clone();
     let notice = s.notice;
     let zen = s.zen;
-    let docs = s.docs;
-    let active = s.active;
     let exit_zen = s.clone();
     let zen_window = s.window.clone();
     let zen_armed = s.zen_exit.armed;
@@ -1831,81 +1965,21 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                 .flex_row()
                 .flex_1()
                 .child(when(
+                    move || !zen.get(),
+                    move || activity_bar(activity.clone()),
+                ))
+                .child(when(
                     {
                         let s = side.clone();
                         move || s.sidebar.get() && !zen.get()
                     },
-                    move || {
-                        let s = side.clone();
-                        view()
-                            .w(px(232.0))
-                            .p(px(8.0))
-                            .gap(px(8.0))
-                            .bg(frame)
-                            .child(text("资源管理器"))
-                            .child(button("打开文件夹", s.clone(), "texzi.folder.open"))
-                            .child(dynamic(move || folder(s.clone())))
-                    },
+                    move || file_sidebar(side.clone()),
                 ))
                 .child(
                     view()
                         .flex_1()
-                        .child(when(
-                            move || !zen.get(),
-                            move || {
-                                let tabs = tabs.clone();
-                                view()
-                                    .flex_row()
-                                    .gap(px(4.0))
-                                    .p(px(4.0))
-                                    .bg(frame)
-                                    .child(each(
-                                        move || docs.get(),
-                                        |d: &Rc<Document>| d.id,
-                                        move |doc, _| {
-                                            let doc = doc.get_untracked();
-                                            let s = tabs.clone();
-                                            let close = tabs.clone();
-                                            let id = doc.id;
-                                            view()
-                                                .flex_row()
-                                                .child(
-                                                    nsh_base::button()
-                                                        .child(text(move || {
-                                                            doc.source.track();
-                                                            format!(
-                                                                "{}{}{}",
-                                                                if active.get() == id {
-                                                                    "▎"
-                                                                } else {
-                                                                    ""
-                                                                },
-                                                                doc.name(),
-                                                                if doc
-                                                                    .source
-                                                                    .is_dirty()
-                                                                    .unwrap_or(true)
-                                                                {
-                                                                    " ●"
-                                                                } else {
-                                                                    ""
-                                                                }
-                                                            )
-                                                        }))
-                                                        .on_press(move |_: &()| {
-                                                            s.active.set(id);
-                                                            s.second_active.set(false);
-                                                        }),
-                                                )
-                                                .child(
-                                                    nsh_base::button().child(text("×")).on_press(
-                                                        move |_: &()| close.close_tab(id),
-                                                    ),
-                                                )
-                                        },
-                                    ))
-                            },
-                        ))
+                        .min_w(px(0.0))
+                        .child(when(move || !zen.get(), move || tab_bar(tabs.clone())))
                         .child(dynamic(move || groups(content.clone())))
                         .child(dynamic(move || {
                             (!is_quick_panel(&panels.panel.get()))
@@ -2079,6 +2153,15 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
             .child(text("关闭面板（Esc）"))
             .on_press(move |_: &()| close.close_panel()),
     );
+    if mode == "settings" {
+        return Some(
+            panel
+                .child(text("外观"))
+                .child(button("浅色", s.clone(), "texzi.appearance.light"))
+                .child(button("深色", s, "texzi.appearance.dark"))
+                .into_element(),
+        );
+    }
     if mode == "commands" || mode == "files" {
         let markdown = if mode == "commands" {
             s.current()
