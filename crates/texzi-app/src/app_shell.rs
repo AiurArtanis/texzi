@@ -4,12 +4,15 @@ use crate::native_menu::SHELL_SHORTCUTS;
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
 use nsh_base::editor::{Editor, EditorApi, EditorCommand, ExternalDocument};
 use nsh_core::{
+    AccessibilityRole,
     desktop::{WindowAttributes, WindowMode},
     element::{
-        desktop::{WindowRef, current_window},
-        input,
+        ImageSrc,
+        desktop::{WindowRef, current_window, popup_menu_at},
+        image, input,
     },
     file_dialog::{OpenDialog, SaveDialog},
+    geometry::point,
     platform::Appearance,
     prelude::*,
 };
@@ -24,6 +27,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+pub(super) const TITLE_BAR_HEIGHT: f32 = 44.0;
+const TITLE_ICON_WIDTH: f32 = 44.0;
+const TITLE_MENU_WIDTH: f32 = 50.0;
 
 #[derive(Clone, PartialEq)]
 struct SearchHit {
@@ -297,6 +304,14 @@ impl Shell {
         bind_chords(s.clone());
         let shortcuts = s.clone();
         bind_shell_shortcuts(Rc::new(move |id| shortcuts.run(id)));
+        let menus = s.clone();
+        on_key(crate::native_menu::MENU_KEY, move |_| {
+            menus.show_title_menu(None)
+        });
+        for (index, &shortcut) in crate::native_menu::GROUP_KEYS.iter().enumerate() {
+            let menus = s.clone();
+            on_key(shortcut, move |_| menus.show_title_menu(Some(index)));
+        }
         let source_sidebar = s.clone();
         effect(move || {
             if source_sidebar
@@ -347,6 +362,37 @@ impl Shell {
     }
     fn add_blank(&self) {
         self.add(self.owner.run(NativeView::new_file), None);
+    }
+    fn compact_title_bar(&self) -> bool {
+        self.window
+            .state()
+            .is_some_and(|state| state.content_bounds.size.width.0 < 640.0)
+    }
+    fn show_title_menu(self: &Rc<Self>, group: Option<usize>) {
+        if self.modal.get() || self.current().is_some_and(|doc| doc.gate.busy()) {
+            return;
+        }
+        let run = self.clone();
+        let run: Rc<dyn Fn(&str)> = Rc::new(move |id| run.run(id));
+        let blocked = |id: &str| self.blocked(id);
+        let pending = self.chord.get();
+        let entries = match group {
+            Some(index) => crate::native_menu::entries(
+                crate::native_menu::MENU_GROUPS[index].1,
+                &run,
+                &blocked,
+                pending,
+            ),
+            None => crate::native_menu::groups(&run, &blocked, pending),
+        };
+        let index = group.filter(|_| !self.compact_title_bar()).unwrap_or(0);
+        let at = point(
+            px(TITLE_ICON_WIDTH + TITLE_MENU_WIDTH * index as f32),
+            px(TITLE_BAR_HEIGHT),
+        );
+        self.owner.run(|| {
+            let _ = popup_menu_at(entries, at);
+        });
     }
     fn add(&self, source: Rc<NativeView>, path: Option<PathBuf>) {
         let id = self.next.get();
@@ -1236,7 +1282,6 @@ const CHORDS: &[(&str, &str)] = &[
     ("mod+b", "texzi.sidebar.toggle"),
     ("z", "texzi.view.toggleZen"),
     ("s", "texzi.file.saveAll"),
-    ("mod+s", "texzi.settings.keybindings"),
     ("mod+\\", "texzi.group.splitDown"),
 ];
 // Installed only while the prefix is pending. Its plain second keys must be
@@ -1645,52 +1690,122 @@ pub fn view_shell() -> impl IntoElement {
     render_shell(Shell::new())
 }
 
+fn title_menu_button(
+    label: &'static str,
+    shell: Rc<Shell>,
+    group: Option<usize>,
+) -> impl IntoElement {
+    view()
+        .w(px(TITLE_MENU_WIDTH))
+        .h(px(32.0))
+        .items_center()
+        .justify_center()
+        .app_class("rounded-sm hover:bg-accent")
+        .text_size(px(14.0))
+        .focusable(false)
+        .window_drag(false)
+        .role(AccessibilityRole::Button)
+        .child(text(label))
+        .on_press(move |_: &()| shell.show_title_menu(group))
+}
+
+fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
+    let window = shell.window.clone();
+    let compact = shell.clone();
+    let search = shell.clone();
+    let search_label = shell.clone();
+    let icon = ImageSrc::rgba(
+        32,
+        32,
+        include_bytes!(concat!(env!("OUT_DIR"), "/ink-z.rgba")),
+    );
+    view()
+        .flex_row()
+        .items_center()
+        .h(px(TITLE_BAR_HEIGHT))
+        .flex_shrink_0()
+        .pr(move || window.title_bar().right)
+        .bg(frame)
+        .window_drag(true)
+        .child(
+            view()
+                .w(px(TITLE_ICON_WIDTH))
+                .items_center()
+                .justify_center()
+                .child(image(icon).w(px(20.0)).h(px(20.0))),
+        )
+        .child(dynamic(move || {
+            if compact.compact_title_bar() {
+                return title_menu_button("菜单", compact.clone(), None).into_element();
+            }
+            let mut row = view().flex_row();
+            for (index, (name, _)) in crate::native_menu::MENU_GROUPS.iter().enumerate() {
+                let label = name.split_once('(').map_or(*name, |(label, _)| label);
+                row = row.child(title_menu_button(label, compact.clone(), Some(index)));
+            }
+            row.into_element()
+        }))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(36.0))
+                .max_w(px(460.0))
+                .ml(px(14.0))
+                .h(px(32.0))
+                .px(px(10.0))
+                .flex_row()
+                .gap(px(8.0))
+                .items_center()
+                .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
+                .window_drag(false)
+                .focusable(true)
+                .role(AccessibilityRole::Button)
+                .label("搜索文件或命令")
+                .child(text("🔍︎").text_size(px(15.0)))
+                .child(when(
+                    move || !search_label.compact_title_bar(),
+                    || text("搜索文件或命令").text_size(px(14.0)),
+                ))
+                .on_press(move |_: &()| search.run("texzi.navigation.quickOpen")),
+        )
+        .child(view().flex_1().min_w(px(18.0)).h_full())
+}
+
 fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let toolbar = s.clone();
     let tabs = s.clone();
     let side = s.clone();
     let content = s.clone();
     let panels = s.clone();
+    let quick = s.clone();
     let status_shell = s.clone();
     let notice = s.notice;
     let zen = s.zen;
     let docs = s.docs;
     let active = s.active;
     let exit_zen = s.clone();
+    let zen_window = s.window.clone();
     let zen_armed = s.zen_exit.armed;
     view()
+        .relative()
         .size_full()
         .bg(background)
         .text_color(foreground)
-        .child(when(
-            move || !zen.get(),
-            move || {
-                view()
-                    .flex_row()
-                    .gap(px(8.0))
-                    .p(px(6.0))
-                    .bg(frame)
-                    .child(button("新建", toolbar.clone(), "texzi.file.new"))
-                    .child(button("打开文件", toolbar.clone(), "texzi.file.open"))
-                    .child(button("打开文件夹", toolbar.clone(), "texzi.folder.open"))
-                    .child(button(
-                        "搜索文件或命令",
-                        toolbar.clone(),
-                        "texzi.navigation.quickOpen",
-                    ))
-            },
-        ))
+        .child(when(move || !zen.get(), move || title_bar(toolbar.clone())))
         .child(when(
             move || zen.get(),
             move || {
                 let exit = exit_zen.clone();
+                let window = zen_window.clone();
                 view()
                     .group_named("zen-exit")
-                    .h(px(32.0))
+                    .h(px(TITLE_BAR_HEIGHT))
                     .w_full()
                     .flex_row()
+                    .pr(move || window.title_bar().right)
                     .justify_end()
                     .items_center()
+                    .child(view().flex_1().h_full().window_drag(true))
                     .child(text(move || {
                         if zen_armed.get() {
                             "再按一次 Esc 退出 Zen"
@@ -1792,7 +1907,11 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                             },
                         ))
                         .child(dynamic(move || groups(content.clone())))
-                        .child(dynamic(move || panel(panels.clone()))),
+                        .child(dynamic(move || {
+                            (!is_quick_panel(&panels.panel.get()))
+                                .then(|| panel(panels.clone()))
+                                .flatten()
+                        })),
                 ),
         )
         .child(when(
@@ -1813,6 +1932,26 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                     }))
             },
         ))
+        .child(dynamic(move || {
+            if !is_quick_panel(&quick.panel.get()) {
+                return None;
+            }
+            panel(quick.clone()).map(|panel| {
+                view()
+                    .absolute()
+                    .top(px(TITLE_BAR_HEIGHT + 8.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .z_index(1)
+                    .flex_row()
+                    .justify_center()
+                    .child(view().w(px(560.0)).max_w(relative(1.0)).child(panel))
+            })
+        }))
+}
+
+fn is_quick_panel(mode: &str) -> bool {
+    matches!(mode, "files" | "commands")
 }
 
 fn tree_rows(
@@ -1951,29 +2090,26 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
         let entries = if mode == "commands" {
             crate::native_menu::commands()
                 .into_iter()
-                .map(|c| {
+                .filter_map(|c| {
                     // One immutable source projection per palette build, not
                     // one full parse for every Markdown command row.
                     let blocked = markdown
                         .as_ref()
                         .and_then(|results| results.get(&c.id))
                         .map_or_else(|| s.blocked(&c.id).is_some(), Result::is_err);
+                    if blocked {
+                        return None;
+                    }
                     let keys = if c.keys.is_empty() {
                         String::new()
                     } else {
                         format!("    {}", c.keys.join(" / "))
                     };
-                    nsh_base::CommandItem::new(
-                        c.id.clone(),
-                        format!(
-                            "{}{}{}",
-                            c.name,
-                            if blocked { "（暂不可用）" } else { "" },
-                            keys
-                        ),
+                    Some(
+                        nsh_base::CommandItem::new(c.id.clone(), format!("{}{keys}", c.name))
+                            .keywords([c.id])
+                            .group(c.group),
                     )
-                    .keywords([c.id])
-                    .group(c.group)
                 })
                 .collect::<Vec<_>>()
         } else {

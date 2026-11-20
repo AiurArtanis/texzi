@@ -16,6 +16,8 @@ pub(super) const SHELL_SHORTCUTS: &[(&str, &str)] = &[
     ("mod+e", "texzi.navigation.quickOpen"),
     ("mod+f4", "texzi.tab.close"),
 ];
+pub(super) const MENU_KEY: &str = "f10";
+pub(super) const GROUP_KEYS: &[&str] = &["alt+f", "alt+e", "alt+s", "alt+v", "alt+g", "alt+h"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Command {
@@ -89,7 +91,7 @@ fn displayed_key(command: &Command) -> Option<&str> {
     }
 }
 
-const MENU_GROUPS: &[(&str, &[&str])] = &[
+pub(super) const MENU_GROUPS: &[(&str, &[&str])] = &[
     (
         "文件(&F)",
         &[
@@ -120,9 +122,6 @@ const MENU_GROUPS: &[(&str, &[&str])] = &[
             "",
             "texzi.find.open",
             "texzi.find.replaceOpen",
-            "",
-            "texzi.settings.open",
-            "texzi.settings.keybindings",
         ],
     ),
     (
@@ -191,6 +190,8 @@ pub fn application_shortcuts() -> Vec<nsh_core::prelude::SharedString> {
             .map(|(stroke, _)| (*stroke).to_owned()),
     );
     shortcuts.insert("mod+k".to_owned());
+    shortcuts.insert(MENU_KEY.to_owned());
+    shortcuts.extend(GROUP_KEYS.iter().map(|key| (*key).to_owned()));
     for index in 1..=8 {
         shortcuts.insert(format!("mod+{index}"));
     }
@@ -202,8 +203,40 @@ pub fn install(
     blocked: impl Fn(&str) -> Option<String>,
     chord_pending: bool,
 ) {
+    set_application_menu(groups(&run, &blocked, chord_pending));
+}
+
+pub(super) fn groups(
+    run: &Rc<dyn Fn(&str)>,
+    blocked: &impl Fn(&str) -> Option<String>,
+    chord_pending: bool,
+) -> Vec<MenuItem> {
+    MENU_GROUPS
+        .iter()
+        .map(|(name, ids)| MenuItem::submenu(*name, entries(ids, run, blocked, chord_pending)))
+        .collect()
+}
+
+pub(super) fn entries(
+    ids: &[&str],
+    run: &Rc<dyn Fn(&str)>,
+    blocked: &impl Fn(&str) -> Option<String>,
+    chord_pending: bool,
+) -> Vec<MenuItem> {
     let commands = commands();
-    let item = |id: &str| {
+    let mut entries = Vec::new();
+    let mut separator = false;
+    for &id in ids {
+        if id.is_empty() {
+            separator = !entries.is_empty();
+            continue;
+        }
+        if blocked(id).is_some() {
+            continue;
+        }
+        if std::mem::take(&mut separator) {
+            entries.push(MenuItem::separator());
+        }
         let command = commands
             .iter()
             .find(|c| c.id == id)
@@ -211,17 +244,12 @@ pub fn install(
         // Ctrl+B belongs to bold in rich text. The shared native menu cannot
         // install a context-free accelerator that steals it before the editor.
         let displayed_key = displayed_key(command);
-        let reason = blocked(id);
-        let label = match &reason {
-            Some(_) => format!("{}（暂不可用）", command.name),
-            None => command.name.clone(),
-        };
-        let mut item = match role(id).filter(|_| reason.is_none()) {
-            Some(role) => MenuItem::role(role).label(label),
+        let mut item = match role(id) {
+            Some(role) => MenuItem::role(role).label(command.name.clone()),
             None => {
                 let run = run.clone();
                 let id = id.to_owned();
-                MenuItem::new(label).on_select(move || run(&id))
+                MenuItem::new(command.name.clone()).on_select(move || run(&id))
             }
         };
         if let Some(shortcut) = displayed_key.and_then(key).filter(|_| !chord_pending) {
@@ -229,36 +257,11 @@ pub fn install(
         } else if let Some(chord) = displayed_key {
             // A tab separates the native accelerator column without claiming
             // that the native single-stroke matcher implements the chord.
-            item = item.label(format!(
-                "{}\t{chord}",
-                match &reason {
-                    Some(_) => format!("{}（暂不可用）", command.name),
-                    None => command.name.clone(),
-                }
-            ));
+            item = item.label(format!("{}\t{chord}", command.name));
         }
-        item
-    };
-    let group = |name: &str, ids: &[&str]| {
-        MenuItem::submenu(
-            name,
-            ids.iter()
-                .map(|id| {
-                    if id.is_empty() {
-                        MenuItem::separator()
-                    } else {
-                        item(id)
-                    }
-                })
-                .collect::<Vec<_>>(),
-        )
-    };
-    set_application_menu(
-        MENU_GROUPS
-            .iter()
-            .map(|(name, ids)| group(name, ids))
-            .collect::<Vec<_>>(),
-    );
+        entries.push(item);
+    }
+    entries
 }
 
 #[cfg(test)]
@@ -273,7 +276,7 @@ mod tests {
             .collect();
         let contains = |s| strokes.contains(&Keystroke::parse_with(s, false).unwrap());
         for global in [
-            "ctrl+o", "ctrl+e", "ctrl+k", "ctrl+1", "ctrl+8", "f1", "ctrl+f4",
+            "ctrl+o", "ctrl+e", "ctrl+k", "ctrl+1", "ctrl+8", "f1", "ctrl+f4", "f10", "alt+f",
         ] {
             assert!(
                 contains(global),
@@ -316,9 +319,8 @@ mod tests {
                     .iter()
                     .find(|c| c.id == *id)
                     .unwrap_or_else(|| panic!("missing command: {id}"));
-                assert_eq!(
+                assert!(
                     crate::app_shell::supported(id),
-                    !matches!(*id, "texzi.settings.open" | "texzi.settings.keybindings"),
                     "expected application command route for {id}"
                 );
                 if let Some(stroke) = command.keys.first().and_then(|s| key(s)) {
