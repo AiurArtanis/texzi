@@ -47,6 +47,7 @@ pub struct Projection {
     pub doc: Node,
     pub blocks: Vec<Block>,
 }
+type SourceEdit = (Range<usize>, String);
 fn message(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
@@ -230,7 +231,26 @@ impl Projection {
         &self,
         next: &Node,
         applied: &[Transaction],
-    ) -> Result<Vec<(Range<usize>, String)>, String> {
+    ) -> Result<Vec<SourceEdit>, String> {
+        self.plan_transaction_edits(next, applied, &mut None)
+    }
+
+    pub fn transaction_edits_with_projection(
+        &self,
+        next: &Node,
+        applied: &[Transaction],
+    ) -> Result<(Vec<SourceEdit>, Option<Self>), String> {
+        let mut projection = None;
+        let edits = self.plan_transaction_edits(next, applied, &mut projection)?;
+        Ok((edits, projection))
+    }
+
+    fn plan_transaction_edits(
+        &self,
+        next: &Node,
+        applied: &[Transaction],
+        projection: &mut Option<Self>,
+    ) -> Result<Vec<SourceEdit>, String> {
         if let Some(edits) = code_actions::transaction_edits(self, next, applied)? {
             return Ok(edits);
         }
@@ -294,7 +314,8 @@ impl Projection {
                     && (0..step.slice.content.child_count())
                         .all(|i| step.slice.content.child(i).is_text())
                 {
-                    if let Some(edit) = local_patch::text_step(self, next, step) {
+                    if let Some((edit, verified)) = local_patch::text_step(self, next, step) {
+                        *projection = Some(verified);
                         return Ok(vec![edit]);
                     }
                     if let (Some(a), Some(h)) = (
@@ -477,6 +498,9 @@ impl Projection {
         Ok(edits)
     }
     pub fn parse(schema: &Schema, source: String) -> Result<Self, String> {
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!("RICH_PROJECTION action=full_parse bytes={}", source.len());
+        }
         let mut tree = markdown::to_mdast(&source, &parse_options()).map_err(message)?;
         list_items::recognize_empty_tasks(&mut tree, &source);
         let mut blocks = Vec::new();
@@ -797,6 +821,32 @@ mod tests {
             raw.replace_range(r.clone(), t);
         }
         raw
+    }
+    #[test]
+    fn plain_insert_reuses_verified_source_and_positions() {
+        let m = manager();
+        let raw = "开头😀正文\r\n\r\n[保留][ref]\n\n[ref]: /original\n";
+        let p = Projection::parse(m.schema(), raw.into()).unwrap();
+        let state =
+            EditorState::create(EditorStateConfig::new(m.schema().clone()).doc(p.doc.clone()))
+                .unwrap();
+        let byte = raw.find("正文").unwrap();
+        let pos = p.rich_position(byte).unwrap();
+        let mut tr = state.tr();
+        tr.insert_text("Z", Some(pos), Some(pos));
+        let (next, applied) = state.apply_transaction(tr).unwrap();
+        let (edits, verified) = p
+            .transaction_edits_with_projection(next.doc(), &applied)
+            .unwrap();
+        assert_eq!(edits, vec![(byte..byte, "Z".into())]);
+        let verified = verified.unwrap();
+        let expected = raw.replace("正文", "Z正文");
+        let full = Projection::parse(m.schema(), expected.clone()).unwrap();
+        assert_eq!(verified.source, expected);
+        assert_eq!(verified.doc, full.doc);
+        for pos in 0..=full.doc.content().size() {
+            assert_eq!(verified.source_position(pos), full.source_position(pos));
+        }
     }
     #[test]
     fn local_heading_edit_preserves_unknown_and_mixed_eol() {

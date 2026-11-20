@@ -1,5 +1,5 @@
 //! Verified local rewrites. Every candidate must reparse to the requested tree.
-use super::{Block, Projection};
+use super::{Block, Projection, SourceEdit};
 use nsh_base::rich_editor::{
     model::{Mark, Node},
     transform::ReplaceStep,
@@ -72,7 +72,7 @@ pub(super) fn text_step(
     p: &Projection,
     next: &Node,
     step: &ReplaceStep,
-) -> Option<(Range<usize>, String)> {
+) -> Option<(SourceEdit, Projection)> {
     let text: String = (0..step.slice.content.child_count())
         .filter_map(|i| step.slice.content.child(i).text())
         .collect();
@@ -89,10 +89,10 @@ pub(super) fn text_step(
                 }
                 let mut raw = p.source.clone();
                 raw.replace_range(a..z, &inserted);
-                if Projection::parse(next.ty().schema(), raw)
-                    .is_ok_and(|projected| &projected.doc == next)
+                if let Ok(projected) = Projection::parse(next.ty().schema(), raw)
+                    && &projected.doc == next
                 {
-                    return Some((a..z, inserted));
+                    return Some(((a..z, inserted), projected));
                 }
             }
         }

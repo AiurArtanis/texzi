@@ -296,7 +296,8 @@ impl RichOwner {
         if !p.verified_resource_transaction(next.doc(), &applied)? {
             protect_raw_blocks(&p, &applied)?;
         }
-        let mut edits = p.transaction_edits(next.doc(), &applied)?;
+        let (mut edits, verified_projection) =
+            p.transaction_edits_with_projection(next.doc(), &applied)?;
         if edits.is_empty() && old.doc() != next.doc() {
             return Err("该结构变更不能映射到原文，已保留原状态".into());
         }
@@ -304,11 +305,15 @@ impl RichOwner {
             if !selection_matches(&p, &old, &current.selections) {
                 return Err("当前选区尚未同步到原文，请切到源码编辑；原文未变".into());
             }
-            let mut raw = p.source.clone();
-            for (range, text) in edits.iter().rev() {
-                raw.replace_range(range.clone(), text);
-            }
-            let mut projected = Projection::parse(next.schema(), raw)?;
+            let mut projected = if let Some(verified) = verified_projection {
+                verified
+            } else {
+                let mut raw = p.source.clone();
+                for (range, text) in edits.iter().rev() {
+                    raw.replace_range(range.clone(), text);
+                }
+                Projection::parse(next.schema(), raw)?
+            };
             if &projected.doc != next.doc() {
                 return Err("该富文本操作不能保真往返；请在源码中编辑此结构".into());
             }
