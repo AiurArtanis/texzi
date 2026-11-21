@@ -330,8 +330,55 @@ enum Mode {
     /// Dragging a scroll view's indicator as a scroll bar's thumb (the
     /// mouse), from where the drag began.
     Thumb(NshView, (f32, f32)),
+    /// The rich editor mounts a destination before moving its viewport.
+    VirtualThumb(NshView, VirtualThumbDrag),
     /// One of two fingers pinching / rotating.
     TwoFinger,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct VirtualThumbDrag {
+    origin_y: f32,
+    initial_offset: f32,
+    range: Points,
+    travel: Points,
+    requested: f32,
+}
+
+impl VirtualThumbDrag {
+    fn new(view: &NshView, origin_y: f32) -> Option<Self> {
+        if !is_virtual_rich_scroll(view) {
+            return None;
+        }
+        let visible = view.visible_bounds();
+        let state = view.state();
+        let scroll = state.scroll.as_ref()?;
+        let (_, travel) = scroll.thumb_within(state.frame.size, visible)?;
+        let range = scroll.max(state.frame.size).y;
+        let initial_offset = scroll.y.0;
+        Some(Self { origin_y, initial_offset, range, travel, requested: initial_offset })
+    }
+
+    fn move_to(&mut self, surface: &Rc<Surface>, view: &NshView, x: f32, y: f32, time: f64) {
+        let shift = nsh_core::scroll::thumb_scroll(Points(y - self.origin_y), self.range, self.travel);
+        let target = (self.initial_offset + shift.0).clamp(0.0, self.range.0.max(0.0));
+        let delta = target - self.requested;
+        if delta.abs() <= 0.5 {
+            return;
+        }
+        self.requested = target;
+        // Send the scroll request through the editor's existing destination
+        // mount fence, with the content delta across these pointer samples.
+        dispatch_wheel(surface, view, &WheelEvent {
+            x, y, dx: 0.0, dy: delta, precise: true, modifiers: Modifiers::default(), time,
+        });
+    }
+}
+
+pub(crate) fn dragging_virtual_thumb(surface: &Surface, target: &NshView) -> bool {
+    surface.input.pointers.borrow().iter().any(|p| {
+        matches!(&p.mode, Mode::VirtualThumb(view, _) if view.id() == target.id())
+    })
 }
 
 /// Something that takes pointer events itself.
@@ -1495,7 +1542,10 @@ fn down(
             gate: None,
             pinch: None,
             pressed: Vec::new(),
-            mode: Mode::Thumb(view.clone(), (x, y)),
+            mode: VirtualThumbDrag::new(&view, y).map_or_else(
+                || Mode::Thumb(view.clone(), (x, y)),
+                |drag| Mode::VirtualThumb(view.clone(), drag),
+            ),
             moved: false,
         };
         p.velocity.add(time, point(Points(x), Points(y)));
@@ -1713,6 +1763,7 @@ fn motion(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64) {
             let view = view.clone();
             crate::scroll::thumb_move(surface, &view, x - origin.0, y - origin.1);
         }
+        Mode::VirtualThumb(view, drag) => drag.move_to(surface, view, x, y, time),
         _ => {}
     }
     put(surface, p);
@@ -1736,6 +1787,9 @@ fn up(surface: &Rc<Surface>, key: Key, at: Option<(f32, f32)>, time: f64, cancel
         if let Mode::Thumb(view, origin) = &p.mode {
             let view = view.clone();
             crate::scroll::thumb_move(surface, &view, x - origin.0, y - origin.1);
+        }
+        if let Mode::VirtualThumb(view, drag) = &mut p.mode {
+            drag.move_to(surface, view, x, y, time);
         }
         p.x = x;
         p.y = y;
@@ -1775,7 +1829,7 @@ fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
             let (vx, vy) = p.velocity.velocity();
             crate::scroll::drag_end(surface, &view, vx, vy);
         }
-        Mode::Thumb(view, _) => crate::scroll::thumb_end(surface, &view),
+        Mode::Thumb(view, _) | Mode::VirtualThumb(view, _) => crate::scroll::thumb_end(surface, &view),
         Mode::Idle | Mode::Free => {
             if let Some(mut press) = p.press.take() {
                 let at = (p.x, p.y);

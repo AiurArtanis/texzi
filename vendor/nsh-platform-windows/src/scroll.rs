@@ -320,6 +320,23 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
 
 /// `scrollTo` and `scrollToEnd`.
 pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) {
+    if let Command::ScrollTo { y, animated: false, .. } = command
+        && crate::input::dragging_virtual_thumb(surface, view)
+    {
+        let delta = {
+            let state = view.state();
+            state.scroll.as_ref().map(|scroll| {
+                let max = scroll.max(state.frame.size).y.0.max(0.0);
+                (y.0 + scroll.behavior.content_inset.top.0).clamp(0.0, max) - scroll.y.0
+            })
+        };
+        if let Some(delta) = delta {
+            // Applying a measured-height correction or a newly mounted
+            // destination must preserve the captured thumb's drag phase.
+            scroll_by(surface, view, 0.0, delta);
+            return;
+        }
+    }
     shared::command(&Host::new(surface, view), command);
 }
 
