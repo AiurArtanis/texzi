@@ -18,6 +18,7 @@ unicode-segmentation = "=1.13.3"
 nsh-core.workspace = true
 nsh-platform-windows.workspace = true
 nsh-base = { path = "../../vendor/nsh-base", default-features = false, features = ["editor", "rich-editor"] }
+url = "=2.5.8"
 
 [target.'cfg(windows)'.dev-dependencies]
 tokio = { version = "=1.54.1", features = ["rt"] }

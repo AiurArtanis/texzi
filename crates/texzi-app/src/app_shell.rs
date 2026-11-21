@@ -596,6 +596,12 @@ impl Shell {
                 return;
             }
         };
+        if let Err(error) = self.open_canonical_file(path) {
+            self.explain("读取失败", &error);
+        }
+    }
+
+    fn open_canonical_file(self: &Rc<Self>, path: PathBuf) -> Result<(), String> {
         if let Some(doc) = self.docs.with(|ds| {
             ds.iter()
                 .find(|d| {
@@ -610,16 +616,67 @@ impl Shell {
             self.active.set(doc.id);
             self.second_active.set(false);
             self.restore_editor_focus();
-            return;
+            return Ok(());
         }
-        match self.owner.run(|| NativeView::open_file(&path)) {
-            Ok(source) => {
-                self.remember(&path);
-                self.add(source, Some(path));
-            }
-            Err(error) => self.explain("读取失败", &error),
+        let source = self.owner.run(|| NativeView::open_file(&path))?;
+        self.remember(&path);
+        self.add(source, Some(path));
+        Ok(())
+    }
+    fn open_folder(self: &Rc<Self>, path: &Path) {
+        match path.canonicalize() {
+            Ok(path) => self.show_folder(path),
+            Err(error) => self.explain("无法打开文件夹", &error.to_string()),
         }
     }
+
+    fn show_folder(&self, path: PathBuf) {
+        self.root.set(Some(path));
+        self.sidebar.set(true);
+    }
+
+    fn open_dropped(self: &Rc<Self>, uris: &[String]) {
+        let mut folders = Vec::new();
+        let mut failures = Vec::new();
+        for uri in uris {
+            let path = url::Url::parse(uri)
+                .ok()
+                .filter(|url| {
+                    url.scheme() == "file"
+                        && url
+                            .host_str()
+                            .is_none_or(|host| host.eq_ignore_ascii_case("localhost"))
+                })
+                .and_then(|url| url.to_file_path().ok());
+            let Some(path) = path else {
+                failures.push(format!("{uri}：仅支持本地文件和文件夹"));
+                continue;
+            };
+            let result = path.canonicalize().and_then(|canonical| {
+                let entry = canonical.metadata()?;
+                Ok((canonical, entry))
+            });
+            match result {
+                Ok((canonical, entry)) if entry.is_dir() => folders.push(canonical),
+                Ok((canonical, entry)) if entry.is_file() => {
+                    if let Err(error) = self.open_canonical_file(canonical) {
+                        failures.push(format!("{}：{error}", path.display()));
+                    }
+                }
+                Ok(_) => failures.push(format!("{}：不是普通文件或文件夹", path.display())),
+                Err(error) => failures.push(format!("{}：{error}", path.display())),
+            }
+        }
+        match folders.len() {
+            0 => {}
+            1 => self.show_folder(folders.pop().unwrap()),
+            _ => failures.push("一个窗口一次只能打开一个文件夹，已保留原文件树。".into()),
+        }
+        if !failures.is_empty() {
+            self.explain("部分拖入项未打开", &failures.join("\n"));
+        }
+    }
+
     fn pick(self: &Rc<Self>, folder: bool) {
         let s = self.clone();
         await_shell_modal(
@@ -636,13 +693,7 @@ impl Shell {
                 Ok(Some(paths)) => {
                     for path in paths {
                         if folder {
-                            match path.canonicalize() {
-                                Ok(path) => {
-                                    s.root.set(Some(path));
-                                    s.sidebar.set(true);
-                                }
-                                Err(error) => s.explain("无法打开文件夹", &error.to_string()),
-                            }
+                            s.open_folder(&path);
                         } else {
                             s.open(&path);
                         }
@@ -1915,6 +1966,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let panels = s.clone();
     let quick = s.clone();
     let status_shell = s.clone();
+    let drop_shell = s.clone();
     let notice = s.notice;
     let zen = s.zen;
     let exit_zen = s.clone();
@@ -1925,6 +1977,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
         .size_full()
         .bg(background)
         .text_color(foreground)
+        .on_file_drop(move |event: &FileDropEvent| drop_shell.open_dropped(&event.uris))
         .child(when(move || !zen.get(), move || title_bar(toolbar.clone())))
         .child(when(
             move || zen.get(),
