@@ -4,10 +4,10 @@ use crate::{
     rich_projection::{Projection, manager},
 };
 use nsh_base::{
-    editor::{ExternalDocument, ExternalEditKind, ExternalSelections},
+    editor::{ExternalDocument, ExternalEditKind, ExternalSelections, ExternalSnapshot},
     rich_editor::{
         commands::BoxCommand,
-        extensions::keymap::keymap,
+        extensions::{ExtensionManager, keymap::keymap},
         state::{EditorState, EditorStateConfig, TextSelection, Transaction, TransactionOrigin},
         view::{EditorSession, NodeViews},
     },
@@ -51,6 +51,16 @@ impl RichOwner {
         let m = manager();
         let s = native.snapshot()?;
         let p = Projection::parse(m.schema(), s.rope.to_string())?;
+        Self::from_projection(native, status, s, m, p)
+    }
+
+    fn from_projection(
+        native: Rc<NativeView>,
+        status: Signal<String>,
+        s: ExternalSnapshot,
+        m: ExtensionManager,
+        p: Projection,
+    ) -> Result<Rc<Self>, String> {
         if std::env::var_os("TEXZI_T05_FAIL_PREPARE").as_deref() == Some(std::ffi::OsStr::new("1"))
         {
             return Err("测试故障：富文本投影准备失败，已保留源码视图".into());
@@ -868,6 +878,46 @@ impl ModeGate {
     pub fn to_rich(&self) {
         if let Err(e) = self.prepare_and_switch(|| RichOwner::new(self.rich.clone(), self.status)) {
             self.status.set(e);
+        }
+    }
+    pub async fn to_rich_in_background(&self, still_open: impl Fn() -> bool) {
+        let result: Result<(), String> = async {
+            if self.rich_mode.get() || !still_open() {
+                return Ok(());
+            }
+            if self.busy() {
+                return Err("请先完成或取消中文组合，再切换模式".into());
+            }
+            let snapshot = self.rich.snapshot()?;
+            let revision = snapshot.revision;
+            let rope = snapshot.rope;
+            let prepared = blocking(move || {
+                let manager = manager();
+                let projection = Projection::parse(manager.schema(), rope.to_string())?;
+                Ok::<_, String>((manager, projection))
+            })
+            .await;
+            if !still_open() {
+                return Ok(());
+            }
+            let (manager, projection) = prepared.map_err(|e| format!("富文本准备失败：{e}"))??;
+            self.prepare_and_switch(|| {
+                let current = self.rich.snapshot()?;
+                if current.revision != revision {
+                    return Err("切换期间正文已修改，请重试。".into());
+                }
+                RichOwner::from_projection(
+                    self.rich.clone(),
+                    self.status,
+                    current,
+                    manager,
+                    projection,
+                )
+            })
+        }
+        .await;
+        if let Err(error) = result {
+            self.status.set(error);
         }
     }
     pub fn to_source(&self) {

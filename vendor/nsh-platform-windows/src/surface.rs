@@ -148,9 +148,35 @@ pub(crate) type ShortcutHandler = Box<dyn Fn(&crate::input::KeyEvent) -> bool>;
 /// Called when the app reports a fatal error (development hosts show it).
 pub(crate) type ErrorHandler = Box<dyn Fn(&str)>;
 
+thread_local! {
+    static TASK_SURFACE: RefCell<Weak<Surface>> = RefCell::new(Weak::new());
+}
+
+/// Checks whether a laid-out node in the calling engine's window has reached
+/// a successful swap-chain presentation. Call from a main-thread engine task.
+/// The first check asks the platform to draw the node and returns its baseline.
+pub fn node_presentation(id: NodeId, baseline: Option<u64>) -> Option<(u64, bool)> {
+    TASK_SURFACE.with(|active| {
+        let surface = active.borrow().upgrade()?;
+        let view = surface.view(id)?;
+        let bounds = view.visible_bounds();
+        if bounds.size.width.0 <= 0.0 || bounds.size.height.0 <= 0.0
+            || unsafe { windows::Win32::UI::WindowsAndMessaging::IsIconic(surface.hwnd()) }.as_bool()
+        {
+            return None;
+        }
+        let frame = surface.presentation.get();
+        if baseline.is_none() {
+            surface.invalidate_view(&view);
+        }
+        Some((frame, baseline.is_some_and(|baseline| frame != baseline)))
+    })
+}
+
 /// One engine and its views.
 pub(crate) struct Surface {
     key: u64,
+    pub(crate) presentation: Cell<u64>,
     /// The UI thread the surface was made on: where work that finishes
     /// elsewhere returns to.
     ui_thread: crate::window::UiThread,
@@ -300,6 +326,7 @@ impl Surface {
         let mounter = Mounter::new(root.clone());
         let surface = Rc::new(Surface {
             key,
+            presentation: Cell::new(0),
             ui_thread: crate::window::UiThread::current(),
             root: root.clone(),
             views: mounter.views.clone(),
@@ -927,7 +954,11 @@ impl Surface {
                 }
             }
             Message::Resized(_) => self.resize_late.set(false),
-            Message::Run(task) => task.run(),
+            Message::Run(task) => {
+                let previous = TASK_SURFACE.replace(Rc::downgrade(self));
+                task.run();
+                TASK_SURFACE.set(previous);
+            }
         }
         false
     }

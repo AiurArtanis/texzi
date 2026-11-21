@@ -12,12 +12,106 @@ pub(super) const SHELL_SHORTCUTS: &[(&str, &str)] = &[
     ("f3", "texzi.find.next"),
     ("shift+f3", "texzi.find.previous"),
     ("mod+shift+w", "texzi.window.close"),
+    ("mod+shift+n", "texzi.window.new"),
     ("f1", "texzi.commandPalette.open"),
+    ("mod+shift+p", "texzi.commandPalette.open"),
     ("mod+e", "texzi.navigation.quickOpen"),
+    ("mod+p", "texzi.navigation.quickOpen"),
     ("mod+f4", "texzi.tab.close"),
+    ("mod+w", "texzi.tab.close"),
+    ("mod+shift+t", "texzi.tab.reopenClosed"),
+    ("mod+h", "texzi.find.replaceOpen"),
+    ("mod+d", "texzi.multicursor.addNext"),
+    ("mod+shift+l", "texzi.multicursor.selectAllOccurrences"),
+    ("shift+alt+down", "texzi.edit.copyLineDown"),
+    ("mod+shift+f", "texzi.find.inFolder"),
+    ("mod+\\", "texzi.group.splitRight"),
+    ("mod+g", "texzi.navigation.gotoLine"),
+    ("mod+pagedown", "texzi.tab.next"),
+    ("mod+pageup", "texzi.tab.previous"),
+    ("mod+f", "texzi.find.open"),
+    ("mod+n", "texzi.file.new"),
+    ("alt+z", "texzi.editor.toggleWrap"),
 ];
 pub(super) const MENU_KEY: &str = "f10";
-pub(super) const GROUP_KEYS: &[&str] = &["alt+f", "alt+e", "alt+s", "alt+v", "alt+g", "alt+h"];
+
+#[derive(Clone, Copy)]
+pub(super) enum MenuGroup {
+    File,
+    Edit,
+    Appearance,
+}
+
+impl MenuGroup {
+    pub(super) const ALL: [Self; 3] = [Self::File, Self::Edit, Self::Appearance];
+
+    pub(super) fn shortcut(self) -> &'static str {
+        match self {
+            Self::File => "alt+f",
+            Self::Edit => "alt+e",
+            Self::Appearance => "alt+v",
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::File => "文件(&F)",
+            Self::Edit => "编辑(&E)",
+            Self::Appearance => "外观(&V)",
+        }
+    }
+
+    pub(super) fn position(self) -> f32 {
+        self as u8 as f32
+    }
+
+    pub(super) fn commands(self) -> &'static [&'static str] {
+        match self {
+            Self::File => &[
+                "texzi.file.new",
+                "texzi.file.open",
+                "texzi.folder.open",
+                "",
+                "texzi.file.save",
+                "texzi.file.saveAs",
+                "texzi.tab.close",
+            ],
+            Self::Edit => &[
+                "texzi.edit.undo",
+                "texzi.edit.redo",
+                "",
+                "texzi.edit.cut",
+                "texzi.edit.copy",
+                "texzi.edit.paste",
+                "texzi.edit.selectAll",
+                "",
+                "texzi.find.open",
+            ],
+            Self::Appearance => &[
+                "texzi.sidebar.toggle",
+                "texzi.editor.toggleWrap",
+                "",
+                "texzi.appearance.light",
+                "texzi.appearance.dark",
+            ],
+        }
+    }
+}
+
+const REMOVED_COMMANDS: &[&str] = &[
+    "texzi.file.saveWithEncoding",
+    "texzi.file.reopenWithEncoding",
+    "texzi.file.changeEol",
+    "texzi.file.revert",
+    "texzi.file.copyPath",
+    "texzi.group.focusDirection",
+    "texzi.tab.moveToNewWindow",
+    "texzi.tab.copyToNewWindow",
+    "texzi.settings.open",
+    "texzi.settings.keybindings",
+    "texzi.tab.closeOthers",
+    "texzi.tab.closeAll",
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Command {
@@ -35,6 +129,7 @@ pub fn commands() -> Vec<Command> {
         .as_array()
         .expect("commands")
         .iter()
+        .filter(|c| !REMOVED_COMMANDS.contains(&c["id"].as_str().unwrap()))
         .map(|c| Command {
             id: c["id"].as_str().unwrap().into(),
             name: c["name"].as_str().unwrap().into(),
@@ -91,99 +186,11 @@ fn displayed_key(command: &Command) -> Option<&str> {
     }
 }
 
-pub(super) const MENU_GROUPS: &[(&str, &[&str])] = &[
-    (
-        "文件(&F)",
-        &[
-            "texzi.file.new",
-            "texzi.file.open",
-            "texzi.folder.open",
-            "texzi.folder.close",
-            "",
-            "texzi.file.save",
-            "texzi.file.saveAs",
-            "texzi.file.saveAll",
-            "",
-            "texzi.window.new",
-            "texzi.tab.close",
-            "texzi.tab.reopenClosed",
-            "texzi.window.close",
-        ],
-    ),
-    (
-        "编辑(&E)",
-        &[
-            "texzi.edit.undo",
-            "texzi.edit.redo",
-            "",
-            "texzi.edit.cut",
-            "texzi.edit.copy",
-            "texzi.edit.paste",
-            "",
-            "texzi.find.open",
-            "texzi.find.replaceOpen",
-        ],
-    ),
-    (
-        "选择(&S)",
-        &[
-            "texzi.edit.selectAll",
-            "texzi.multicursor.addNext",
-            "texzi.multicursor.selectAllOccurrences",
-            "texzi.edit.copyLineDown",
-            "",
-            "texzi.multicursor.clear",
-        ],
-    ),
-    (
-        "查看(&V)",
-        &[
-            "texzi.commandPalette.open",
-            "texzi.sidebar.toggle",
-            "texzi.find.inFolder",
-            "",
-            "texzi.group.splitRight",
-            "texzi.group.splitDown",
-            "texzi.group.joinAll",
-            "texzi.markdown.toggleSource",
-            "texzi.editor.toggleWrap",
-            "texzi.view.toggleZen",
-            "",
-            "texzi.appearance.light",
-            "texzi.appearance.dark",
-        ],
-    ),
-    (
-        "转到(&G)",
-        &[
-            "texzi.navigation.quickOpen",
-            "texzi.navigation.gotoLine",
-            "texzi.tab.next",
-            "texzi.tab.previous",
-            "",
-            "texzi.group.focusIndex",
-        ],
-    ),
-    ("帮助(&H)", &["texzi.help.guide", "texzi.help.about"]),
-];
-
 /// Window commands belong to the host rather than the rich text model. The
-/// native menu and engine aliases use this same list; text-edit roles stay in
+/// application keymap is independent of menu placement; text-edit roles stay in
 /// the currently focused input, and Ctrl+B remains rich bold.
 pub fn application_shortcuts() -> Vec<nsh_core::prelude::SharedString> {
-    let commands = commands();
     let mut shortcuts = std::collections::BTreeSet::new();
-    for (_, ids) in MENU_GROUPS {
-        for id in *ids {
-            if id.is_empty() || role(id).is_some() {
-                continue;
-            }
-            let command = commands.iter().find(|c| c.id == *id).expect("menu command");
-            if let Some(stroke) = displayed_key(command).and_then(key) {
-                shortcuts.insert(stroke);
-            }
-        }
-    }
     shortcuts.extend(
         SHELL_SHORTCUTS
             .iter()
@@ -191,7 +198,7 @@ pub fn application_shortcuts() -> Vec<nsh_core::prelude::SharedString> {
     );
     shortcuts.insert("mod+k".to_owned());
     shortcuts.insert(MENU_KEY.to_owned());
-    shortcuts.extend(GROUP_KEYS.iter().map(|key| (*key).to_owned()));
+    shortcuts.extend(MenuGroup::ALL.map(|group| group.shortcut().to_owned()));
     for index in 1..=8 {
         shortcuts.insert(format!("mod+{index}"));
     }
@@ -211,9 +218,14 @@ pub(super) fn groups(
     blocked: &impl Fn(&str) -> Option<String>,
     chord_pending: bool,
 ) -> Vec<MenuItem> {
-    MENU_GROUPS
-        .iter()
-        .map(|(name, ids)| MenuItem::submenu(*name, entries(ids, run, blocked, chord_pending)))
+    MenuGroup::ALL
+        .into_iter()
+        .map(|group| {
+            MenuItem::submenu(
+                group.label(),
+                entries(group.commands(), run, blocked, chord_pending),
+            )
+        })
         .collect()
 }
 
@@ -310,8 +322,8 @@ mod tests {
     #[test]
     fn every_native_menu_entry_resolves_and_its_accelerator_parses() {
         let commands = commands();
-        for (_, ids) in MENU_GROUPS {
-            for id in *ids {
+        for group in MenuGroup::ALL {
+            for id in group.commands() {
                 if id.is_empty() {
                     continue;
                 }
@@ -329,5 +341,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn moved_commands_keep_their_bindings_and_placeholders_are_absent() {
+        let commands = commands();
+        assert!(
+            commands
+                .iter()
+                .all(|command| !REMOVED_COMMANDS.contains(&command.id.as_str()))
+        );
+        for (key, id) in [
+            ("mod+h", "texzi.find.replaceOpen"),
+            ("mod+shift+p", "texzi.commandPalette.open"),
+            ("mod+p", "texzi.navigation.quickOpen"),
+        ] {
+            assert!(SHELL_SHORTCUTS.contains(&(key, id)));
+            assert!(commands.iter().any(|command| command.id == id));
+            assert!(
+                MenuGroup::ALL
+                    .into_iter()
+                    .all(|group| !group.commands().contains(&id))
+            );
+        }
+        let strokes = application_shortcuts();
+        assert!(
+            ["alt+s", "alt+g", "alt+h"]
+                .iter()
+                .all(|removed| { strokes.iter().all(|stroke| stroke.as_ref() != *removed) })
+        );
     }
 }
