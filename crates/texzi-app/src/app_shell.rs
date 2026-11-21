@@ -363,9 +363,14 @@ impl Shell {
         });
         for group in MenuGroup::ALL {
             let menus = s.clone();
-            on_key(group.shortcut(), move |_| {
-                menus.show_title_menu(Some(group))
-            });
+            on_key_with(
+                group.shortcut(),
+                KeyOptions {
+                    when: nsh_core::keymap::When::Always,
+                    ..Default::default()
+                },
+                move |_| menus.show_title_menu(Some(group)),
+            );
         }
         let source_sidebar = s.clone();
         effect(move || {
