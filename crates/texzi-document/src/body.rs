@@ -212,6 +212,14 @@ impl Body {
         self.text.insert(a, text);
         self.origins = self.origins.replace(range, text.len());
     }
+    /// The one-based logical position of a validated source byte.
+    pub fn line_column(&self, byte: usize) -> Result<(usize, usize), Error> {
+        let scalar = self.scalar(byte)?;
+        let line = self.line_breaks.char_to_line(self.text.byte_to_line(byte));
+        let start = self.text.line_to_char(self.line_breaks.line_to_char(line));
+        Ok((line + 1, scalar - start + 1))
+    }
+
     pub(crate) fn eols_in(&self, range: Range<usize>) -> Vec<Eol> {
         let a = self
             .line_breaks

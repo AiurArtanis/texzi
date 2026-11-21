@@ -695,6 +695,9 @@ impl ModeGate {
             status: signal(String::new()),
         })
     }
+    pub(crate) fn rich_cursor_status(&self) -> Option<String> {
+        self.rich.cursor_status()
+    }
     pub fn busy(&self) -> bool {
         self.source.is_composing() || self.rich.is_composing()
     }

@@ -4,7 +4,7 @@ use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
 use nsh_base::editor::{Editor, EditorApi, EditorCommand, ExternalDocument};
 use nsh_core::{
-    AccessibilityRole, EllipsizeMode,
+    AccessibilityRole, EllipsizeMode, PointerEvents,
     desktop::{WindowAttributes, WindowMode},
     element::{
         Composition, ImageSrc,
@@ -48,6 +48,24 @@ struct SearchReport {
     errors: Vec<String>,
 }
 
+fn is_markdown(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+}
+
+fn display_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        value.strip_prefix(r"\\?\").unwrap_or(&value).to_owned()
+    }
+}
+
+fn editor_tab_width(markdown: bool) -> u32 {
+    if markdown { 2 } else { 4 }
+}
+
 struct Document {
     id: u64,
     path: Signal<Option<PathBuf>>,
@@ -66,6 +84,11 @@ impl Document {
         self.pending_mode
             .get()
             .map_or_else(|| self.gate.rich_mode.get(), |target| !target)
+    }
+
+    fn is_markdown(&self) -> bool {
+        self.path
+            .with(|path| path.as_deref().is_some_and(is_markdown))
     }
 
     fn name(&self) -> String {
@@ -257,6 +280,10 @@ fn frame() -> Hsla {
     } else {
         rgb(0xf3f4f6).into()
     }
+}
+
+fn secondary_foreground() -> Hsla {
+    rgb(if dark() { 0xa7b0bd } else { 0x616975 }).into()
 }
 
 fn divider() -> Hsla {
@@ -477,11 +504,7 @@ impl Shell {
         self.next.set(id + 1);
         let rich = self.owner.run(|| source.sibling().expect("rich view"));
         let gate = self.owner.run(|| ModeGate::new(source.clone(), rich));
-        if path
-            .as_ref()
-            .and_then(|p| p.extension())
-            .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
-        {
+        if path.as_deref().is_some_and(is_markdown) {
             self.owner.run(|| gate.to_rich());
         }
         let reference = self.owner.run(component_ref::<Editor>);
@@ -509,6 +532,7 @@ impl Shell {
         self.active.set(id);
         self.second_active.set(false);
         self.panel.set(String::new());
+        self.notice.set(String::new());
     }
     fn blocked(&self, id: &str) -> Option<String> {
         if self.current().is_some_and(|d| d.gate.busy()) {
@@ -1672,51 +1696,20 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let table_controls = doc.controls.table.clone();
     let code_controls = doc.controls.code.clone();
     let image_document_path = doc.path;
-    let source_document_path = doc.path;
     let controls_owner = s.owner;
     let controls_shell = s.clone();
-    let header_doc = doc.clone();
+    let show_path = doc.clone();
+    let path = doc.path;
+    let root = s.root;
     let status_doc = doc.clone();
-    view()
+    let mode_doc = doc.clone();
+    let markdown = move || path.with(|value| value.as_deref().is_some_and(is_markdown));
+
+    let content = view()
+        .relative()
         .flex_1()
         .min_w(px(0.0))
         .min_h(px(0.0))
-        .overflow_hidden()
-        .child(
-            view()
-                .flex_row()
-                .flex_wrap()
-                .w_full()
-                .max_w(relative(1.0))
-                .min_w(px(0.0))
-                .gap(px(8.0))
-                .p(px(6.0))
-                .bg(frame)
-                .border_b(px(1.0))
-                .border_color(divider)
-                .child(
-                    text(move || {
-                        format!("组 {} · {}", if second { 2 } else { 1 }, header_doc.name())
-                    })
-                    .flex_1()
-                    .min_w(px(0.0)),
-                )
-                .child(view().element_ref(&doc.progress).child(text(move || {
-                    match status_doc.pending_mode.get() {
-                        Some(true) => "正在切换到富文本…".into(),
-                        Some(false) => "正在切换到源码…".into(),
-                        None => status_doc.gate.status.get(),
-                    }
-                })))
-                .child(
-                    view()
-                        .flex_row()
-                        .gap(px(1.0))
-                        .bg(divider)
-                        .child(mode_button(s.clone(), doc.clone(), false))
-                        .child(mode_button(s, doc, true)),
-                ),
-        )
         .child(
             when(rich_mode, move || {
                 let session = rich.session();
@@ -1748,6 +1741,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                                             .min_w(px(0.0))
                                             .gap(px(8.0))
                                             .p(px(6.0))
+                                            .pr(px(60.0))
                                             .child(crate::block_controls::view(
                                                 block_controls.clone(),
                                                 focus.clone(),
@@ -1794,19 +1788,14 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .auto_focus(move || source_focus.get() == second)
                     .on_focus(move |_: &()| source_focus.set(second))
                     .language(move || {
-                        let markdown = source_document_path
-                            .get()
-                            .as_ref()
-                            .and_then(|p| p.extension())
-                            .is_some_and(|e| {
-                                e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown")
-                            });
-                        Some(SharedString::from(if markdown {
+                        Some(SharedString::from(if markdown() {
                             "markdown"
                         } else {
                             "plaintext"
                         }))
                     })
+                    .tab_size(move || Some(editor_tab_width(markdown())))
+                    .hard_tabs(false)
                     .soft_wrap(move || wrap.get())
                     .font_size(px(16.0))
                     .line_height(px(24.0))
@@ -1817,36 +1806,108 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .min_h(px(0.0))
             }),
         )
+        .child(
+            view()
+                .absolute()
+                .top(px(12.0))
+                .left(px(16.0))
+                .right(px(60.0))
+                .z_index(1)
+                .pointer_events(PointerEvents::None)
+                .element_ref(&doc.progress)
+                .child(
+                    text(move || match status_doc.pending_mode.get() {
+                        Some(true) => "正在切换到富文本…".into(),
+                        Some(false) => "正在切换到源码…".into(),
+                        None => status_doc.gate.status.get(),
+                    })
+                    .number_of_lines(1)
+                    .text_overflow(EllipsizeMode::Tail),
+                ),
+        );
+
+    view()
+        .relative()
+        .flex_1()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .overflow_hidden()
+        .child(when(
+            move || path.get().is_some() && !show_path.displayed_rich(),
+            move || {
+                view()
+                    .h(px(28.0))
+                    .flex_shrink_0()
+                    .justify_center()
+                    .pl(px(12.0))
+                    .pr(px(60.0))
+                    .border_b(px(1.0))
+                    .border_color(divider)
+                    .child(
+                        text(move || {
+                            let Some(path) = path.get() else {
+                                return String::new();
+                            };
+                            if let Some(root) = root.get() {
+                                if let (Some(folder), Ok(relative)) =
+                                    (root.file_name(), path.strip_prefix(&root))
+                                {
+                                    return Path::new(folder)
+                                        .join(relative)
+                                        .to_string_lossy()
+                                        .into_owned();
+                                }
+                            }
+                            display_path(&path)
+                        })
+                        .text_color(secondary_foreground)
+                        .text_size(px(12.0))
+                        .number_of_lines(1)
+                        .text_overflow(EllipsizeMode::Middle),
+                    )
+            },
+        ))
+        .child(content)
+        .child(when(
+            move || {
+                mode_doc.is_markdown()
+                    || mode_doc.displayed_rich()
+                    || mode_doc.pending_mode.get().is_some()
+            },
+            move || mode_button(s.clone(), doc.clone()),
+        ))
 }
 
-fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, rich: bool) -> impl IntoElement {
+fn mode_button(shell: Rc<Shell>, doc: Rc<Document>) -> impl IntoElement {
     let selected = doc.clone();
-    let surface = doc.clone();
-    let label_doc = doc.clone();
+    let name = doc.clone();
     let disabled = doc.clone();
-    let label = if rich { "富文本" } else { "源码" };
-    nsh_base::button()
-        .h(px(30.0))
-        .min_w(px(70.0))
-        .selected(move || selected.displayed_rich() == rich)
+    let backdrop = doc.clone();
+    icon_button(SOURCE_ICON, "切换到源码", 32.0, 18.0)
+        .absolute()
+        .h(px(28.0))
+        .top(px(12.0))
+        .right(px(16.0))
+        .z_index(1)
+        .border(px(1.0))
+        .border_color(divider)
         .bg(move || {
-            if surface.displayed_rich() == rich {
-                selected_surface()
-            } else {
+            if backdrop.displayed_rich() {
                 frame()
+            } else {
+                selected_surface()
             }
         })
-        .disabled(move || disabled.pending_mode.get().is_some())
-        .child(dynamic(move || {
-            if label_doc.displayed_rich() == rich {
-                text(format!("✓ {label}"))
-                    .app_class("font-semibold")
-                    .into_element()
+        .accessibility_label(move || {
+            Some(SharedString::from(if name.displayed_rich() {
+                "切换到源码"
             } else {
-                text(label).into_element()
-            }
-        }))
-        .on_press(move |_: &()| shell.request_mode(doc.clone(), rich))
+                "返回所见即所得"
+            }))
+        })
+        .selected(move || !selected.displayed_rich())
+        .disabled(move || disabled.pending_mode.get().is_some())
+        .on_press(move |_: &()| shell.request_mode(doc.clone(), !doc.displayed_rich()))
 }
 
 fn groups(s: Rc<Shell>) -> AnyElement {
@@ -1950,7 +2011,6 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                             .flex_row()
                             .gap(px(6.0))
                             .items_center()
-                            .justify_center()
                             .overflow_hidden()
                             .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
                             .border(px(1.0))
@@ -2043,9 +2103,12 @@ fn activity_icon(
         }))
 }
 
+const FOLDER_ICON: &str = "M3 6h7l2 3h9v10H3z";
+const SPLIT_ICON: &str = "M3 5h18v14H3zM12 5v14";
 const FILES_ICON: &str = "M7 5V3h8l4 4v12h-2M15 3v5h4M5 7h10v14H5z";
 const SEARCH_ICON: &str = "M15.5 15.5L21 21M17.5 10.5a7 7 0 1 1-14 0 7 7 0 0 1 14 0";
 const CLOSE_ICON: &str = "M6 6l12 12M18 6L6 18";
+const SOURCE_ICON: &str = "M4 6l6 5-6 5M12 17h8";
 const ADD_ICON: &str = "M5 12h14M12 5v14";
 
 fn shell_glyph(path: &str, size: f32) -> impl IntoElement {
@@ -2128,6 +2191,8 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
     let docs = s.docs;
     let active = s.active;
     let new_tab = s.clone();
+    let split = s.split;
+    let split_tab = s.clone();
     view()
         .h(px(38.0))
         .flex_shrink_0()
@@ -2136,93 +2201,107 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
         .bg(frame)
         .border_b(px(1.0))
         .border_color(divider)
-        .child(scroll().horizontal().scrollbar(false).min_w(px(0.0)).child(
-            view().flex_row().child(each(
-                move || docs.get(),
-                |doc: &Rc<Document>| doc.id,
-                move |doc, _| {
-                    let doc = doc.get_untracked();
-                    let tab = s.clone();
-                    let close = s.clone();
-                    let id = doc.id;
-                    let label = doc.clone();
-                    view()
-                        .relative()
-                        .h(px(38.0))
-                        .min_w(px(104.0))
-                        .max_w(px(220.0))
-                        .pr(px(6.0))
-                        .flex_row()
-                        .items_center()
-                        .bg(move || {
-                            if active.get() == id {
-                                background()
-                            } else {
-                                frame()
-                            }
-                        })
-                        .border_r(px(1.0))
-                        .border_color(divider)
-                        .child(
-                            nsh_base::button()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .h_full()
-                                .px(px(10.0))
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.0))
-                                .app_class("hover:bg-accent focus-visible:bg-accent")
-                                .selected(move || active.get() == id)
-                                .child(
-                                    text(move || label.name())
-                                        .min_w(px(0.0))
-                                        .number_of_lines(1)
-                                        .text_overflow(EllipsizeMode::Tail),
-                                )
-                                .child(when(
-                                    move || {
-                                        doc.source.track();
-                                        doc.source.is_dirty().unwrap_or(true)
-                                    },
-                                    || {
-                                        view()
-                                            .w(px(6.0))
-                                            .h(px(6.0))
-                                            .flex_shrink_0()
-                                            .app_class("rounded-full")
-                                            .bg(indicator)
-                                    },
-                                ))
-                                .on_press(move |_: &()| {
-                                    tab.active.set(id);
-                                    tab.second_active.set(false);
-                                }),
-                        )
-                        .child(
-                            icon_button(CLOSE_ICON, "关闭此标签", 24.0, 14.0)
-                                .on_press(move |_: &()| close.close_tab(id)),
-                        )
-                        .child(when(
-                            move || active.get() == id,
-                            || {
-                                view()
-                                    .absolute()
-                                    .bottom(px(0.0))
-                                    .left(px(0.0))
-                                    .right(px(0.0))
-                                    .h(px(2.0))
-                                    .bg(indicator)
-                            },
-                        ))
-                },
-            )),
-        ))
+        .child(
+            scroll()
+                .horizontal()
+                .scrollbar(false)
+                .flex_1()
+                .min_w(px(0.0))
+                .child(view().flex_row().child(each(
+                    move || docs.get(),
+                    |doc: &Rc<Document>| doc.id,
+                    move |doc, _| {
+                        let doc = doc.get_untracked();
+                        let tab = s.clone();
+                        let close = s.clone();
+                        let id = doc.id;
+                        let label = doc.clone();
+                        view()
+                            .relative()
+                            .h(px(38.0))
+                            .min_w(px(104.0))
+                            .max_w(px(220.0))
+                            .pr(px(6.0))
+                            .flex_row()
+                            .items_center()
+                            .bg(move || {
+                                if active.get() == id {
+                                    background()
+                                } else {
+                                    frame()
+                                }
+                            })
+                            .border_r(px(1.0))
+                            .border_color(divider)
+                            .child(
+                                nsh_base::button()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .h_full()
+                                    .px(px(10.0))
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .app_class("hover:bg-accent focus-visible:bg-accent")
+                                    .selected(move || active.get() == id)
+                                    .child(
+                                        text(move || label.name())
+                                            .min_w(px(0.0))
+                                            .number_of_lines(1)
+                                            .text_overflow(EllipsizeMode::Tail),
+                                    )
+                                    .child(when(
+                                        move || {
+                                            doc.source.track();
+                                            doc.source.is_dirty().unwrap_or(true)
+                                        },
+                                        || {
+                                            view()
+                                                .w(px(6.0))
+                                                .h(px(6.0))
+                                                .flex_shrink_0()
+                                                .app_class("rounded-full")
+                                                .bg(indicator)
+                                        },
+                                    ))
+                                    .on_press(move |_: &()| {
+                                        tab.active.set(id);
+                                        tab.second_active.set(false);
+                                    }),
+                            )
+                            .child(
+                                icon_button(CLOSE_ICON, "关闭此标签", 24.0, 14.0)
+                                    .on_press(move |_: &()| close.close_tab(id)),
+                            )
+                            .child(when(
+                                move || active.get() == id,
+                                || {
+                                    view()
+                                        .absolute()
+                                        .bottom(px(0.0))
+                                        .left(px(0.0))
+                                        .right(px(0.0))
+                                        .h(px(2.0))
+                                        .bg(indicator)
+                                },
+                            ))
+                    },
+                ))),
+        )
         .child(
             icon_button(ADD_ICON, "新建标签", 32.0, 16.0)
                 .ml(px(4.0))
                 .on_press(move |_: &()| new_tab.run("texzi.file.new")),
         )
+        .child(when(
+            move || split.get().is_none(),
+            move || {
+                let split_tab = split_tab.clone();
+                icon_button(SPLIT_ICON, "向右拆分编辑组", 32.0, 16.0)
+                    .mr(px(4.0))
+                    .on_press(move |_: &()| split_tab.run("texzi.group.splitRight"))
+            },
+        ))
 }
 
 fn render_shell(s: Rc<Shell>) -> impl IntoElement {
@@ -2235,7 +2314,6 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let quick = s.clone();
     let status_shell = s.clone();
     let drop_shell = s.clone();
-    let notice = s.notice;
     let zen = s.zen;
     let exit_zen = s.clone();
     let zen_window = s.window.clone();
@@ -2311,21 +2389,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
         )
         .child(when(
             move || !zen.get(),
-            move || {
-                let status_shell = status_shell.clone();
-                view()
-                    .h(px(24.0))
-                    .bg(frame)
-                    .flex_row()
-                    .justify_between()
-                    .child(text(move || notice.get()))
-                    .child(text(move || {
-                        status_shell
-                            .current()
-                            .and_then(|doc| doc.source.file_status())
-                            .unwrap_or_default()
-                    }))
-            },
+            move || status_bar(status_shell.clone()),
         ))
         .child(dynamic(move || {
             let mode = quick.panel.get();
@@ -2355,6 +2419,84 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                     .child(palette)
                     .into_element()
             })
+        }))
+}
+
+fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
+    let notice = shell.notice;
+    let document = shell.clone();
+    view()
+        .h(px(24.0))
+        .flex_shrink_0()
+        .flex_row()
+        .items_center()
+        .gap(px(12.0))
+        .px(px(8.0))
+        .bg(frame)
+        .border_t(px(1.0))
+        .border_color(divider)
+        .text_color(secondary_foreground)
+        .text_size(px(12.0))
+        .child(
+            text(move || {
+                let message = notice.get();
+                let dirty = document.current().is_some_and(|doc| {
+                    doc.source.track();
+                    doc.source.is_dirty().unwrap_or(true)
+                });
+                if dirty {
+                    if message.is_empty() || message.starts_with("已保存") {
+                        "未保存".into()
+                    } else {
+                        format!("{message} · 未保存")
+                    }
+                } else if message.is_empty() {
+                    "就绪".into()
+                } else {
+                    message
+                }
+            })
+            .flex_1()
+            .min_w(px(0.0))
+            .number_of_lines(1)
+            .text_overflow(EllipsizeMode::Tail),
+        )
+        .child(dynamic(move || {
+            let doc = shell.current()?;
+            let rich = doc.displayed_rich();
+            let markdown = doc.is_markdown();
+            let position = if rich {
+                doc.gate.rich_cursor_status()
+            } else {
+                doc.source.cursor_status()
+            };
+            let (encoding, newline) = doc.source.file_status()?;
+            let language = if rich {
+                "Markdown · 富文本"
+            } else if markdown {
+                "Markdown · 源码"
+            } else {
+                "纯文本"
+            };
+            let mut fields = view()
+                .flex_row()
+                .items_center()
+                .min_w(px(0.0))
+                .gap(px(12.0));
+            if let Some(position) = position {
+                fields = fields.child(text(position).number_of_lines(1));
+            }
+            if !rich {
+                fields = fields.child(
+                    text(format!("空格：{}", editor_tab_width(markdown))).number_of_lines(1),
+                );
+            }
+            Some(
+                fields
+                    .child(text(encoding).number_of_lines(1))
+                    .child(text(newline).number_of_lines(1))
+                    .child(text(language).number_of_lines(1)),
+            )
         }))
 }
 
@@ -2423,12 +2565,31 @@ fn folder(s: Rc<Shell>) -> AnyElement {
     let mut rows = vec![];
     let mut errors = vec![];
     tree_rows(&root, &expanded, 0, &mut rows, &mut errors);
+    let root_path = display_path(&root);
+    let root_label = root.file_name().map_or_else(
+        || root_path.clone(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     scroll()
         .flex_1()
         .child(
             view()
-                .child(text(root.display().to_string()))
-                .child(text(errors.join("\n")))
+                .child(
+                    view()
+                        .h(px(28.0))
+                        .flex_row()
+                        .gap(px(6.0))
+                        .items_center()
+                        .label(root_path)
+                        .child(shell_glyph(FOLDER_ICON, 16.0))
+                        .child(
+                            text(root_label)
+                                .min_w(px(0.0))
+                                .number_of_lines(1)
+                                .text_overflow(EllipsizeMode::Tail),
+                        ),
+                )
+                .child((!errors.is_empty()).then(|| text(errors.join("\n"))))
                 .child(each(
                     move || rows.clone(),
                     |r: &(PathBuf, usize, bool)| r.0.clone(),

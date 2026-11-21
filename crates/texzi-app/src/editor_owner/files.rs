@@ -80,7 +80,7 @@ impl NativeView {
         Self::from_store(store, snapshot, files)
     }
 
-    pub(crate) fn file_status(&self) -> Option<String> {
+    pub(crate) fn file_status(&self) -> Option<(&'static str, &'static str)> {
         self.track();
         let encoding = match self.owner.files.borrow().format {
             Format {
@@ -119,7 +119,7 @@ impl NativeView {
             doc::Eol::CrLf => "CRLF",
             doc::Eol::Cr => "CR",
         };
-        Some(format!("{encoding}  {newline}"))
+        Some((encoding, newline))
     }
 
     #[cfg(test)]

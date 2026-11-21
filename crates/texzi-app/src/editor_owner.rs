@@ -18,6 +18,7 @@ pub struct NativeView {
     owner: Rc<Owner>,
     view: doc::ViewId,
     composing: Signal<bool>,
+    selection_changed: Signal<u64>,
 }
 impl NativeView {
     #[cfg(test)]
@@ -52,6 +53,7 @@ impl NativeView {
             }),
             view: v.id,
             composing: signal(false),
+            selection_changed: signal(0),
         }))
     }
     pub fn buffer(self: &Rc<Self>) -> ExternalBuffer {
@@ -73,6 +75,24 @@ impl NativeView {
     #[cfg(test)]
     pub fn inspect<R>(&self, f: impl FnOnce(&doc::Store, doc::ViewId) -> R) -> R {
         f(&self.owner.store.borrow(), self.view)
+    }
+    pub(crate) fn cursor_status(&self) -> Option<String> {
+        self.track();
+        self.selection_changed.get();
+        let store = self.owner.store.borrow();
+        let view = store.view(self.view).ok()?;
+        if view.selection.selections.len() > 1 {
+            return Some(format!("{} 个光标", view.selection.selections.len()));
+        }
+        let head = view
+            .selection
+            .selections
+            .get(view.selection.primary)?
+            .head
+            .position
+            .offset;
+        let (line, column) = store.snapshot(view.doc).ok()?.body.line_column(head).ok()?;
+        Some(format!("行 {line}，列 {column}"))
     }
     pub fn trace_state(&self, action: &str) {
         if std::env::var_os("TEXZI_TRACE_IME").as_deref() != Some(std::ffi::OsStr::new("1")) {
@@ -120,6 +140,7 @@ impl NativeView {
             owner: self.owner.clone(),
             view: v.id,
             composing: signal(false),
+            selection_changed: signal(0),
         }))
     }
     fn read(&self, store: &doc::Store) -> Result<ExternalSnapshot, String> {
@@ -262,10 +283,17 @@ impl ExternalDocument for NativeView {
             },
         )
         .map_err(err)?;
-        if set != v.selection {
+        let changed = set != v.selection;
+        if changed {
             store.set_selection(v.id, v.epoch, set).map_err(err)?;
         }
-        self.read(&store)
+        let snapshot = self.read(&store);
+        drop(store);
+        if changed {
+            self.selection_changed
+                .update(|value| *value = value.wrapping_add(1));
+        }
+        snapshot
     }
     fn can_history(&self) -> (bool, bool) {
         let s = self.owner.store.borrow();
