@@ -1132,7 +1132,7 @@ fn wheel_event(surface: &Rc<Surface>, event: &WheelEvent) -> bool {
     takes
 }
 
-fn is_virtual_rich_scroll(view: &NshView) -> bool {
+pub(crate) fn is_virtual_rich_scroll(view: &NshView) -> bool {
     view.kind() == ViewKind::Scroll
         && view.state().props.test_id.as_deref() == Some("texzi.rich.virtual-scroll")
 }

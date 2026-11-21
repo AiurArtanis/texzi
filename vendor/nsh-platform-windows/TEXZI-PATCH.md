@@ -81,3 +81,7 @@ and delta handling. The tagged virtual rich-editor scroll delegates its
 wheel offset to the editor. It keeps the previous rows through a Windows
 mount fence and advances only the latest offset. Other wheel targets keep
 the existing native scroll path.
+
+While a virtual rich editor is attached to a surface, the mounter suspends
+NSH content culling there. The editor bounds both row windows itself. The
+mounter restores the ordinary policy when the last such editor detaches.

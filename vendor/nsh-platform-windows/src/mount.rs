@@ -6,7 +6,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use nsh_core::{Command, LayoutAnimation, MountItem, NodeId, ROOT_ID, ViewKind};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{surface::Surface, view::NshView};
 
@@ -49,6 +49,8 @@ pub(crate) struct Mounter {
     pub(crate) layout_animation: Option<LayoutAnimation>,
     /// The surface lays out right to left.
     pub(crate) rtl: bool,
+    virtual_rich_scrolls: FxHashSet<NodeId>,
+    virtual_rich_culling_suspended: bool,
 }
 
 impl Mounter {
@@ -60,6 +62,8 @@ impl Mounter {
             root,
             layout_animation: None,
             rtl: false,
+            virtual_rich_scrolls: FxHashSet::default(),
+            virtual_rich_culling_suspended: false,
         }
     }
 
@@ -78,6 +82,7 @@ impl Mounter {
         // with the views that mounted it.
         root.state_mut().shader = None;
         self.views.insert(ROOT_ID, root);
+        self.virtual_rich_scrolls.clear();
         self.layout_animation = None;
     }
 
@@ -87,6 +92,17 @@ impl Mounter {
         crate::selectable_view::end_batch(surface);
         crate::navigation::end_batch(surface);
         crate::system::end_batch(surface);
+        // The rich editor already limits live rows to its display and
+        // pending windows. Core culling looks at the *previous* scroll
+        // offset and can defer those mounted-ahead rows' text descendants.
+        let suspended = self
+            .virtual_rich_scrolls
+            .iter()
+            .any(|&id| self.views.get(id).is_some_and(|view| view.attached()));
+        if suspended != self.virtual_rich_culling_suspended {
+            self.virtual_rich_culling_suspended = suspended;
+            surface.control(|control| control.set_content_culling(!suspended));
+        }
     }
 
     fn get(&self, id: NodeId) -> Option<NshView> {
@@ -170,6 +186,7 @@ impl Mounter {
                 }
             }
             MountItem::Delete { id } => {
+                self.virtual_rich_scrolls.remove(id);
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(*id) {
                     crate::navigation::removing(surface, &view);
@@ -358,6 +375,11 @@ impl Mounter {
             MountItem::ViewProps { id, props } => {
                 let Some(view) = &self.get(*id) else { return };
                 view.state_mut().props = props.clone();
+                if crate::input::is_virtual_rich_scroll(view) {
+                    self.virtual_rich_scrolls.insert(*id);
+                } else {
+                    self.virtual_rich_scrolls.remove(id);
+                }
                 crate::input::props_changed(surface, view);
                 crate::access::props_changed(view);
             }

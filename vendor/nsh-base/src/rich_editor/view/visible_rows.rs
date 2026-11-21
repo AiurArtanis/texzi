@@ -333,10 +333,6 @@ pub(super) fn render(rv: Rv, list: Memo<Vec<BlockItem>>) -> AnyElement {
         std::env::var_os("TEXZI_TRACE_RICH_ROWS").as_deref() == Some(std::ffi::OsStr::new("1"));
     view()
         .relative()
-        // This container already keeps only the editor's row window. On
-        // Windows the identity transform bypasses native culling against
-        // the previous offset, so the next rows can mount before ScrollTo.
-        .when(cfg!(target_os = "windows"), |v| v.translate_x(px(0.0)))
         .w_full()
         .flex_shrink_0()
         .h(move || {
