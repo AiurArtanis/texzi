@@ -73,3 +73,10 @@ mounted keymap. Native records do not reveal the original key behind
 VK_PROCESSKEY, and UTC timestamps are subject to system-clock adjustment.
 These diagnostics do not establish a CHORD-IME-01 root cause or claim a fix;
 the next fixed package still requires targeted real Windows/IME observation.
+
+## Viewport-bounded rich-editor wheel
+
+The Windows input router preserves the native hit-test, latching, modifier
+and delta handling. The tagged virtual rich-editor scroll delegates its
+wheel offset to the editor, whose row views are mounted before the offset
+command in the same batch. Other wheel targets use the native scroll path.

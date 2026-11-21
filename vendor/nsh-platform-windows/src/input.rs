@@ -1122,12 +1122,23 @@ fn wheel_event(surface: &Rc<Surface>, event: &WheelEvent) -> bool {
     };
     let Some((view, takes)) = input::wheel_listener(
         chain(&hit.view),
-        |v| v.state().events.contains(EventKind::Wheel),
+        |v| v.state().events.contains(EventKind::Wheel) && !is_virtual_rich_scroll(v),
         // A multiline field scrolls its own lines.
         |v| matches!(v.kind(), ViewKind::Scroll | ViewKind::Input),
     ) else {
         return false;
     };
+    dispatch_wheel(surface, &view, event);
+    takes
+}
+
+fn is_virtual_rich_scroll(view: &NshView) -> bool {
+    view.kind() == ViewKind::Scroll
+        && view.state().props.test_id.as_deref() == Some("texzi.rich.virtual-scroll")
+}
+
+fn dispatch_wheel(surface: &Rc<Surface>, view: &NshView, event: &WheelEvent) {
+    let (x, y) = (event.x, event.y);
     let delta = if event.precise {
         nsh_core::WheelDelta::Points(nsh_core::geometry::point(
             Points(event.dx),
@@ -1136,7 +1147,7 @@ fn wheel_event(surface: &Rc<Surface>, event: &WheelEvent) -> bool {
     } else {
         nsh_core::WheelDelta::Lines(nsh_core::geometry::point(event.dx / 16.0, event.dy / 16.0))
     };
-    let (location_x, location_y) = local(&view, x, y);
+    let (location_x, location_y) = local(view, x, y);
     let wheel = nsh_core::WheelEvent::new(
         nsh_core::geometry::point(Points(location_x), Points(location_y)),
         nsh_core::geometry::point(Points(x), Points(y)),
@@ -1145,7 +1156,6 @@ fn wheel_event(surface: &Rc<Surface>, event: &WheelEvent) -> bool {
     );
     let id = view.state().id;
     surface.event(id, EventKind::Wheel, EventPayload::Wheel(wheel));
-    takes
 }
 
 /// A wheel event from the window.
@@ -1172,7 +1182,7 @@ pub(crate) fn wheel(surface: &Rc<Surface>, event: WheelEvent) {
     } else {
         WheelInput::Step
     };
-    wheel_input(surface, x, y, dx, dy, event.time * 1000.0, kind);
+    wheel_input(surface, WheelEvent { dx, dy, ..event }, kind);
 }
 
 /// A key from the window; true when handled. Only key downs (and their
@@ -2512,7 +2522,14 @@ fn scroll_target(surface: &Surface, x: f32, y: f32, dx: f32, dy: f32) -> Option<
 
 /// Scrolls `view` (a scroll view, or a multiline input scrolling its own
 /// text) by a wheel's `(dx, dy)`.
-fn scroll_wheel(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32) {
+fn scroll_wheel(surface: &Rc<Surface>, view: &NshView, event: &WheelEvent) {
+    let (dx, dy) = (event.dx, event.dy);
+    if is_virtual_rich_scroll(view) {
+        // Preserve native target selection and wheel latching. The editor
+        // sends the next offset after its destination rows in the mount batch.
+        dispatch_wheel(surface, view, event);
+        return;
+    }
     if view.kind() == ViewKind::Scroll {
         crate::scroll::wheel(surface, view, dx, dy);
     } else {
@@ -2540,15 +2557,9 @@ fn shown(view: &NshView) -> bool {
 
 /// A scroll event at `(x, y)` (`time` in ms); returns whether a scroll
 /// view took it.
-fn wheel_input(
-    surface: &Rc<Surface>,
-    x: f32,
-    y: f32,
-    dx: f32,
-    dy: f32,
-    time: f64,
-    kind: WheelInput,
-) -> bool {
+fn wheel_input(surface: &Rc<Surface>, event: WheelEvent, kind: WheelInput) -> bool {
+    let WheelEvent { x, y, dx, dy, .. } = event;
+    let time = event.time * 1000.0;
     let input = &surface.input;
     match kind {
         WheelInput::Step => {
@@ -2574,7 +2585,7 @@ fn wheel_input(
             *input.latch.borrow_mut() = Some((view.clone(), horizontal, time));
             // Without a begin, the scroll module takes it as a mouse wheel:
             // it settles (and snaps) by itself once the notches stop.
-            scroll_wheel(surface, &view, dx, dy);
+            scroll_wheel(surface, &view, &event);
             true
         }
         WheelInput::Touchpad => {
@@ -2589,7 +2600,7 @@ fn wheel_input(
                     view: view.clone(),
                     last: time,
                 });
-                if view.kind() == ViewKind::Scroll {
+                if view.kind() == ViewKind::Scroll && !is_virtual_rich_scroll(&view) {
                     crate::scroll::wheel_begin(surface, &view);
                 }
                 watch_touchpad(surface);
@@ -2602,7 +2613,7 @@ fn wheel_input(
                 w.last = time;
                 w.view.clone()
             };
-            scroll_wheel(surface, &view, dx, dy);
+            scroll_wheel(surface, &view, &event);
             true
         }
         WheelInput::Stop => {
@@ -2611,7 +2622,7 @@ fn wheel_input(
             };
             // The system glides on by itself (its inertia comes as more
             // deltas, which this scroll took): no velocity to add.
-            if w.view.kind() == ViewKind::Scroll {
+            if w.view.kind() == ViewKind::Scroll && !is_virtual_rich_scroll(&w.view) {
                 crate::scroll::wheel_end(surface, &w.view, 0.0, 0.0);
             }
             true
@@ -2640,7 +2651,19 @@ fn check_touchpad(surface: &Rc<Surface>, ms: f64) {
             None => {
                 surface.input.wheel_watch.set(false);
                 if last.is_some() {
-                    wheel_input(&surface, 0.0, 0.0, 0.0, 0.0, now, WheelInput::Stop);
+                    wheel_input(
+                        &surface,
+                        WheelEvent {
+                            x: 0.0,
+                            y: 0.0,
+                            dx: 0.0,
+                            dy: 0.0,
+                            precise: true,
+                            modifiers: Modifiers::default(),
+                            time: now / 1000.0,
+                        },
+                        WheelInput::Stop,
+                    );
                 }
             }
         }

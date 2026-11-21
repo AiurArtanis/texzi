@@ -93,6 +93,15 @@ fn rect(b: Bounds<Points>) -> View {
 /// The editor.
 pub(crate) fn render(rv: Rv) -> impl IntoElement {
     let (scroll_rv, layout_rv) = (rv.clone(), rv.clone());
+    let wheel_rv = rv.clone();
+    let drag_rv = rv.clone();
+    let virtual_wheel = cfg!(target_os = "windows")
+        && rv
+            .tree
+            .borrow()
+            .children
+            .get(&DOC)
+            .is_some_and(|rows| super::visible_rows::enabled(rows.len()));
     let root = part(
         view()
             .relative()
@@ -117,11 +126,16 @@ pub(crate) fn render(rv: Rv) -> impl IntoElement {
                     // The editor's own taps keep its keyboard (Android's scroll
                     // views dismiss it on a tap otherwise).
                     .keyboard_taps(KeyboardTaps::Always)
-                    .on_scroll(move |e: &ScrollEvent| {
-                        scroll_rv.scroll_y.set(e.offset.y);
-                        scroll_rv.scrolled.set(e.offset.y);
-                        scroll_rv.viewport.set(e.size);
+                    .when(virtual_wheel, |view| {
+                        view.test_id(super::visible_rows::WINDOWS_VIEWPORT_ID)
+                            .on_wheel(move |event: &nsh_core::WheelEvent| {
+                                wheel_rv.scroll_visible_rows_by(event.delta.points(px(16.0)).y.0);
+                            })
+                            .on_scroll_drag_start(move |_: &Point<Points>| {
+                                drag_rv.pending_wheel_scroll.set(None);
+                            })
                     })
+                    .on_scroll(move |e: &ScrollEvent| scroll_rv.observe_scroll(e))
                     .on_layout(move |b: &Bounds<Points>| layout_rv.viewport.set(b.size))
                     .child(content(rv.clone())),
             )

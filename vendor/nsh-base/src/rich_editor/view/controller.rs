@@ -163,6 +163,7 @@ pub(crate) struct Rv {
     pub(crate) layout_notification_pending: Rc<Cell<bool>>,
     pub(crate) visible_rows: Rc<RefCell<Option<super::visible_rows::Rows>>>,
     pub(crate) visible_rows_rev: Signal<u64>,
+    pub(crate) pending_wheel_scroll: Rc<Cell<Option<f32>>>,
     /// The session has a state the view has not taken yet.
     notified: Signal<u64>,
     pub(crate) focused: Signal<bool>,
@@ -238,6 +239,7 @@ impl Rv {
             layout_notification_pending: Rc::default(),
             visible_rows: Rc::default(),
             visible_rows_rev: signal(0),
+            pending_wheel_scroll: Rc::default(),
             notified: signal(0),
             focused: signal(false),
             blink: signal(true),
@@ -2060,6 +2062,9 @@ impl Rv {
         let from = self.scroll_y.get_untracked();
         let to = (from + speed.y).min(max).max(px(0.0));
         if to != from {
+            if self.pending_wheel_scroll.get().is_some() {
+                self.pending_wheel_scroll.set(Some(to.0));
+            }
             self.scroll_y.set(to);
             self.scrolled.set(to);
             self.scroll.scroll_to(Point::new(px(0.0), to), false);
@@ -2237,6 +2242,9 @@ impl Rv {
     pub(crate) fn move_visible_row_scroll(&self, to: f32) {
         let to = px(to.max(0.0));
         if (self.scroll_y.get_untracked().0 - to.0).abs() > 0.5 {
+            if self.pending_wheel_scroll.get().is_some() {
+                self.pending_wheel_scroll.set(Some(to.0));
+            }
             self.scroll_y.set(to);
             self.scrolled.set(to);
             self.scroll.scroll_to(Point::new(px(0.0), to), false);

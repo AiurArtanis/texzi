@@ -9,6 +9,7 @@ use super::{
     geometry::DOC,
 };
 
+pub(super) const WINDOWS_VIEWPORT_ID: &str = "texzi.rich.virtual-scroll";
 pub(super) const ROW_BIT: u64 = 1 << 61;
 pub(super) const ROWS_ROOT: u64 = ROW_BIT;
 const DEFAULT_VIEWPORT: f32 = 480.0;
@@ -196,6 +197,37 @@ fn measure_row(rv: &Rv, id: u64, height: f32) {
 }
 
 impl Rv {
+    pub(super) fn scroll_visible_rows_by(&self, delta: f32) {
+        if !delta.is_finite() || delta == 0.0 {
+            return;
+        }
+        let Some(extent) = self.visible_rows.borrow().as_ref().map(Rows::extent) else {
+            return;
+        };
+        let current = self.scroll_y.get_untracked().0;
+        let limit = (extent - self.viewport.get_untracked().height.0).max(0.0);
+        let target = (current + delta).clamp(0.0, limit);
+        if (target - current).abs() > 0.5 {
+            // Core lays out the new rows before sending ScrollTo in the same
+            // mount batch. No outstanding row callback can replay this target.
+            self.pending_wheel_scroll.set(Some(target));
+            batch(|| self.move_visible_row_scroll(target));
+        }
+    }
+
+    pub(super) fn observe_scroll(&self, e: &ScrollEvent) {
+        self.viewport.set(e.size);
+        if let Some(target) = self.pending_wheel_scroll.get() {
+            let limit = (e.content_size.height - e.size.height).0.max(0.0);
+            if (e.offset.y.0 - target.clamp(0.0, limit)).abs() > 0.5 {
+                return;
+            }
+            self.pending_wheel_scroll.set(None);
+        }
+        self.scroll_y.set(e.offset.y);
+        self.scrolled.set(e.offset.y);
+    }
+
     pub(crate) fn reveal_unmounted_row(&self, position: usize) -> bool {
         let to = self.visible_rows.borrow().as_ref().and_then(|rows| {
             let index = rows
@@ -253,6 +285,10 @@ pub(super) fn render(rv: Rv, list: Memo<Vec<BlockItem>>) -> AnyElement {
         std::env::var_os("TEXZI_TRACE_RICH_ROWS").as_deref() == Some(std::ffi::OsStr::new("1"));
     view()
         .relative()
+        // This container already keeps only the editor's row window. On
+        // Windows the identity transform bypasses native culling against
+        // the previous offset, so the next rows can mount before ScrollTo.
+        .when(cfg!(target_os = "windows"), |v| v.translate_x(px(0.0)))
         .w_full()
         .flex_shrink_0()
         .h(move || {
