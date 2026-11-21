@@ -676,6 +676,17 @@ impl EditorApi {
         self.ed.reveal_position(position, center);
     }
 
+    /// The visible primary caret's distance from the top of the viewport.
+    pub fn viewport_caret_top(&self) -> Option<f32> {
+        self.ed.viewport_caret_top()
+    }
+
+    /// Reveals the primary caret without moving the selection. If specified,
+    /// keep its row at this distance from the top of the viewport.
+    pub fn reveal_primary_caret(&self, viewport_top: Option<f32>) {
+        self.ed.reveal_primary_caret(viewport_top);
+    }
+
     /// Puts the caret at the start of line `line` (from 0) and scrolls it
     /// to the middle of the viewport.
     pub fn go_to_line(&self, line: u32) {

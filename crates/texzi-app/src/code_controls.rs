@@ -138,122 +138,74 @@ impl CodeControls {
     }
 }
 
-pub fn view(controls: Rc<CodeControls>, focus: Rc<dyn Fn()>) -> impl IntoElement {
-    let language = controls.clone();
-    let exit = controls.clone();
-    let indent = controls.clone();
-    let outdent = controls.clone();
-    let modal = controls.clone();
-    let exit_focus = focus.clone();
-    let indent_focus = focus.clone();
-    let outdent_focus = focus.clone();
-    box_view()
-        .max_w(relative(1.0))
-        .min_w(px(0.0))
-        .gap(px(6.0))
-        .child(
-            box_view()
-                .flex_row()
-                .flex_wrap()
-                .max_w(relative(1.0))
-                .min_w(px(0.0))
-                .gap(px(6.0))
+pub fn dialog(controls: Rc<CodeControls>, focus: Rc<dyn Fn()>) -> impl IntoElement {
+    let modal = controls;
+    dynamic(move || {
+        if !modal.open.get() {
+            return None;
+        }
+        let dismiss = modal.clone();
+        let dismiss_focus = focus.clone();
+        let cancel = modal.clone();
+        let cancel_focus = focus.clone();
+        let apply = modal.clone();
+        let apply_focus = focus.clone();
+        let language = modal.language;
+        let info = modal.info;
+        let status = modal.gate.status;
+        Some(
+            nsh_base::dialog()
+                .label("代码语言")
+                .on_cancel(move |_: &()| {
+                    dismiss.cancel();
+                    dismiss_focus();
+                })
                 .child(
-                    nsh_base::button()
+                    box_view()
+                        .w(px(360.0))
+                        .p(px(16.0))
+                        .gap(px(8.0))
+                        .bg(crate::app_shell::background)
+                        .text_color(crate::app_shell::foreground)
                         .child(text("代码语言"))
-                        .on_press(move |_: &()| language.report(language.begin())),
+                        .child(
+                            input()
+                                .value(move || language.get())
+                                .placeholder("例如 rust、python；可留空")
+                                .on_change(move |value: &str| language.set(value.into())),
+                        )
+                        .child(text(move || {
+                            let value = info.get();
+                            if value.is_empty() {
+                                String::new()
+                            } else {
+                                format!("附加围栏信息保持原样：{value}")
+                            }
+                        }))
+                        .child(text(move || status.get()))
+                        .child(
+                            box_view()
+                                .flex_row()
+                                .gap(px(8.0))
+                                .child(nsh_base::button().child(text("取消")).on_press(
+                                    move |_: &()| {
+                                        cancel.cancel();
+                                        cancel_focus();
+                                    },
+                                ))
+                                .child(nsh_base::button().child(text("应用")).on_press(
+                                    move |_: &()| {
+                                        let result = apply.apply_language();
+                                        let done = result.is_ok();
+                                        apply.report(result);
+                                        if done {
+                                            apply_focus();
+                                        }
+                                    },
+                                )),
+                        ),
                 )
-                .child(
-                    nsh_base::button()
-                        .child(text("退出代码块"))
-                        .on_press(move |_: &()| {
-                            exit.report(exit.exit());
-                            exit_focus();
-                        }),
-                )
-                .child(
-                    nsh_base::button()
-                        .child(text("缩进 (Tab)"))
-                        .on_press(move |_: &()| {
-                            indent.report(indent.indent(false));
-                            indent_focus();
-                        }),
-                )
-                .child(
-                    nsh_base::button()
-                        .child(text("反缩进"))
-                        .on_press(move |_: &()| {
-                            outdent.report(outdent.indent(true));
-                            outdent_focus();
-                        }),
-                ),
+                .into_element(),
         )
-        .child(dynamic(move || {
-            if !modal.open.get() {
-                return None;
-            }
-            let dismiss = modal.clone();
-            let dismiss_focus = focus.clone();
-            let cancel = modal.clone();
-            let cancel_focus = focus.clone();
-            let apply = modal.clone();
-            let apply_focus = focus.clone();
-            let language = modal.language;
-            let info = modal.info;
-            let status = modal.gate.status;
-            Some(
-                nsh_base::dialog()
-                    .label("代码语言")
-                    .on_cancel(move |_: &()| {
-                        dismiss.cancel();
-                        dismiss_focus();
-                    })
-                    .child(
-                        box_view()
-                            .w(px(360.0))
-                            .p(px(16.0))
-                            .gap(px(8.0))
-                            .bg(crate::app_shell::background)
-                            .text_color(crate::app_shell::foreground)
-                            .child(text("代码语言"))
-                            .child(
-                                input()
-                                    .value(move || language.get())
-                                    .placeholder("例如 rust、python；可留空")
-                                    .on_change(move |value: &str| language.set(value.into())),
-                            )
-                            .child(text(move || {
-                                let value = info.get();
-                                if value.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("附加围栏信息保持原样：{value}")
-                                }
-                            }))
-                            .child(text(move || status.get()))
-                            .child(
-                                box_view()
-                                    .flex_row()
-                                    .gap(px(8.0))
-                                    .child(nsh_base::button().child(text("取消")).on_press(
-                                        move |_: &()| {
-                                            cancel.cancel();
-                                            cancel_focus();
-                                        },
-                                    ))
-                                    .child(nsh_base::button().child(text("应用")).on_press(
-                                        move |_: &()| {
-                                            let result = apply.apply_language();
-                                            let done = result.is_ok();
-                                            apply.report(result);
-                                            if done {
-                                                apply_focus();
-                                            }
-                                        },
-                                    )),
-                            ),
-                    )
-                    .into_element(),
-            )
-        }))
+    })
 }

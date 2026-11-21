@@ -142,148 +142,124 @@ impl ResourceControls {
 
 /// Mount this beside the rich editor. The optional focus callback is invoked
 /// after Apply/Cancel so the application can restore its existing editor ref.
-pub fn view(controls: Rc<ResourceControls>, focus: Rc<dyn Fn()>) -> impl IntoElement {
-    let link = controls.clone();
-    let image = controls.clone();
-    let modal = controls.clone();
-    box_view()
-        .max_w(relative(1.0))
-        .min_w(px(0.0))
-        .gap(px(4.0))
-        .child(
-            box_view()
-                .flex_row()
-                .flex_wrap()
-                .max_w(relative(1.0))
-                .min_w(px(0.0))
-                .gap(px(6.0))
-                .child(
-                    nsh_base::button()
-                        .child(text("插入或编辑链接"))
-                        .on_press(move |_: &()| link.report(link.begin(ResourceKind::Link))),
-                )
-                .child(
-                    nsh_base::button()
-                        .child(text("图片属性"))
-                        .on_press(move |_: &()| image.report(image.begin(ResourceKind::Image))),
-                ),
-        )
-        .child(dynamic(move || {
-            if !modal.open.get() {
-                return None;
-            }
-            let cancel = modal.clone();
-            let cancel_focus = focus.clone();
-            let dismiss = modal.clone();
-            let dismiss_focus = focus.clone();
-            let apply = modal.clone();
-            let apply_focus = focus.clone();
-            let url = modal.url;
-            let title = modal.title;
-            let alt = modal.alt;
-            let link_text = modal.text;
-            let create = modal.creating.get();
-            let empty_selection = modal.empty_selection.get();
-            let image = modal.kind.get() == ResourceKind::Image;
-            let status = modal.gate.status;
-            Some(
-                nsh_base::dialog()
-                    .label(if image {
-                        "图片属性"
+pub fn dialog(controls: Rc<ResourceControls>, focus: Rc<dyn Fn()>) -> impl IntoElement {
+    let modal = controls;
+    dynamic(move || {
+        if !modal.open.get() {
+            return None;
+        }
+        let cancel = modal.clone();
+        let cancel_focus = focus.clone();
+        let dismiss = modal.clone();
+        let dismiss_focus = focus.clone();
+        let apply = modal.clone();
+        let apply_focus = focus.clone();
+        let url = modal.url;
+        let title = modal.title;
+        let alt = modal.alt;
+        let link_text = modal.text;
+        let create = modal.creating.get();
+        let empty_selection = modal.empty_selection.get();
+        let image = modal.kind.get() == ResourceKind::Image;
+        let status = modal.gate.status;
+        Some(
+            nsh_base::dialog()
+                .label(if image {
+                    "图片属性"
+                } else {
+                    if create {
+                        "插入链接"
                     } else {
-                        if create {
-                            "插入链接"
+                        "链接属性"
+                    }
+                })
+                .on_cancel(move |_: &()| {
+                    dismiss.cancel();
+                    dismiss_focus();
+                })
+                .child(
+                    box_view()
+                        .w(px(420.0))
+                        .p(px(16.0))
+                        .gap(px(8.0))
+                        .bg(crate::app_shell::background)
+                        .text_color(crate::app_shell::foreground)
+                        .child(text(if image {
+                            "图片属性"
                         } else {
-                            "链接属性"
-                        }
-                    })
-                    .on_cancel(move |_: &()| {
-                        dismiss.cancel();
-                        dismiss_focus();
-                    })
-                    .child(
-                        box_view()
-                            .w(px(420.0))
-                            .p(px(16.0))
-                            .gap(px(8.0))
-                            .bg(crate::app_shell::background)
-                            .text_color(crate::app_shell::foreground)
-                            .child(text(if image {
-                                "图片属性"
+                            if create {
+                                "插入链接"
                             } else {
-                                if create {
-                                    "插入链接"
-                                } else {
-                                    "链接属性"
-                                }
-                            }))
-                            .child(when(create, move || {
-                                let body = box_view().gap(px(4.0)).child(text("链接文字"));
-                                if empty_selection {
-                                    body.child(
-                                        input().value(move || link_text.get()).on_change(
-                                            move |value: &str| link_text.set(value.into()),
-                                        ),
-                                    )
-                                    .into_element()
-                                } else {
-                                    body.child(text(move || link_text.get()))
-                                        .child(text("所选文字及原格式保持不变。"))
-                                        .into_element()
-                                }
-                            }))
-                            .child(when(modal.reference, || {
-                                text("此修改会更新相应引用定义，并用于它的所有引用。")
-                            }))
-                            .child(text(if image {
-                                "图片地址（本地或远程）"
-                            } else {
-                                "链接地址"
-                            }))
-                            .child(
-                                input()
-                                    .value(move || url.get())
-                                    .on_change(move |v: &str| url.set(v.into())),
-                            )
-                            .child(when(image, move || {
-                                box_view().gap(px(4.0)).child(text("替代文本")).child(
+                                "链接属性"
+                            }
+                        }))
+                        .child(when(create, move || {
+                            let body = box_view().gap(px(4.0)).child(text("链接文字"));
+                            if empty_selection {
+                                body.child(
                                     input()
-                                        .value(move || alt.get())
-                                        .on_change(move |v: &str| alt.set(v.into())),
+                                        .value(move || link_text.get())
+                                        .on_change(move |value: &str| link_text.set(value.into())),
                                 )
-                            }))
-                            .child(text("标题（可留空）"))
-                            .child(
+                                .into_element()
+                            } else {
+                                body.child(text(move || link_text.get()))
+                                    .child(text("所选文字及原格式保持不变。"))
+                                    .into_element()
+                            }
+                        }))
+                        .child(when(modal.reference, || {
+                            text("此修改会更新相应引用定义，并用于它的所有引用。")
+                        }))
+                        .child(text(if image {
+                            "图片地址（本地或远程）"
+                        } else {
+                            "链接地址"
+                        }))
+                        .child(
+                            input()
+                                .value(move || url.get())
+                                .on_change(move |v: &str| url.set(v.into())),
+                        )
+                        .child(when(image, move || {
+                            box_view().gap(px(4.0)).child(text("替代文本")).child(
                                 input()
-                                    .value(move || title.get())
-                                    .on_change(move |v: &str| title.set(v.into())),
+                                    .value(move || alt.get())
+                                    .on_change(move |v: &str| alt.set(v.into())),
                             )
-                            .child(text(move || status.get()))
-                            .child(
-                                box_view()
-                                    .flex_row()
-                                    .gap(px(8.0))
-                                    .child(nsh_base::button().child(text("取消")).on_press(
-                                        move |_: &()| {
-                                            cancel.cancel();
-                                            cancel_focus();
-                                        },
-                                    ))
-                                    .child(nsh_base::button().child(text("应用")).on_press(
-                                        move |_: &()| {
-                                            let result = apply.apply();
-                                            let done = result.is_ok();
-                                            apply.report(result);
-                                            if done {
-                                                apply_focus();
-                                            }
-                                        },
-                                    )),
-                            ),
-                    )
-                    .into_element(),
-            )
-        }))
+                        }))
+                        .child(text("标题（可留空）"))
+                        .child(
+                            input()
+                                .value(move || title.get())
+                                .on_change(move |v: &str| title.set(v.into())),
+                        )
+                        .child(text(move || status.get()))
+                        .child(
+                            box_view()
+                                .flex_row()
+                                .gap(px(8.0))
+                                .child(nsh_base::button().child(text("取消")).on_press(
+                                    move |_: &()| {
+                                        cancel.cancel();
+                                        cancel_focus();
+                                    },
+                                ))
+                                .child(nsh_base::button().child(text("应用")).on_press(
+                                    move |_: &()| {
+                                        let result = apply.apply();
+                                        let done = result.is_ok();
+                                        apply.report(result);
+                                        if done {
+                                            apply_focus();
+                                        }
+                                    },
+                                )),
+                        ),
+                )
+                .into_element(),
+        )
+    })
 }
 
 #[cfg(test)]

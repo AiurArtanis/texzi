@@ -246,6 +246,22 @@ impl RichEditorApi {
         RichEditorSelection::of(&self.rv.session.state())
     }
 
+    /// The visible primary caret's distance from the top of the viewport.
+    pub fn viewport_caret_top(&self) -> Option<f32> {
+        self.rv.viewport_caret_top()
+    }
+
+    /// Reveals the primary caret after its block is laid out, without
+    /// dispatching an edit or replacing the selection.
+    pub fn reveal_primary_caret(&self, viewport_top: Option<f32>) {
+        self.rv.reveal_primary_caret(viewport_top);
+    }
+
+    /// How far the rich document is scrolled vertically.
+    pub fn scroll_top(&self) -> f32 {
+        self.rv.scroll_y.get_untracked().0
+    }
+
     /// Replaces the document with `doc` (ProseMirror's JSON), as a change
     /// undo takes back; an error (a rejection in TSX) when `doc` is not a
     /// document of the editor's schema.

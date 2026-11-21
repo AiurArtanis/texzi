@@ -336,80 +336,73 @@ impl TableControls {
     }
 }
 
-pub fn view(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl IntoElement {
-    let open = controls.clone();
-    box_view()
-        .child(
-            nsh_base::button()
-                .child(text("表格操作"))
-                .on_press(move |_: &()| open.report(open.begin())),
+pub fn dialog(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl IntoElement {
+    dynamic(move || {
+        if !controls.open.get() {
+            return None;
+        }
+        let dismiss = controls.clone();
+        let dismiss_focus = return_focus.clone();
+        let cancel = controls.clone();
+        let cancel_focus = return_focus.clone();
+        let status = controls.gate.status;
+        let mut body = box_view()
+            .w(px(420.0))
+            .p(px(16.0))
+            .gap(px(6.0))
+            .bg(crate::app_shell::background)
+            .text_color(crate::app_shell::foreground)
+            .child(text("表格操作"))
+            .child(text(
+                "对当前单元格所在行或列操作；删除最后一行或列会留下可输入的空段。",
+            ));
+        for (label, action) in [
+            ("上方插入行", TableAction::RowBefore),
+            ("下方插入行", TableAction::RowAfter),
+            ("删除当前行", TableAction::DeleteRow),
+            ("左侧插入列", TableAction::ColumnBefore),
+            ("右侧插入列", TableAction::ColumnAfter),
+            ("删除当前列", TableAction::DeleteColumn),
+            ("当前列默认对齐", TableAction::AlignDefault),
+            ("当前列左对齐", TableAction::AlignLeft),
+            ("当前列居中", TableAction::AlignCenter),
+            ("当前列右对齐", TableAction::AlignRight),
+            ("将当前行设为表头", TableAction::Header),
+            ("删除表格", TableAction::DeleteTable),
+        ] {
+            let apply = controls.clone();
+            let focus = return_focus.clone();
+            body = body.child(
+                nsh_base::button()
+                    .child(text(label))
+                    .on_press(move |_: &()| {
+                        let result = apply.apply(action);
+                        let done = result.is_ok();
+                        apply.report(result);
+                        if done {
+                            focus();
+                        }
+                    }),
+            );
+        }
+        Some(
+            nsh_base::dialog()
+                .label("表格操作")
+                .on_cancel(move |_: &()| {
+                    dismiss.cancel();
+                    dismiss_focus();
+                })
+                .child(
+                    body.child(text(move || status.get())).child(
+                        nsh_base::button()
+                            .child(text("取消"))
+                            .on_press(move |_: &()| {
+                                cancel.cancel();
+                                cancel_focus();
+                            }),
+                    ),
+                )
+                .into_element(),
         )
-        .child(dynamic(move || {
-            if !controls.open.get() {
-                return None;
-            }
-            let dismiss = controls.clone();
-            let dismiss_focus = return_focus.clone();
-            let cancel = controls.clone();
-            let cancel_focus = return_focus.clone();
-            let status = controls.gate.status;
-            let mut body = box_view()
-                .w(px(420.0))
-                .p(px(16.0))
-                .gap(px(6.0))
-                .bg(crate::app_shell::background)
-                .text_color(crate::app_shell::foreground)
-                .child(text("表格操作"))
-                .child(text(
-                    "对当前单元格所在行或列操作；删除最后一行或列会留下可输入的空段。",
-                ));
-            for (label, action) in [
-                ("上方插入行", TableAction::RowBefore),
-                ("下方插入行", TableAction::RowAfter),
-                ("删除当前行", TableAction::DeleteRow),
-                ("左侧插入列", TableAction::ColumnBefore),
-                ("右侧插入列", TableAction::ColumnAfter),
-                ("删除当前列", TableAction::DeleteColumn),
-                ("当前列默认对齐", TableAction::AlignDefault),
-                ("当前列左对齐", TableAction::AlignLeft),
-                ("当前列居中", TableAction::AlignCenter),
-                ("当前列右对齐", TableAction::AlignRight),
-                ("将当前行设为表头", TableAction::Header),
-                ("删除表格", TableAction::DeleteTable),
-            ] {
-                let apply = controls.clone();
-                let focus = return_focus.clone();
-                body = body.child(
-                    nsh_base::button()
-                        .child(text(label))
-                        .on_press(move |_: &()| {
-                            let result = apply.apply(action);
-                            let done = result.is_ok();
-                            apply.report(result);
-                            if done {
-                                focus();
-                            }
-                        }),
-                );
-            }
-            Some(
-                nsh_base::dialog()
-                    .label("表格操作")
-                    .on_cancel(move |_: &()| {
-                        dismiss.cancel();
-                        dismiss_focus();
-                    })
-                    .child(
-                        body.child(text(move || status.get())).child(
-                            nsh_base::button()
-                                .child(text("取消"))
-                                .on_press(move |_: &()| {
-                                    cancel.cancel();
-                                    cancel_focus();
-                                }),
-                        ),
-                    )
-                    .into_element(),
-            )
-        }))
+    })
 }

@@ -206,74 +206,69 @@ impl BlockControls {
     }
 }
 
-pub fn view(controls: Rc<BlockControls>, focus: Rc<dyn Fn()>) -> impl IntoElement {
-    let begin = controls.clone();
-    let modal = controls.clone();
-    box_view()
-        .child(
-            nsh_base::button()
-                .child(text("段落样式"))
-                .on_press(move |_: &()| begin.report(begin.begin())),
-        )
-        .child(dynamic(move || {
-            if !modal.open.get() {
-                return None;
-            }
-            let dismiss = modal.clone();
-            let dismiss_focus = focus.clone();
-            let cancel = modal.clone();
-            let cancel_focus = focus.clone();
-            let mut choices = box_view().gap(px(4.0));
-            for n in 0..=6 {
-                let level = (n != 0).then_some(n);
-                let choose = modal.clone();
-                let choose_focus = focus.clone();
-                let label = if n == 0 {
-                    "正文 (P)".into()
-                } else {
-                    format!("标题 {n} (H{n})")
-                };
-                choices = choices.child(nsh_base::button().child(text(label)).on_press(
-                    move |_: &()| {
-                        let result = choose.apply_level(level);
-                        let done = result.is_ok();
-                        choose.report(result);
-                        if done {
-                            choose_focus();
-                        }
-                    },
-                ));
-            }
-            let status = modal.gate.status;
-            let info = modal.info;
-            Some(
-                nsh_base::dialog()
-                    .label("段落样式")
-                    .on_cancel(move |_: &()| {
-                        dismiss.cancel();
-                        dismiss_focus();
-                    })
-                    .child(
-                        box_view()
-                            .w(px(240.0))
-                            .p(px(12.0))
-                            .gap(px(8.0))
-                            .bg(crate::app_shell::background)
-                            .text_color(crate::app_shell::foreground)
-                            .child(text("段落样式"))
-                            .child(text(move || info.get()))
-                            .child(choices)
-                            .child(text(move || status.get()))
-                            .child(nsh_base::button().child(text("取消")).on_press(
-                                move |_: &()| {
+pub fn dialog(controls: Rc<BlockControls>, focus: Rc<dyn Fn()>) -> impl IntoElement {
+    let modal = controls;
+    dynamic(move || {
+        if !modal.open.get() {
+            return None;
+        }
+        let dismiss = modal.clone();
+        let dismiss_focus = focus.clone();
+        let cancel = modal.clone();
+        let cancel_focus = focus.clone();
+        let mut choices = box_view().gap(px(4.0));
+        for n in 0..=6 {
+            let level = (n != 0).then_some(n);
+            let choose = modal.clone();
+            let choose_focus = focus.clone();
+            let label = if n == 0 {
+                "正文 (P)".into()
+            } else {
+                format!("标题 {n} (H{n})")
+            };
+            choices = choices.child(nsh_base::button().child(text(label)).on_press(
+                move |_: &()| {
+                    let result = choose.apply_level(level);
+                    let done = result.is_ok();
+                    choose.report(result);
+                    if done {
+                        choose_focus();
+                    }
+                },
+            ));
+        }
+        let status = modal.gate.status;
+        let info = modal.info;
+        Some(
+            nsh_base::dialog()
+                .label("段落样式")
+                .on_cancel(move |_: &()| {
+                    dismiss.cancel();
+                    dismiss_focus();
+                })
+                .child(
+                    box_view()
+                        .w(px(240.0))
+                        .p(px(12.0))
+                        .gap(px(8.0))
+                        .bg(crate::app_shell::background)
+                        .text_color(crate::app_shell::foreground)
+                        .child(text("段落样式"))
+                        .child(text(move || info.get()))
+                        .child(choices)
+                        .child(text(move || status.get()))
+                        .child(
+                            nsh_base::button()
+                                .child(text("取消"))
+                                .on_press(move |_: &()| {
                                     cancel.cancel();
                                     cancel_focus();
-                                },
-                            )),
-                    )
-                    .into_element(),
-            )
-        }))
+                                }),
+                        ),
+                )
+                .into_element(),
+        )
+    })
 }
 
 #[cfg(test)]

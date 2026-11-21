@@ -201,6 +201,7 @@ pub(crate) struct Rv {
     autoscroll: Rc<RefCell<AutoScroll>>,
     /// The state's scroll request was not carried out yet.
     scroll_pending: Rc<Cell<bool>>,
+    selection_viewport_top: Rc<Cell<Option<f32>>>,
     blink_task: Rc<RefCell<Option<Spawned<()>>>>,
     base_keymap: Rc<Keymap>,
     /// A press on a table's handle or grip being dragged.
@@ -267,6 +268,7 @@ impl Rv {
             content_height: signal(px(0.0)),
             autoscroll: Rc::default(),
             scroll_pending: Rc::default(),
+            selection_viewport_top: Rc::default(),
             blink_task: Rc::default(),
             base_keymap: Rc::new(base_keymap),
             table_gesture: Rc::default(),
@@ -392,6 +394,7 @@ impl Rv {
         effect(move || {
             rv.layout_rev.get();
             rv.sel_rev.get();
+            rv.viewport.get();
             if rv.scroll_pending.get() {
                 untracked(|| rv.scroll_into_view());
             }
@@ -421,6 +424,7 @@ impl Rv {
             self.touch_follow();
         }
         if state.scroll_to_selection() != old.scroll_to_selection() {
+            self.selection_viewport_top.set(None);
             self.scroll_pending.set(true);
         }
         if doc_changed {
@@ -2213,14 +2217,34 @@ impl Rv {
             .or_else(|| geo.caret_rect(sel.head(), sel.affinity()))
     }
 
+    pub(crate) fn viewport_caret_top(&self) -> Option<f32> {
+        let caret = self.caret_rect()?;
+        let height = self.viewport.get_untracked().height.0;
+        let offset = (caret.origin.y - self.scroll_y.get_untracked()).0;
+        (offset >= 0.0 && offset + caret.size.height.0 <= height).then_some(offset)
+    }
+
+    pub(crate) fn reveal_primary_caret(&self, viewport_top: Option<f32>) {
+        let midpoint = self.viewport.get_untracked().height.0 / 2.0;
+        self.selection_viewport_top
+            .set(Some(viewport_top.unwrap_or(midpoint)));
+        self.scroll_pending.set(true);
+        self.scroll_into_view();
+    }
+
     /// Scrolls the head into view, once it is laid out.
     fn scroll_into_view(&self) {
         let state = self.session.state();
+        let height = self.viewport.get_untracked().height;
+        if height <= px(0.0) {
+            return;
+        }
         if state
             .plugins()
             .iter()
             .any(|p| p.handle_scroll_to_selection(&state))
         {
+            self.selection_viewport_top.set(None);
             self.scroll_pending.set(false);
             return;
         }
@@ -2229,11 +2253,14 @@ impl Rv {
             return;
         };
         self.scroll_pending.set(false);
-        let top = self.scroll_y.get_untracked();
-        let height = self.viewport.get_untracked().height;
-        if height <= px(0.0) {
+        if let Some(offset) = self.selection_viewport_top.take() {
+            let room = (height - caret.size.height).0.max(0.0);
+            let max_scroll = (self.content_height.get_untracked() - height).0.max(0.0);
+            let y = (caret.origin.y.0 - offset.clamp(0.0, room)).clamp(0.0, max_scroll);
+            self.move_visible_row_scroll(y);
             return;
         }
+        let top = self.scroll_y.get_untracked();
         let y = if caret.origin.y < top {
             caret.origin.y
         } else if caret.origin.y + caret.size.height > top + height {

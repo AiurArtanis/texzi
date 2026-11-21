@@ -2,13 +2,16 @@
 use crate::editor_owner::SaveError;
 use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
-use nsh_base::editor::{Editor, EditorApi, EditorCommand, ExternalDocument};
+use nsh_base::{
+    editor::{Editor, EditorApi, EditorCommand, ExternalDocument},
+    rich_editor::view::RichEditorApi,
+};
 use nsh_core::{
     AccessibilityRole, EllipsizeMode, PointerEvents,
     desktop::{WindowAttributes, WindowMode},
     element::{
         Composition, ImageSrc,
-        desktop::{WindowRef, current_window, popup_menu_at},
+        desktop::{MenuItem, WindowRef, current_window, popup_menu_at},
         image, input, scroll, svg,
     },
     file_dialog::{OpenDialog, SaveDialog},
@@ -91,6 +94,39 @@ impl Document {
             .with(|path| path.as_deref().is_some_and(is_markdown))
     }
 
+    fn viewport_caret_top(&self) -> Option<f32> {
+        if self.gate.rich_mode.get() {
+            self.rich_reference
+                .api::<RichEditorApi>()?
+                .viewport_caret_top()
+        } else {
+            self.reference.api::<EditorApi>()?.viewport_caret_top()
+        }
+    }
+
+    fn trace_mode_view(&self, phase: &str) {
+        let rich = self.gate.rich_mode.get();
+        let (position, scroll) = if rich {
+            (
+                self.gate.rich_cursor_status(),
+                self.rich_reference
+                    .api::<RichEditorApi>()
+                    .map(|api| api.scroll_top()),
+            )
+        } else {
+            (
+                self.source.cursor_status(),
+                self.reference
+                    .api::<EditorApi>()
+                    .map(|api| api.scroll_offset().y.0),
+            )
+        };
+        log::info!(
+            "TEXZI_MODE_VIEW phase={phase} rich={rich} position={position:?} scroll={scroll:?} caret_top={:?}",
+            self.viewport_caret_top(),
+        );
+    }
+
     fn name(&self) -> String {
         self.path.with(|path| {
             path.as_deref()
@@ -135,6 +171,33 @@ struct RichControlSet {
     code: Rc<crate::code_controls::CodeControls>,
     table: Rc<crate::table_controls::TableControls>,
 }
+
+#[derive(Clone, Copy)]
+enum FormatAction {
+    Mark(&'static str),
+    Paragraph,
+    Link,
+    Image,
+    Table,
+    CodeLanguage,
+    ExitCode,
+    Indent(bool),
+}
+
+const FORMAT_ACTIONS: &[(&str, FormatAction)] = &[
+    ("粗体", FormatAction::Mark("texzi.markdown.bold")),
+    ("斜体", FormatAction::Mark("texzi.markdown.italic")),
+    ("删除线", FormatAction::Mark("texzi.markdown.strikethrough")),
+    ("行内代码", FormatAction::Mark("texzi.markdown.inlineCode")),
+    ("段落样式", FormatAction::Paragraph),
+    ("插入或编辑链接", FormatAction::Link),
+    ("图片属性", FormatAction::Image),
+    ("表格操作", FormatAction::Table),
+    ("代码语言", FormatAction::CodeLanguage),
+    ("退出代码块", FormatAction::ExitCode),
+    ("缩进", FormatAction::Indent(false)),
+    ("反缩进", FormatAction::Indent(true)),
+];
 impl RichControlSet {
     fn new(gate: &Rc<ModeGate>, source: &Rc<NativeView>) -> Self {
         Self {
@@ -1334,6 +1397,12 @@ impl Shell {
                         })
                 };
                 if still_open() {
+                    let viewport_top = doc.viewport_caret_top();
+                    let trace = std::env::var_os("TEXZI_TRACE_IME").as_deref()
+                        == Some(std::ffi::OsStr::new("1"));
+                    if trace {
+                        doc.trace_mode_view("before");
+                    }
                     if target_rich {
                         doc.gate.to_rich_in_background(still_open).await;
                     } else {
@@ -1341,11 +1410,90 @@ impl Shell {
                     }
                     if doc.gate.rich_mode.get() == target_rich {
                         wait_for_editor_frame(doc.body).await;
+                        let active = shell
+                            .current()
+                            .is_some_and(|current| Rc::ptr_eq(&current, &doc));
+                        if target_rich {
+                            if let Some(api) = doc.rich_reference.api::<RichEditorApi>() {
+                                api.reveal_primary_caret(viewport_top);
+                                if active {
+                                    api.focus();
+                                }
+                            }
+                        } else if let Some(api) = doc.reference.api::<EditorApi>() {
+                            api.reveal_primary_caret(viewport_top);
+                            if active {
+                                api.focus();
+                            }
+                        }
+                        if trace {
+                            let trace_doc = doc.clone();
+                            spawn(async move {
+                                for _ in 0..10 {
+                                    let _ = next_frame().await;
+                                    if trace_doc.viewport_caret_top().is_some() {
+                                        break;
+                                    }
+                                }
+                                trace_doc.trace_mode_view("after");
+                            });
+                        }
                     }
                 }
                 doc.pending_mode.set(None);
             });
         });
+    }
+
+    fn show_format_menu(self: &Rc<Self>, doc: Rc<Document>, anchor: ElementRef) {
+        let shell = self.clone();
+        self.owner.run(|| {
+            spawn(async move {
+                let Some(bounds) = anchor.measure().await else {
+                    return;
+                };
+                let items = FORMAT_ACTIONS
+                    .iter()
+                    .map(|&(label, action)| {
+                        let shell = shell.clone();
+                        let doc = doc.clone();
+                        MenuItem::new(label).on_select(move || shell.format_action(&doc, action))
+                    })
+                    .collect();
+                let _ = popup_menu_at(
+                    items,
+                    point(bounds.page.x, bounds.page.y + bounds.frame.size.height),
+                );
+            });
+        });
+    }
+
+    fn format_action(self: &Rc<Self>, doc: &Rc<Document>, action: FormatAction) {
+        if !doc.gate.rich_mode.get()
+            || !self
+                .current()
+                .is_some_and(|current| Rc::ptr_eq(&current, doc))
+        {
+            return;
+        }
+        use crate::rich_projection::ResourceKind;
+        let result = match action {
+            FormatAction::Mark(id) => return self.run(id),
+            FormatAction::Paragraph => doc.controls.blocks.begin(),
+            FormatAction::Link => doc.controls.resources.begin(ResourceKind::Link),
+            FormatAction::Image => doc.controls.resources.begin(ResourceKind::Image),
+            FormatAction::Table => doc.controls.table.begin(),
+            FormatAction::CodeLanguage => doc.controls.code.begin(),
+            FormatAction::ExitCode => doc.controls.code.exit(),
+            FormatAction::Indent(outdent) => doc.controls.code.indent(outdent),
+        };
+        if let Err(error) = result {
+            doc.gate.status.set(error.clone());
+            self.notice.set(error);
+        }
+        if !doc.controls.open() {
+            self.restore_editor_focus();
+        }
     }
     fn markdown_command(self: &Rc<Self>, id: &str) {
         let Some(doc) = self.current() else { return };
@@ -1703,6 +1851,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let root = s.root;
     let status_doc = doc.clone();
     let mode_doc = doc.clone();
+    let format_doc = doc.clone();
+    let format_shell = s.clone();
     let markdown = move || path.with(|value| value.as_deref().is_some_and(is_markdown));
 
     let content = view()
@@ -1724,47 +1874,29 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .max_w(relative(1.0))
                     .min_w(px(0.0))
                     .min_h(px(0.0))
+                    .child(crate::block_controls::dialog(
+                        block_controls.clone(),
+                        focus.clone(),
+                    ))
+                    .child(crate::rich_controls::dialog(
+                        resource_controls.clone(),
+                        focus.clone(),
+                    ))
+                    .child(crate::table_controls::dialog(
+                        table_controls.clone(),
+                        focus.clone(),
+                    ))
+                    .child(crate::code_controls::dialog(code_controls.clone(), focus))
                     .child(
                         scroll()
                             .w_full()
                             .max_h(relative(0.48))
                             .min_h(px(0.0))
-                            .child(
-                                view()
-                                    .w_full()
-                                    .min_w(px(0.0))
-                                    .child(
-                                        view()
-                                            .flex_row()
-                                            .flex_wrap()
-                                            .w_full()
-                                            .min_w(px(0.0))
-                                            .gap(px(8.0))
-                                            .p(px(6.0))
-                                            .pr(px(60.0))
-                                            .child(crate::block_controls::view(
-                                                block_controls.clone(),
-                                                focus.clone(),
-                                            ))
-                                            .child(crate::rich_controls::view(
-                                                resource_controls.clone(),
-                                                focus.clone(),
-                                            ))
-                                            .child(crate::table_controls::view(
-                                                table_controls.clone(),
-                                                focus.clone(),
-                                            ))
-                                            .child(crate::code_controls::view(
-                                                code_controls.clone(),
-                                                focus,
-                                            )),
-                                    )
-                                    .child(crate::raw_block_controls::raw_block_controls(
-                                        rich.clone(),
-                                        controls_owner,
-                                        move || raw_focus(),
-                                    )),
-                            ),
+                            .child(crate::raw_block_controls::raw_block_controls(
+                                rich.clone(),
+                                controls_owner,
+                                move || raw_focus(),
+                            )),
                     )
                     .child(
                         nsh_base::rich_editor::view::rich_editor()
@@ -1868,17 +2000,20 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
             },
         ))
         .child(content)
+        .child(when(rich_mode, move || {
+            format_button(format_shell.clone(), format_doc.clone(), second)
+        }))
         .child(when(
             move || {
                 mode_doc.is_markdown()
                     || mode_doc.displayed_rich()
                     || mode_doc.pending_mode.get().is_some()
             },
-            move || mode_button(s.clone(), doc.clone()),
+            move || mode_button(s.clone(), doc.clone(), second),
         ))
 }
 
-fn mode_button(shell: Rc<Shell>, doc: Rc<Document>) -> impl IntoElement {
+fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let selected = doc.clone();
     let name = doc.clone();
     let disabled = doc.clone();
@@ -1907,7 +2042,32 @@ fn mode_button(shell: Rc<Shell>, doc: Rc<Document>) -> impl IntoElement {
         })
         .selected(move || !selected.displayed_rich())
         .disabled(move || disabled.pending_mode.get().is_some())
-        .on_press(move |_: &()| shell.request_mode(doc.clone(), !doc.displayed_rich()))
+        .on_press(move |_: &()| {
+            shell.second_active.set(second);
+            shell.request_mode(doc.clone(), !doc.displayed_rich());
+        })
+}
+
+fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
+    let anchor = element_ref();
+    let state = doc.clone();
+    icon_button(FORMAT_ICON, "格式命令", 32.0, 18.0)
+        .element_ref(&anchor)
+        .absolute()
+        .h(px(28.0))
+        .top(px(12.0))
+        .right(px(56.0))
+        .z_index(1)
+        .border(px(1.0))
+        .border_color(divider)
+        .bg(frame)
+        .disabled(move || {
+            state.pending_mode.get().is_some() || state.gate.busy() || state.controls.open()
+        })
+        .on_press(move |_: &()| {
+            shell.second_active.set(second);
+            shell.show_format_menu(doc.clone(), anchor);
+        })
 }
 
 fn groups(s: Rc<Shell>) -> AnyElement {
@@ -2108,6 +2268,7 @@ const SPLIT_ICON: &str = "M3 5h18v14H3zM12 5v14";
 const FILES_ICON: &str = "M7 5V3h8l4 4v12h-2M15 3v5h4M5 7h10v14H5z";
 const SEARCH_ICON: &str = "M15.5 15.5L21 21M17.5 10.5a7 7 0 1 1-14 0 7 7 0 0 1 14 0";
 const CLOSE_ICON: &str = "M6 6l12 12M18 6L6 18";
+const FORMAT_ICON: &str = "M3 18l5-12 5 12M5 14h6M16 8h5M16 12h5M16 16h5";
 const SOURCE_ICON: &str = "M4 6l6 5-6 5M12 17h8";
 const ADD_ICON: &str = "M5 12h14M12 5v14";
 
