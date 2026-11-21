@@ -7,7 +7,7 @@ use nsh_core::{
     AccessibilityRole,
     desktop::{WindowAttributes, WindowMode},
     element::{
-        ImageSrc,
+        Composition, ImageSrc,
         desktop::{WindowRef, current_window, popup_menu_at},
         image, input, scroll,
     },
@@ -394,11 +394,7 @@ impl Shell {
         }
         let escape = s.clone();
         on_key("escape", move |_| {
-            if escape.modal.get()
-                || escape
-                    .current()
-                    .is_some_and(|d| d.gate.busy() || d.controls.open())
-            {
+            if escape.escape_blocked() {
                 escape.zen_exit.escape(None, true);
                 return;
             }
@@ -1161,6 +1157,13 @@ impl Shell {
             })
         });
     }
+    fn escape_blocked(&self) -> bool {
+        self.modal.get()
+            || self
+                .current()
+                .is_some_and(|d| d.gate.busy() || d.controls.open())
+    }
+
     fn close_panel(self: &Rc<Self>) {
         self.zen_exit.reset();
         self.cancel_quick(false);
@@ -2654,6 +2657,8 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
             );
     } else {
         let find = s.clone();
+        let query_composing = signal(false);
+        let replacement_composing = signal(false);
         let scope = if s.current().is_some_and(|d| d.gate.rich_mode.get()) {
             "正文"
         } else {
@@ -2666,6 +2671,9 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                     .value(move || query.get())
                     .placeholder("查找文字")
                     .on_change(move |v: &str| query.set(v.into()))
+                    .on_composition_change(move |event: &Composition| {
+                        query_composing.set(event.composing)
+                    })
                     .auto_focus(true)
                     .on_submit(move |_: &str| find.find(false)),
             )
@@ -2677,11 +2685,41 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                     .child(button("下一个", s.clone(), "texzi.find.next")),
             );
         if mode == "replace" {
+            let escape = s.clone();
+            effect(move || {
+                if escape.chord.get() {
+                    return;
+                }
+                let escape = escape.clone();
+                // Windows treats Escape as a text key. Keep receiving it while
+                // the panel is open, and let native input cancel composition.
+                on_key_with(
+                    "escape",
+                    KeyOptions {
+                        when: nsh_core::keymap::When::Always,
+                        pass_through: true,
+                        ..Default::default()
+                    },
+                    move |_| {
+                        if escape.panel.get() == "replace"
+                            && !escape.chord.get()
+                            && !escape.escape_blocked()
+                            && !query_composing.get()
+                            && !replacement_composing.get()
+                        {
+                            escape.close_panel();
+                        }
+                    },
+                );
+            });
             panel = panel
                 .child(
                     input()
                         .value(move || replacement.get())
                         .placeholder("替换为")
+                        .on_composition_change(move |event: &Composition| {
+                            replacement_composing.set(event.composing)
+                        })
                         .on_change(move |v: &str| replacement.set(v.into())),
                 )
                 .child(
