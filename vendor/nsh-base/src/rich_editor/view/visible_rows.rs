@@ -168,32 +168,35 @@ fn measure_row(rv: &Rv, id: u64, height: f32) {
         !std::mem::replace(&mut rows.scheduled, true)
     };
     if schedule {
+        let owner = rv.owner;
         let rv = rv.clone();
-        spawn(async move {
-            next_frame().await;
-            let mut state = rv.visible_rows.borrow_mut();
-            let Some(rows) = state.as_mut() else { return };
-            rows.scheduled = false;
-            let pending = std::mem::take(&mut rows.pending);
-            if pending.is_empty() {
-                return;
-            }
-            let anchor = rows.anchor(rv.scroll_y.get_untracked().0);
-            for (id, height) in pending {
-                if let Some(&index) = rows.indices.get(&id) {
-                    rows.rows[index].measured = Some(height);
+        owner.run(|| {
+            spawn(async move {
+                next_frame().await;
+                let mut state = rv.visible_rows.borrow_mut();
+                let Some(rows) = state.as_mut() else { return };
+                rows.scheduled = false;
+                let pending = std::mem::take(&mut rows.pending);
+                if pending.is_empty() {
+                    return;
                 }
-            }
-            rows.rebuild_offsets();
-            let to = rows.anchored_y(anchor);
-            drop(state);
-            publish(&rv, to);
+                let anchor = rows.anchor(rv.scroll_y.get_untracked().0);
+                for (id, height) in pending {
+                    if let Some(&index) = rows.indices.get(&id) {
+                        rows.rows[index].measured = Some(height);
+                    }
+                }
+                rows.rebuild_offsets();
+                let to = rows.anchored_y(anchor);
+                drop(state);
+                publish(&rv, to);
+            })
         });
     }
 }
 
 impl Rv {
-    pub(crate) fn reveal_unmounted_row(&self, position: usize) {
+    pub(crate) fn reveal_unmounted_row(&self, position: usize) -> bool {
         let to = self.visible_rows.borrow().as_ref().and_then(|rows| {
             let index = rows
                 .rows
@@ -208,6 +211,7 @@ impl Rv {
         if let Some(to) = to {
             self.move_visible_row_scroll(to);
         }
+        to.is_some()
     }
 }
 

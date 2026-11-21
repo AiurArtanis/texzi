@@ -1631,10 +1631,13 @@ impl Rv {
         }
         let pending = self.layout_notification_pending.clone();
         let revision = self.layout_rev;
-        spawn(async move {
-            nsh_core::element::next_frame().await;
-            pending.set(false);
-            revision.update(|r| *r += 1);
+        // A virtual row can be recycled before this frame has finished.
+        self.owner.run(|| {
+            spawn(async move {
+                nsh_core::element::next_frame().await;
+                pending.set(false);
+                revision.update(|r| *r += 1);
+            })
         });
     }
 

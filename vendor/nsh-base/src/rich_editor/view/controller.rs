@@ -145,6 +145,7 @@ pub(crate) struct Rv {
     pub(crate) session: EditorSession,
     pub(crate) props: RichEditorProps,
     pub(crate) cx: Scope<RichEditorEvent>,
+    pub(crate) owner: Owner,
     /// The state rendered last.
     pub(crate) st: Rc<RefCell<EditorState>>,
     pub(crate) node_views: Rc<RefCell<NodeViews>>,
@@ -221,6 +222,7 @@ impl Rv {
             session,
             props,
             cx,
+            owner: Owner::current(),
             st: Rc::new(RefCell::new(state.clone())),
             tree: Rc::default(),
             geo: Rc::new(RefCell::new(Geometry {
@@ -923,6 +925,34 @@ impl Rv {
         let doc = state.doc().clone();
         let sel = state.selection().clone();
         let vertical = matches!(m.unit, Unit::Line | Unit::Page);
+        let head = sel.head();
+        let affinity = sel.affinity();
+        if (vertical || m.unit == Unit::LineEdge)
+            && sel.as_text().is_some()
+            && self.visible_rows.borrow().is_some()
+            && self.geo.borrow().caret_rect(head, affinity).is_none()
+            && self.reveal_unmounted_row(head)
+        {
+            // The scroll may have removed the current caret's view. Resume
+            // the key after the row has had time to report its geometry.
+            let rv = self.clone();
+            self.owner.run(|| {
+                spawn(async move {
+                    for _ in 0..2 {
+                        next_frame().await;
+                        let current = rv.session.state();
+                        if !current.doc().ptr_eq(&doc) || current.selection() != &sel {
+                            return;
+                        }
+                        if rv.geo.borrow().caret_rect(head, affinity).is_some() {
+                            rv.move_caret(m);
+                            return;
+                        }
+                    }
+                })
+            });
+            return;
+        }
         if !vertical {
             self.goal_x.set(None);
         }
@@ -950,8 +980,6 @@ impl Rv {
             }
             return;
         }
-        let head = sel.head();
-        let affinity = sel.affinity();
         let target: Option<(usize, Affinity, Option<Selection>)> = match m.unit {
             Unit::Char => self
                 .char_step(&doc, &sel, m.dir)
