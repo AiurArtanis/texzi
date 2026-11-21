@@ -503,10 +503,14 @@ impl Projection {
         Ok(edits)
     }
     pub fn parse(schema: &Schema, source: String) -> Result<Self, String> {
-        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        let trace =
+            std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1"));
+        if trace {
             log::info!("RICH_PROJECTION action=full_parse bytes={}", source.len());
         }
+        let ast_started = trace.then(std::time::Instant::now);
         let mut tree = markdown::to_mdast(&source, &parse_options()).map_err(message)?;
+        let import_started = trace.then(std::time::Instant::now);
         list_items::recognize_empty_tasks(&mut tree, &source);
         let mut blocks = Vec::new();
         let definitions: Vec<_> = tree
@@ -636,6 +640,32 @@ impl Projection {
         }
         let doc = root(schema, blocks.iter().map(|b| b.node.clone()).collect())?;
         doc.check().map_err(message)?;
+        if let (Some(ast), Some(import)) = (ast_started, import_started) {
+            log::info!(
+                "RICH_PROJECTION action=phase_timing ast_us={} import_us={}",
+                import.duration_since(ast).as_micros(),
+                import.elapsed().as_micros()
+            );
+        }
+        if std::env::var_os("TEXZI_TRACE_PROJECTION").as_deref() == Some(std::ffi::OsStr::new("1"))
+        {
+            use std::hash::{DefaultHasher, Hash, Hasher};
+            let mut digest = DefaultHasher::new();
+            doc.to_json().to_string().hash(&mut digest);
+            for block in &blocks {
+                block.source.hash(&mut digest);
+                block.opaque.hash(&mut digest);
+                for unit in &block.text_map.units {
+                    unit.rich.hash(&mut digest);
+                    unit.source.hash(&mut digest);
+                }
+            }
+            log::info!(
+                "RICH_PROJECTION action=fingerprint value={:016x} blocks={}",
+                digest.finish(),
+                blocks.len()
+            );
+        }
         Ok(Self {
             source,
             doc,

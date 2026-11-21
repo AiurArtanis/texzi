@@ -840,6 +840,15 @@ impl ModeGate {
         // selecting the same position do not change those epochs.
         let source = self.source.snapshot()?;
         let rich = self.rich.snapshot()?;
+        if std::env::var_os("TEXZI_TRACE_PROJECTION").as_deref() == Some(std::ffi::OsStr::new("1"))
+        {
+            log::info!(
+                "RICH_PROJECTION action=mode_selection source={:?} rich={:?} mapped={:?}",
+                origin.selections.ranges,
+                selection,
+                rich.selections.ranges
+            );
+        }
         let multiple = source.selections.ranges.len() > 1;
         *self.source_multi.borrow_mut() = multiple.then_some(SourceMultiSelection {
             revision: source.revision,
