@@ -86,6 +86,7 @@ impl MenuGroup {
                 "texzi.edit.selectAll",
                 "",
                 "texzi.find.open",
+                "texzi.find.replaceOpen",
             ],
             Self::Appearance => &[
                 "texzi.sidebar.toggle",
@@ -344,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn moved_commands_keep_their_bindings_and_placeholders_are_absent() {
+    fn command_shortcuts_keep_their_bindings_and_placeholders_are_absent() {
         let commands = commands();
         assert!(
             commands
@@ -352,7 +353,6 @@ mod tests {
                 .all(|command| !REMOVED_COMMANDS.contains(&command.id.as_str()))
         );
         for (key, id) in [
-            ("mod+h", "texzi.find.replaceOpen"),
             ("mod+shift+p", "texzi.commandPalette.open"),
             ("mod+p", "texzi.navigation.quickOpen"),
         ] {
@@ -364,6 +364,17 @@ mod tests {
                     .all(|group| !group.commands().contains(&id))
             );
         }
+        assert!(
+            MenuGroup::Edit
+                .commands()
+                .contains(&"texzi.find.replaceOpen")
+        );
+        assert!(SHELL_SHORTCUTS.contains(&("mod+h", "texzi.find.replaceOpen")));
+        assert!(
+            MenuGroup::ALL
+                .into_iter()
+                .all(|group| !group.commands().contains(&"texzi.file.saveAll"))
+        );
         let strokes = application_shortcuts();
         assert!(
             ["alt+s", "alt+g", "alt+h"]
