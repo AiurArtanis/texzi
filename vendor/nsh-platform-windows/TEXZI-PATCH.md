@@ -78,5 +78,6 @@ the next fixed package still requires targeted real Windows/IME observation.
 
 The Windows input router preserves the native hit-test, latching, modifier
 and delta handling. The tagged virtual rich-editor scroll delegates its
-wheel offset to the editor, whose row views are mounted before the offset
-command in the same batch. Other wheel targets use the native scroll path.
+wheel offset to the editor. It keeps the previous rows through a Windows
+mount fence and advances only the latest offset. Other wheel targets keep
+the existing native scroll path.

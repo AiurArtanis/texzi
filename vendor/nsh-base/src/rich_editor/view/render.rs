@@ -132,7 +132,7 @@ pub(crate) fn render(rv: Rv) -> impl IntoElement {
                                 wheel_rv.scroll_visible_rows_by(event.delta.points(px(16.0)).y.0);
                             })
                             .on_scroll_drag_start(move |_: &Point<Points>| {
-                                drag_rv.pending_wheel_scroll.set(None);
+                                drag_rv.cancel_wheel_scroll();
                             })
                     })
                     .on_scroll(move |e: &ScrollEvent| scroll_rv.observe_scroll(e))

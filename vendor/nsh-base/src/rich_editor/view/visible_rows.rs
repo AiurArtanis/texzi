@@ -205,14 +205,52 @@ impl Rv {
             return;
         };
         let current = self.scroll_y.get_untracked().0;
+        let from = self
+            .wheel_target
+            .get_untracked()
+            .map_or(current, |(_, y)| y);
         let limit = (extent - self.viewport.get_untracked().height.0).max(0.0);
-        let target = (current + delta).clamp(0.0, limit);
-        if (target - current).abs() > 0.5 {
-            // Core lays out the new rows before sending ScrollTo in the same
-            // mount batch. No outstanding row callback can replay this target.
-            self.pending_wheel_scroll.set(Some(target));
-            batch(|| self.move_visible_row_scroll(target));
+        let target = (from + delta).clamp(0.0, limit);
+        if (target - from).abs() <= 0.5 {
+            return;
         }
+
+        let generation = self.wheel_generation.get().wrapping_add(1);
+        self.wheel_generation.set(generation);
+        self.wheel_target.set(Some((generation, target)));
+        // Keep the displayed rows while mounting the destination. The
+        // platform runs this fence after applying the preceding mount.
+        let mounted = nsh_core::element::run_on_main_thread(|| ());
+        let rv = self.clone();
+        self.owner.run(|| {
+            spawn(async move {
+                let ready = mounted.await.is_ok();
+                if rv.wheel_target.get_untracked() != Some((generation, target)) {
+                    return;
+                }
+                batch(|| {
+                    if ready {
+                        let current = rv.scroll_y.get_untracked().0;
+                        if (target - current).abs() > 0.5 {
+                            if rv.wheel_held_offset.get_untracked().is_none() {
+                                rv.wheel_held_offset.set(Some(current));
+                            }
+                            rv.pending_wheel_scroll.set(Some(target));
+                            rv.move_visible_row_scroll(target);
+                        }
+                    }
+                    rv.wheel_target.set(None);
+                });
+            })
+        });
+    }
+
+    pub(super) fn cancel_wheel_scroll(&self) {
+        batch(|| {
+            self.pending_wheel_scroll.set(None);
+            self.wheel_target.set(None);
+            self.wheel_held_offset.set(None);
+        });
     }
 
     pub(super) fn observe_scroll(&self, e: &ScrollEvent) {
@@ -223,6 +261,7 @@ impl Rv {
                 return;
             }
             self.pending_wheel_scroll.set(None);
+            self.wheel_held_offset.set(None);
         }
         self.scroll_y.set(e.offset.y);
         self.scrolled.set(e.offset.y);
@@ -274,9 +313,18 @@ pub(super) fn render(rv: Rv, list: Memo<Vec<BlockItem>>) -> AnyElement {
         let height = window.viewport.get().height.0;
         let state = window.visible_rows.borrow();
         let rows = state.as_ref().expect("windowed editor");
-        rows.rows[rows.window(offset, height)]
-            .iter()
-            .map(|row| row.item.clone())
+        let mut indices = rows.window(offset, height).collect::<Vec<_>>();
+        if let Some((_, target)) = window.wheel_target.get() {
+            indices.extend(rows.window(target, height));
+        }
+        if let Some(held) = window.wheel_held_offset.get() {
+            indices.extend(rows.window(held, height));
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+            .into_iter()
+            .map(|index| rows.rows[index].item.clone())
             .collect::<Vec<_>>()
     });
     let extent = rv.clone();

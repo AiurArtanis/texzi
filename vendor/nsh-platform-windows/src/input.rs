@@ -2526,7 +2526,7 @@ fn scroll_wheel(surface: &Rc<Surface>, view: &NshView, event: &WheelEvent) {
     let (dx, dy) = (event.dx, event.dy);
     if is_virtual_rich_scroll(view) {
         // Preserve native target selection and wheel latching. The editor
-        // sends the next offset after its destination rows in the mount batch.
+        // waits for the destination mount before sending the next offset.
         dispatch_wheel(surface, view, event);
         return;
     }
