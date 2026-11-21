@@ -219,6 +219,7 @@ struct Shell {
     zen: Signal<bool>,
     zen_exit: Rc<crate::zen_state::ZenState>,
     chord: Signal<bool>,
+    chord_generation: Cell<u64>,
     source_ref: Cell<Option<ComponentRef<Editor>>>,
     modal: Rc<Cell<bool>>,
     split: Signal<Option<Rc<Document>>>,
@@ -301,6 +302,7 @@ impl Shell {
             zen: signal(false),
             zen_exit: crate::zen_state::ZenState::new(),
             chord: signal(false),
+            chord_generation: Cell::new(0),
             source_ref: Cell::new(None),
             modal: Rc::new(Cell::new(false)),
             split: signal(None),
@@ -1489,21 +1491,21 @@ fn bind_chords(s: Rc<Shell>) {
             return;
         }
         prefix.chord.set(true);
+        let generation = prefix.chord_generation.get().wrapping_add(1);
+        prefix.chord_generation.set(generation);
         prefix.notice.set("Ctrl+K：等待第二个按键…".into());
         trace_chord_shell("prefix_begin", &prefix, None);
-        let chord = prefix.chord;
-        let notice = prefix.notice;
-        let zen = prefix.zen_exit.clone();
         let trace_shell = Rc::downgrade(&prefix);
         set_timeout(std::time::Duration::from_millis(1500), move || {
-            if chord.get() {
-                if let Some(shell) = trace_shell.upgrade() {
-                    trace_chord_shell("timeout", &shell, None);
-                }
-                zen.reset();
-                chord.set(false);
-                if notice.get() == "Ctrl+K：等待第二个按键…" {
-                    notice.set("Ctrl+K 组合已超时取消".into());
+            if let Some(shell) = trace_shell.upgrade()
+                && shell.chord_generation.get() == generation
+                && shell.chord.get()
+            {
+                trace_chord_shell("timeout", &shell, None);
+                shell.zen_exit.reset();
+                shell.chord.set(false);
+                if shell.notice.get() == "Ctrl+K：等待第二个按键…" {
+                    shell.notice.set("Ctrl+K 组合已超时取消".into());
                 }
             }
         });
