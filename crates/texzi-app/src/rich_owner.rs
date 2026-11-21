@@ -1012,6 +1012,45 @@ mod tests {
         })
     }
     #[test]
+    fn literal_insert_and_each_undo_keep_full_projection_and_source_selection() {
+        run(|| {
+            let source = NativeView::fixture("正文😀\r\n\r\n下一段🙂\n");
+            let owner = RichOwner::new(source.sibling().unwrap(), signal(String::new())).unwrap();
+            owner.activate().unwrap();
+            let original = exact_body(&source);
+            let verify = || {
+                let snapshot = owner.native.snapshot().unwrap();
+                let state = owner.session.state();
+                let full = Projection::parse(state.schema(), snapshot.rope.to_string()).unwrap();
+                let projected = owner.projection.borrow();
+                assert_eq!(projected.source, full.source);
+                assert_eq!(projected.doc, full.doc);
+                for pos in 0..=full.doc.content().size() {
+                    assert_eq!(projected.source_position(pos), full.source_position(pos));
+                }
+                let selection = state.selection();
+                let head = full.nearest_rich_position(snapshot.selections.ranges[0].1);
+                assert_eq!(head, Some(selection.head()));
+            };
+            for inserted in ["甲", "🙂", "尾"] {
+                let end = owner.session.state().doc().child(0).node_size() - 1;
+                select(&owner, end);
+                type_text(&owner, inserted);
+                owner.native.fence();
+                verify();
+            }
+            for expected in ["正文😀甲🙂", "正文😀甲", "正文😀"] {
+                owner.history(true);
+                assert_eq!(
+                    owner.session.state().doc().child(0).text_content(),
+                    expected
+                );
+                verify();
+            }
+            assert_eq!(exact_body(&source), original);
+        });
+    }
+    #[test]
     fn external_source_view_updates_live_rich_projection_without_a_second_history() {
         run(|| {
             let source = NativeView::fixture("apple\r\n\n<custom>keep</custom>\n");

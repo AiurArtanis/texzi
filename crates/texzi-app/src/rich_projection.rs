@@ -16,6 +16,7 @@ mod code_actions;
 mod heading_import;
 mod list_items;
 mod local_patch;
+mod plain_insert;
 mod references;
 mod resources;
 mod table_rows;
@@ -314,6 +315,10 @@ impl Projection {
                     && (0..step.slice.content.child_count())
                         .all(|i| step.slice.content.child(i).is_text())
                 {
+                    if let Some((edit, updated)) = plain_insert::project(self, next, step) {
+                        *projection = Some(updated);
+                        return Ok(vec![edit]);
+                    }
                     if let Some((edit, verified)) = local_patch::text_step(self, next, step) {
                         *projection = Some(verified);
                         return Ok(vec![edit]);

@@ -237,6 +237,13 @@ fn atoms(node: &mdast::Node, source: &str, out: &mut Vec<Atom>, in_table_cell: b
 }
 
 impl TextMap {
+    pub(super) fn shift_source(&mut self, bytes: usize) {
+        for unit in &mut self.units {
+            unit.source.start += bytes;
+            unit.source.end += bytes;
+        }
+    }
+
     pub fn build(
         node: &Node,
         ast: &mdast::Node,
