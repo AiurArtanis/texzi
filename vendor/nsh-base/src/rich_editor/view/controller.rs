@@ -160,6 +160,8 @@ pub(crate) struct Rv {
     /// A block's frame or a text's lines changed.
     pub(crate) layout_rev: Signal<u64>,
     pub(crate) layout_notification_pending: Rc<Cell<bool>>,
+    pub(crate) visible_rows: Rc<RefCell<Option<super::visible_rows::Rows>>>,
+    pub(crate) visible_rows_rev: Signal<u64>,
     /// The session has a state the view has not taken yet.
     notified: Signal<u64>,
     pub(crate) focused: Signal<bool>,
@@ -232,6 +234,8 @@ impl Rv {
             deco_rev: signal(0),
             layout_rev: signal(0),
             layout_notification_pending: Rc::default(),
+            visible_rows: Rc::default(),
+            visible_rows_rev: signal(0),
             notified: signal(0),
             focused: signal(false),
             blink: signal(true),
@@ -449,8 +453,10 @@ impl Rv {
         );
         tree.children
             .retain(|id, _| *id == DOC || alive.contains(id));
-        geo.frames
-            .retain(|id, _| alive.contains(&(id & !(1 << 62))));
+        geo.frames.retain(|id, _| {
+            *id == super::visible_rows::ROWS_ROOT
+                || alive.contains(&(id & !(super::visible_rows::ROW_BIT | (1 << 62))))
+        });
         let mut old_texts = std::mem::take(&mut geo.texts);
         for (id, start) in texts {
             let mut entry = old_texts.remove(&id).unwrap_or_default();
@@ -2180,6 +2186,7 @@ impl Rv {
             return;
         }
         let Some(caret) = self.caret_rect() else {
+            self.reveal_unmounted_row(state.selection().head());
             return;
         };
         self.scroll_pending.set(false);
@@ -2197,6 +2204,15 @@ impl Rv {
         };
         self.scroll
             .scroll_to(Point::new(px(0.0), y.max(px(0.0))), false);
+    }
+
+    pub(crate) fn move_visible_row_scroll(&self, to: f32) {
+        let to = px(to.max(0.0));
+        if (self.scroll_y.get_untracked().0 - to.0).abs() > 0.5 {
+            self.scroll_y.set(to);
+            self.scrolled.set(to);
+            self.scroll.scroll_to(Point::new(px(0.0), to), false);
+        }
     }
 }
 

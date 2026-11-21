@@ -26,6 +26,7 @@ mod render;
 mod session;
 mod table;
 mod touch;
+mod visible_rows;
 
 use std::collections::BTreeMap;
 

@@ -288,10 +288,13 @@ fn blocks(rv: Rv, parent: u64) -> AnyElement {
             .cloned()
             .unwrap_or_default()
     });
+    if parent == DOC && super::visible_rows::enabled(list.get_untracked().len()) {
+        return super::visible_rows::render(rv, list);
+    }
     each(
         list,
         |b: &BlockItem| b.id,
-        move |item, _| block(rv.clone(), item),
+        move |item, _| block(rv.clone(), item, None),
     )
 }
 
@@ -305,9 +308,9 @@ enum Kind {
 }
 
 /// A block: its node's part, and its content.
-fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
+pub(super) fn block(rv: Rv, item: ReadSignal<BlockItem>, frame_parent: Option<u64>) -> AnyElement {
     let first = item.get_untracked();
-    let (id, parent) = (first.id, first.parent);
+    let (id, parent) = (first.id, frame_parent.unwrap_or(first.parent));
     let kind = match rv.node_view(first.node.ty().name()) {
         Some(v) => Kind::View(v),
         None if first.node.is_textblock() => Kind::Text,
