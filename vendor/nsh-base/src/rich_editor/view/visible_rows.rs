@@ -1,4 +1,4 @@
-//! Experiment using a fixed scroll container and a window of live block views.
+//! A fixed scroll container with a window of live top-level block views.
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -15,7 +15,7 @@ const DEFAULT_VIEWPORT: f32 = 480.0;
 
 pub(super) fn enabled(count: usize) -> bool {
     count >= 256
-        && std::env::var_os("TEXZI_RICH_VISIBLE_ROWS").as_deref() == Some(std::ffi::OsStr::new("1"))
+        && std::env::var_os("TEXZI_RICH_VISIBLE_ROWS").as_deref() != Some(std::ffi::OsStr::new("0"))
 }
 
 struct Row {
@@ -245,6 +245,8 @@ pub(super) fn render(rv: Rv, list: Memo<Vec<BlockItem>>) -> AnyElement {
     });
     let extent = rv.clone();
     let layout = rv.clone();
+    let trace =
+        std::env::var_os("TEXZI_TRACE_RICH_ROWS").as_deref() == Some(std::ffi::OsStr::new("1"));
     view()
         .relative()
         .w_full()
@@ -264,6 +266,11 @@ pub(super) fn render(rv: Rv, list: Memo<Vec<BlockItem>>) -> AnyElement {
             |item: &BlockItem| item.id,
             move |item, _| {
                 let id = item.get_untracked().id;
+                if trace {
+                    let state = rv.visible_rows.borrow();
+                    let rows = state.as_ref().expect("windowed editor");
+                    log::info!("TEXZI_RICH_ROW_CREATED index={}", rows.indices[&id] + 1);
+                }
                 let frame = ROW_BIT | id;
                 let place = rv.clone();
                 let measure = rv.clone();
