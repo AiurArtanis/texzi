@@ -39,17 +39,30 @@ pub(super) const MENU_KEY: &str = "f10";
 pub(super) enum MenuGroup {
     File,
     Edit,
-    Appearance,
+    Selection,
+    View,
+    Go,
+    Help,
 }
 
 impl MenuGroup {
-    pub(super) const ALL: [Self; 3] = [Self::File, Self::Edit, Self::Appearance];
+    pub(super) const ALL: [Self; 6] = [
+        Self::File,
+        Self::Edit,
+        Self::Selection,
+        Self::View,
+        Self::Go,
+        Self::Help,
+    ];
 
     pub(super) fn shortcut(self) -> &'static str {
         match self {
             Self::File => "alt+f",
             Self::Edit => "alt+e",
-            Self::Appearance => "alt+v",
+            Self::Selection => "alt+s",
+            Self::View => "alt+v",
+            Self::Go => "alt+g",
+            Self::Help => "alt+h",
         }
     }
 
@@ -57,7 +70,10 @@ impl MenuGroup {
         match self {
             Self::File => "文件(&F)",
             Self::Edit => "编辑(&E)",
-            Self::Appearance => "外观(&V)",
+            Self::Selection => "选择(&S)",
+            Self::View => "查看(&V)",
+            Self::Go => "转到(&G)",
+            Self::Help => "帮助(&H)",
         }
     }
 
@@ -83,18 +99,33 @@ impl MenuGroup {
                 "texzi.edit.cut",
                 "texzi.edit.copy",
                 "texzi.edit.paste",
-                "texzi.edit.selectAll",
                 "",
                 "texzi.find.open",
                 "texzi.find.replaceOpen",
             ],
-            Self::Appearance => &[
+            Self::Selection => &[
+                "texzi.edit.selectAll",
+                "texzi.multicursor.addNext",
+                "texzi.multicursor.selectAllOccurrences",
+                "texzi.multicursor.clear",
+            ],
+            Self::View => &[
                 "texzi.sidebar.toggle",
+                "texzi.find.inFolder",
+                "texzi.group.splitRight",
+                "texzi.group.splitDown",
+                "texzi.view.toggleZen",
                 "texzi.editor.toggleWrap",
                 "",
                 "texzi.appearance.light",
                 "texzi.appearance.dark",
             ],
+            Self::Go => &[
+                "texzi.navigation.gotoLine",
+                "texzi.tab.next",
+                "texzi.tab.previous",
+            ],
+            Self::Help => &["texzi.help.guide", "texzi.help.about"],
         }
     }
 }
@@ -377,9 +408,9 @@ mod tests {
         );
         let strokes = application_shortcuts();
         assert!(
-            ["alt+s", "alt+g", "alt+h"]
+            ["alt+f", "alt+e", "alt+s", "alt+v", "alt+g", "alt+h"]
                 .iter()
-                .all(|removed| { strokes.iter().all(|stroke| stroke.as_ref() != *removed) })
+                .all(|key| strokes.iter().any(|stroke| stroke.as_ref() == *key))
         );
     }
 }

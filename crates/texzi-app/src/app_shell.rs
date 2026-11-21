@@ -4,12 +4,12 @@ use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
 use nsh_base::editor::{Editor, EditorApi, EditorCommand, ExternalDocument};
 use nsh_core::{
-    AccessibilityRole,
+    AccessibilityRole, EllipsizeMode,
     desktop::{WindowAttributes, WindowMode},
     element::{
         Composition, ImageSrc,
         desktop::{WindowRef, current_window, popup_menu_at},
-        image, input, scroll,
+        image, input, scroll, svg,
     },
     file_dialog::{OpenDialog, SaveDialog},
     geometry::point,
@@ -31,7 +31,7 @@ use std::{
 pub(super) const TITLE_BAR_HEIGHT: f32 = 44.0;
 const TITLE_ICON_WIDTH: f32 = 44.0;
 const TITLE_MENU_WIDTH: f32 = 50.0;
-const TITLE_SEARCH_LEFT: f32 = TITLE_ICON_WIDTH + TITLE_MENU_WIDTH * 3.0 + 14.0;
+const TITLE_SEARCH_GAP: f32 = 14.0;
 
 #[derive(Clone, PartialEq)]
 struct SearchHit {
@@ -421,12 +421,30 @@ impl Shell {
     fn add_blank(&self) {
         self.add(self.owner.run(NativeView::new_file), None);
     }
-    fn title_search_width(&self) -> Points {
+    fn title_room(&self) -> f32 {
         let width = self
             .window
             .state()
             .map_or(880.0, |state| state.content_bounds.size.width.0);
-        px((width - self.window.title_bar().right.0 - TITLE_SEARCH_LEFT - 18.0).clamp(36.0, 460.0))
+        width - self.window.title_bar().right.0
+    }
+    fn compact_menu(&self) -> bool {
+        self.title_room()
+            < TITLE_ICON_WIDTH
+                + TITLE_MENU_WIDTH * MenuGroup::ALL.len() as f32
+                + TITLE_SEARCH_GAP
+                + 64.0
+    }
+    fn title_search_left(&self) -> f32 {
+        let count = if self.compact_menu() {
+            1
+        } else {
+            MenuGroup::ALL.len()
+        };
+        TITLE_ICON_WIDTH + TITLE_MENU_WIDTH * count as f32 + TITLE_SEARCH_GAP
+    }
+    fn title_search_width(&self) -> Points {
+        px((self.title_room() - self.title_search_left() - 18.0).clamp(0.0, 460.0))
     }
     fn show_title_menu(self: &Rc<Self>, group: Option<MenuGroup>) {
         if self.modal.get() || self.current().is_some_and(|doc| doc.gate.busy()) {
@@ -441,7 +459,13 @@ impl Shell {
             None => crate::native_menu::groups(&run, &blocked, pending),
         };
         let at = point(
-            px(TITLE_ICON_WIDTH + TITLE_MENU_WIDTH * group.map_or(0.0, MenuGroup::position)),
+            px(TITLE_ICON_WIDTH
+                + TITLE_MENU_WIDTH
+                    * if self.compact_menu() {
+                        0.0
+                    } else {
+                        group.map_or(0.0, MenuGroup::position)
+                    }),
             px(TITLE_BAR_HEIGHT),
         );
         self.owner.run(|| {
@@ -1263,7 +1287,7 @@ impl Shell {
             "texzi.find.next"=>self.find(false),"texzi.find.previous"=>self.find(true),"texzi.find.close"=>self.close_panel(),
             "texzi.find.replaceOne"|"texzi.find.replaceAll"=>if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}match doc.source.replace_literal(&self.query.get(),&self.replacement.get(),id.ends_with("All")){Ok(n)=>{self.notice.set(format!("源码 · 已替换 {n} 处，可一次撤销"));self.restore_editor_focus();},Err(e)=>self.notice.set(e)}},
             "texzi.appearance.light"=>set_color_scheme(Appearance::Light),"texzi.appearance.dark"=>set_color_scheme(Appearance::Dark),
-            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存和另存文档。保存已有文件会核验版本和权限，并保留原文件备份。\n外观菜单提供侧栏、自动换行和主题。分屏和 Zen 模式可从顶栏命令搜索打开。Ctrl+1/2 可聚焦编辑组，编辑器右上可切换源码和富文本。"),
+            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存和另存文档。保存已有文件会核验版本和权限，并保留原文件备份。\n查看菜单提供侧栏、自动换行、分屏、Zen 模式和主题。Ctrl+1/2 可聚焦编辑组，编辑器右上可切换源码和富文本。"),
             "texzi.help.about"=>self.explain("关于 texzi","texzi\n为日常文字、Markdown 与代码片段设计的 Windows 原生文本编辑器。"),
             _=>if let Some(command)=source_command(id){if let Err(e)=self.source_action(command){self.notice.set(e);}},
         }
@@ -1850,7 +1874,11 @@ pub fn view_shell() -> impl IntoElement {
     render_shell(Shell::new())
 }
 
-fn title_menu_button(label: &'static str, shell: Rc<Shell>, group: MenuGroup) -> impl IntoElement {
+fn title_menu_button(
+    label: &'static str,
+    shell: Rc<Shell>,
+    group: Option<MenuGroup>,
+) -> impl IntoElement {
     view()
         .w(px(TITLE_MENU_WIDTH))
         .h(px(32.0))
@@ -1862,7 +1890,7 @@ fn title_menu_button(label: &'static str, shell: Rc<Shell>, group: MenuGroup) ->
         .window_drag(false)
         .role(AccessibilityRole::Button)
         .child(text(label))
-        .on_press(move |_: &()| shell.show_title_menu(Some(group)))
+        .on_press(move |_: &()| shell.show_title_menu(group))
 }
 
 fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
@@ -1870,11 +1898,7 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
     let search = shell.clone();
     let width = shell.clone();
     let panel = shell.panel;
-    let mut menus = view().flex_row();
-    for group in MenuGroup::ALL {
-        let label = group.label().split_once('(').unwrap().0;
-        menus = menus.child(title_menu_button(label, shell.clone(), group));
-    }
+    let menus = shell.clone();
     let icon = ImageSrc::rgba(
         32,
         32,
@@ -1897,12 +1921,23 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                 .justify_center()
                 .child(image(icon).w(px(20.0)).h(px(20.0))),
         )
-        .child(menus)
+        .child(dynamic(move || {
+            let mut row = view().flex_row().flex_shrink_0();
+            if menus.compact_menu() {
+                row = row.child(title_menu_button("菜单", menus.clone(), None));
+            } else {
+                for group in MenuGroup::ALL {
+                    let label = group.label().split_once('(').unwrap().0;
+                    row = row.child(title_menu_button(label, menus.clone(), Some(group)));
+                }
+            }
+            row
+        }))
         .child(
             view()
                 .w(move || width.title_search_width())
                 .min_w(px(0.0))
-                .ml(px(14.0))
+                .ml(px(TITLE_SEARCH_GAP))
                 .h(px(32.0))
                 .window_drag(false)
                 .child(when(
@@ -1911,7 +1946,9 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                         let search = search.clone();
                         view()
                             .size_full()
-                            .px(px(10.0))
+                            .px(px(8.0))
+                            .flex_row()
+                            .gap(px(6.0))
                             .items_center()
                             .justify_center()
                             .overflow_hidden()
@@ -1921,7 +1958,14 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                             .focusable(true)
                             .role(AccessibilityRole::Button)
                             .label("搜索文件或命令")
-                            .child(text("搜索文件或命令…").text_size(px(14.0)))
+                            .child(shell_glyph(SEARCH_ICON, 16.0))
+                            .child(
+                                text("搜索文件或命令…")
+                                    .min_w(px(0.0))
+                                    .number_of_lines(1)
+                                    .text_overflow(EllipsizeMode::Tail)
+                                    .text_size(px(14.0)),
+                            )
                             .on_press(move |_: &()| search.run("texzi.navigation.quickOpen"))
                     },
                 )),
@@ -1940,7 +1984,7 @@ fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
         .border_r(px(1.0))
         .border_color(divider)
         .child(activity_icon(
-            "▤",
+            FILES_ICON,
             "资源管理器",
             {
                 let s = s.clone();
@@ -1956,7 +2000,7 @@ fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
             },
         ))
         .child(activity_icon(
-            "⌕",
+            SEARCH_ICON,
             "在文件夹中搜索",
             move || s.panel.get() == "folder",
             move || search.run("texzi.find.inFolder"),
@@ -1964,21 +2008,28 @@ fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
 }
 
 fn activity_icon(
-    glyph: &'static str,
+    path: &'static str,
     label: &'static str,
     selected: impl Fn() -> bool + Clone + 'static,
     activate: impl Fn() + 'static,
 ) -> impl IntoElement {
+    let surface = selected.clone();
     view()
         .relative()
         .w(px(44.0))
         .h(px(44.0))
+        .items_center()
+        .justify_center()
         .child(
-            nsh_base::button()
-                .size_full()
-                .accessibility_label(label)
+            icon_button(path, label, 36.0, 20.0)
+                .bg(move || {
+                    if surface() {
+                        selected_surface()
+                    } else {
+                        frame()
+                    }
+                })
                 .selected(selected.clone())
-                .child(text(glyph).text_size(px(20.0)))
                 .on_press(move |_: &()| activate()),
         )
         .child(when(selected, || {
@@ -1992,12 +2043,37 @@ fn activity_icon(
         }))
 }
 
-fn shell_icon(glyph: &'static str, label: &'static str) -> nsh_base::ButtonElement {
+const FILES_ICON: &str = "M7 5V3h8l4 4v12h-2M15 3v5h4M5 7h10v14H5z";
+const SEARCH_ICON: &str = "M15.5 15.5L21 21M17.5 10.5a7 7 0 1 1-14 0 7 7 0 0 1 14 0";
+const CLOSE_ICON: &str = "M6 6l12 12M18 6L6 18";
+const ADD_ICON: &str = "M5 12h14M12 5v14";
+
+fn shell_glyph(path: &str, size: f32) -> impl IntoElement {
+    let source = ImageSrc::svg_markup(&format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="{path}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#
+    ));
+    svg(source)
+        .w(px(size))
+        .h(px(size))
+        .flex_shrink_0()
+        .text_color(foreground)
+}
+
+fn icon_button(
+    path: &str,
+    label: &'static str,
+    target: f32,
+    glyph: f32,
+) -> nsh_base::ButtonElement {
     nsh_base::button()
-        .w(px(36.0))
-        .h(px(32.0))
+        .w(px(target))
+        .h(px(target))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
         .accessibility_label(label)
-        .child(text(glyph).text_size(px(16.0)))
+        .child(shell_glyph(path, glyph))
 }
 
 fn file_sidebar(s: Rc<Shell>) -> impl IntoElement {
@@ -2069,32 +2145,62 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                     let tab = s.clone();
                     let close = s.clone();
                     let id = doc.id;
+                    let label = doc.clone();
                     view()
                         .relative()
                         .h(px(38.0))
+                        .min_w(px(104.0))
+                        .max_w(px(220.0))
+                        .pr(px(6.0))
                         .flex_row()
                         .items_center()
+                        .bg(move || {
+                            if active.get() == id {
+                                background()
+                            } else {
+                                frame()
+                            }
+                        })
                         .border_r(px(1.0))
                         .border_color(divider)
                         .child(
                             nsh_base::button()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .h_full()
+                                .px(px(10.0))
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .app_class("hover:bg-accent focus-visible:bg-accent")
                                 .selected(move || active.get() == id)
-                                .child(text(move || {
-                                    doc.source.track();
-                                    let dirty = if doc.source.is_dirty().unwrap_or(true) {
-                                        " ●"
-                                    } else {
-                                        ""
-                                    };
-                                    format!("{}{dirty}", doc.name())
-                                }))
+                                .child(
+                                    text(move || label.name())
+                                        .min_w(px(0.0))
+                                        .number_of_lines(1)
+                                        .text_overflow(EllipsizeMode::Tail),
+                                )
+                                .child(when(
+                                    move || {
+                                        doc.source.track();
+                                        doc.source.is_dirty().unwrap_or(true)
+                                    },
+                                    || {
+                                        view()
+                                            .w(px(6.0))
+                                            .h(px(6.0))
+                                            .flex_shrink_0()
+                                            .app_class("rounded-full")
+                                            .bg(indicator)
+                                    },
+                                ))
                                 .on_press(move |_: &()| {
                                     tab.active.set(id);
                                     tab.second_active.set(false);
                                 }),
                         )
                         .child(
-                            shell_icon("×", "关闭此标签")
+                            icon_button(CLOSE_ICON, "关闭此标签", 24.0, 14.0)
                                 .on_press(move |_: &()| close.close_tab(id)),
                         )
                         .child(when(
@@ -2113,8 +2219,8 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
             )),
         ))
         .child(
-            shell_icon("+", "新建标签")
-                .flex_shrink_0()
+            icon_button(ADD_ICON, "新建标签", 32.0, 16.0)
+                .ml(px(4.0))
                 .on_press(move |_: &()| new_tab.run("texzi.file.new")),
         )
 }
@@ -2242,7 +2348,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                 view()
                     .absolute()
                     .top(px(6.0))
-                    .left(px(TITLE_SEARCH_LEFT))
+                    .left(px(quick.title_search_left()))
                     .z_index(1)
                     .w(quick.title_search_width())
                     .window_drag(false)
