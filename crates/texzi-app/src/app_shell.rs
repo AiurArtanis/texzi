@@ -620,6 +620,60 @@ impl Shell {
             Err(error) => self.explain("读取失败", &error),
         }
     }
+    fn open_folder(self: &Rc<Self>, path: &Path) {
+        match path.canonicalize() {
+            Ok(path) => {
+                self.root.set(Some(path));
+                self.sidebar.set(true);
+            }
+            Err(error) => self.explain("无法打开文件夹", &error.to_string()),
+        }
+    }
+
+    fn open_dropped(self: &Rc<Self>, uris: &[String]) {
+        let mut folder = None;
+        let mut files = Vec::new();
+        for uri in uris {
+            let path = url::Url::parse(uri)
+                .ok()
+                .filter(|url| {
+                    url.scheme() == "file"
+                        && url
+                            .host_str()
+                            .is_none_or(|host| host.eq_ignore_ascii_case("localhost"))
+                })
+                .and_then(|url| url.to_file_path().ok());
+            let Some(path) = path else {
+                self.explain("无法打开拖入项", "请从资源管理器拖入本地文件或文件夹。");
+                return;
+            };
+            match path.metadata() {
+                Ok(entry) if entry.is_dir() => {
+                    if folder.is_some() {
+                        self.explain("请选择一个文件夹", "一个窗口只能打开一个工作区文件夹。");
+                        return;
+                    }
+                    folder = Some(path);
+                }
+                Ok(entry) if entry.is_file() => files.push(path),
+                Ok(_) => {
+                    self.explain("无法打开拖入项", "该路径不是普通文件或文件夹。");
+                    return;
+                }
+                Err(error) => {
+                    self.explain("无法访问拖入项", &error.to_string());
+                    return;
+                }
+            }
+        }
+        if let Some(path) = folder {
+            self.open_folder(&path);
+        }
+        for path in files {
+            self.open(&path);
+        }
+    }
+
     fn pick(self: &Rc<Self>, folder: bool) {
         let s = self.clone();
         await_shell_modal(
@@ -636,13 +690,7 @@ impl Shell {
                 Ok(Some(paths)) => {
                     for path in paths {
                         if folder {
-                            match path.canonicalize() {
-                                Ok(path) => {
-                                    s.root.set(Some(path));
-                                    s.sidebar.set(true);
-                                }
-                                Err(error) => s.explain("无法打开文件夹", &error.to_string()),
-                            }
+                            s.open_folder(&path);
                         } else {
                             s.open(&path);
                         }
@@ -1915,6 +1963,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let panels = s.clone();
     let quick = s.clone();
     let status_shell = s.clone();
+    let drop_shell = s.clone();
     let notice = s.notice;
     let zen = s.zen;
     let exit_zen = s.clone();
@@ -1925,6 +1974,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
         .size_full()
         .bg(background)
         .text_color(foreground)
+        .on_file_drop(move |event: &FileDropEvent| drop_shell.open_dropped(&event.uris))
         .child(when(move || !zen.get(), move || title_bar(toolbar.clone())))
         .child(when(
             move || zen.get(),

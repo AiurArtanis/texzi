@@ -2417,6 +2417,7 @@ dependencies = [
  "texzi-document",
  "tokio",
  "unicode-segmentation",
+ "url",
 ]
 
 [[package]]
