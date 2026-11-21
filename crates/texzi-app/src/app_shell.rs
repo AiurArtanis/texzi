@@ -1,6 +1,6 @@
 //! Application shell. Native menus and the palette share command identities.
 use crate::editor_owner::SaveError;
-use crate::native_menu::SHELL_SHORTCUTS;
+use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
 use nsh_base::editor::{Editor, EditorApi, EditorCommand, ExternalDocument};
 use nsh_core::{
@@ -31,6 +31,7 @@ use std::{
 pub(super) const TITLE_BAR_HEIGHT: f32 = 44.0;
 const TITLE_ICON_WIDTH: f32 = 44.0;
 const TITLE_MENU_WIDTH: f32 = 50.0;
+const TITLE_SEARCH_LEFT: f32 = TITLE_ICON_WIDTH + TITLE_MENU_WIDTH * 3.0 + 14.0;
 
 #[derive(Clone, PartialEq)]
 struct SearchHit {
@@ -56,8 +57,17 @@ struct Document {
     rich_reference: ComponentRef<nsh_base::rich_editor::view::RichEditor>,
     controls: RichControlSet,
     wrap: Signal<bool>,
+    pending_mode: Signal<Option<bool>>,
+    progress: ElementRef,
+    body: ElementRef,
 }
 impl Document {
+    fn displayed_rich(&self) -> bool {
+        self.pending_mode
+            .get()
+            .map_or_else(|| self.gate.rich_mode.get(), |target| !target)
+    }
+
     fn name(&self) -> String {
         self.path.with(|path| {
             path.as_deref()
@@ -65,6 +75,33 @@ impl Document {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| format!("未命名-{}", self.id))
         })
+    }
+}
+
+async fn wait_for_editor_frame(reference: ElementRef) {
+    // The first task runs after this turn's mount, allowing the ref to point
+    // to the new element before observing native presentations.
+    if run_on_main_thread(|| ()).await.is_err() {
+        return;
+    }
+    let Some(node) = reference.node() else { return };
+    let Ok(Some((baseline, _))) =
+        run_on_main_thread(move || nsh_platform_windows::node_presentation(node, None)).await
+    else {
+        return;
+    };
+    while reference.node() == Some(node) {
+        let _ = next_frame().await;
+        if !matches!(
+            run_on_main_thread(move || nsh_platform_windows::node_presentation(
+                node,
+                Some(baseline)
+            ))
+            .await,
+            Ok(Some((_, false)))
+        ) {
+            break;
+        }
     }
 }
 // Toolbar and command-palette entries share the same per-view drafts and
@@ -220,6 +257,18 @@ fn frame() -> Hsla {
         rgb(0xf3f4f6).into()
     }
 }
+
+fn divider() -> Hsla {
+    rgb(if dark() { 0x434b57 } else { 0xc9ced6 }).into()
+}
+
+fn indicator() -> Hsla {
+    rgb(if dark() { 0x79aaef } else { 0x3267b0 }).into()
+}
+
+fn selected_surface() -> Hsla {
+    rgb(if dark() { 0x303e54 } else { 0xdce9fc }).into()
+}
 impl Shell {
     fn primary(&self) -> Option<Rc<Document>> {
         self.docs
@@ -312,9 +361,11 @@ impl Shell {
         on_key(crate::native_menu::MENU_KEY, move |_| {
             menus.show_title_menu(None)
         });
-        for (index, &shortcut) in crate::native_menu::GROUP_KEYS.iter().enumerate() {
+        for group in MenuGroup::ALL {
             let menus = s.clone();
-            on_key(shortcut, move |_| menus.show_title_menu(Some(index)));
+            on_key(group.shortcut(), move |_| {
+                menus.show_title_menu(Some(group))
+            });
         }
         let source_sidebar = s.clone();
         effect(move || {
@@ -367,12 +418,14 @@ impl Shell {
     fn add_blank(&self) {
         self.add(self.owner.run(NativeView::new_file), None);
     }
-    fn compact_title_bar(&self) -> bool {
-        self.window
+    fn title_search_width(&self) -> Points {
+        let width = self
+            .window
             .state()
-            .is_some_and(|state| state.content_bounds.size.width.0 < 640.0)
+            .map_or(880.0, |state| state.content_bounds.size.width.0);
+        px((width - self.window.title_bar().right.0 - TITLE_SEARCH_LEFT - 18.0).clamp(36.0, 460.0))
     }
-    fn show_title_menu(self: &Rc<Self>, group: Option<usize>) {
+    fn show_title_menu(self: &Rc<Self>, group: Option<MenuGroup>) {
         if self.modal.get() || self.current().is_some_and(|doc| doc.gate.busy()) {
             return;
         }
@@ -381,17 +434,11 @@ impl Shell {
         let blocked = |id: &str| self.blocked(id);
         let pending = self.chord.get();
         let entries = match group {
-            Some(index) => crate::native_menu::entries(
-                crate::native_menu::MENU_GROUPS[index].1,
-                &run,
-                &blocked,
-                pending,
-            ),
+            Some(group) => crate::native_menu::entries(group.commands(), &run, &blocked, pending),
             None => crate::native_menu::groups(&run, &blocked, pending),
         };
-        let index = group.filter(|_| !self.compact_title_bar()).unwrap_or(0);
         let at = point(
-            px(TITLE_ICON_WIDTH + TITLE_MENU_WIDTH * index as f32),
+            px(TITLE_ICON_WIDTH + TITLE_MENU_WIDTH * group.map_or(0.0, MenuGroup::position)),
             px(TITLE_BAR_HEIGHT),
         );
         self.owner.run(|| {
@@ -427,6 +474,9 @@ impl Shell {
                 rich_reference,
                 controls,
                 wrap,
+                pending_mode: self.owner.run(|| signal(None)),
+                progress: self.owner.run(element_ref),
+                body: self.owner.run(element_ref),
             }))
         });
         self.active.set(id);
@@ -452,27 +502,7 @@ impl Shell {
             };
             return crate::rich_commands::availability(&doc.gate, &doc.source, id, true).err();
         }
-        let reason = match id {
-            "texzi.file.saveWithEncoding" => "指定编码保存尚未接入。",
-            "texzi.file.revert" | "texzi.file.reopenWithEncoding" | "texzi.file.changeEol" => {
-                "编码、换行与磁盘重载的保护流程尚未接入，当前文档保持原样。"
-            }
-            "texzi.file.copyPath" => "复制路径暂未接入本轮菜单外壳。未命名文档也没有磁盘路径。",
-            "texzi.group.focusDirection"
-            | "texzi.tab.moveToNewWindow"
-            | "texzi.tab.copyToNewWindow" => {
-                "跨窗口移动与方向组导航尚未接入。请用“转到 → 聚焦编辑组”切换现有组；当前文档保持不变。"
-            }
-            "texzi.settings.open" | "texzi.settings.keybindings" => {
-                "设置和快捷键自定义尚未接入；可用“查看 → 命令面板”查询命令及本版本可用入口。"
-            }
-            "texzi.tab.closeOthers" | "texzi.tab.closeAll" => {
-                "批量关闭的保存/放弃/取消流程尚未接入，请逐个关闭标签。"
-            }
-            _ if supported(id) => return None,
-            _ => "此命令尚未完成接线，当前文档保持原样。",
-        };
-        Some(reason.into())
+        (!supported(id)).then(|| "此命令尚未完成接线，当前文档保持原样。".into())
     }
     fn explain(self: &Rc<Self>, title: &str, message: &str) {
         self.notice.set(message.into());
@@ -1080,6 +1110,9 @@ impl Shell {
             rich_reference,
             controls,
             wrap,
+            pending_mode: signal(None),
+            progress: element_ref(),
+            body: element_ref(),
         })));
         self.split_down.set(down);
         self.second_active.set(true);
@@ -1215,15 +1248,44 @@ impl Shell {
             "texzi.commandPalette.open"|"texzi.navigation.quickOpen"=>{self.palette_query.set(String::new());let files=id.ends_with("quickOpen");let already=self.panel.get()=="files";if files{self.quick_files.set(vec![]);self.quick_notice.set("正在准备文件候选".into());}self.panel.set(if files{"files"}else{"commands"}.into());if files&&already{self.start_quick(self.root.get());}},
             "texzi.navigation.gotoLine"=>{if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}}self.query.set(String::new());self.panel.set("line".into());self.notice.set("转到行的范围已切换为源码".into());},
             "texzi.group.focusIndex"=>self.panel.set("groups".into()),
-            "texzi.markdown.toggleSource"=>if let Some(doc)=self.current(){if doc.gate.rich_mode.get(){doc.gate.to_source();}else{doc.gate.to_rich();}},
+            "texzi.markdown.toggleSource"=>if let Some(doc)=self.current(){let target = !doc.displayed_rich(); self.request_mode(doc, target);},
             "texzi.find.open"|"texzi.find.replaceOpen"=>{let replace=id.ends_with("replaceOpen");if replace{if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}}}self.panel.set(if replace{"replace"}else{"find"}.into());let scope=if self.current().is_some_and(|d|d.gate.rich_mode.get()){"正文"}else{"源码"};self.notice.set(format!("查找范围：{scope} · 普通文字 · 区分大小写"));},
             "texzi.find.next"=>self.find(false),"texzi.find.previous"=>self.find(true),"texzi.find.close"=>self.close_panel(),
             "texzi.find.replaceOne"|"texzi.find.replaceAll"=>if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}match doc.source.replace_literal(&self.query.get(),&self.replacement.get(),id.ends_with("All")){Ok(n)=>{self.notice.set(format!("源码 · 已替换 {n} 处，可一次撤销"));self.restore_editor_focus();},Err(e)=>self.notice.set(e)}},
             "texzi.appearance.light"=>set_color_scheme(Appearance::Light),"texzi.appearance.dark"=>set_color_scheme(Appearance::Dark),
-            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存新文件，或将现有文档另存为新文件。新文件继承目标文件夹权限。保存已有文件会核验版本和权限，并保留原文件备份。指定编码保存仍待实现。\n查看菜单提供分屏、源码/富文本切换、源码自动换行、主题与 Zen。Ctrl+1/2 可聚焦编辑组。编辑和选择命令作用于当前视图。"),
+            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存和另存文档。保存已有文件会核验版本和权限，并保留原文件备份。\n外观菜单提供侧栏、自动换行和主题。分屏和 Zen 模式可从顶栏命令搜索打开。Ctrl+1/2 可聚焦编辑组，编辑器右上可切换源码和富文本。"),
             "texzi.help.about"=>self.explain("关于 texzi","texzi\n为日常文字、Markdown 与代码片段设计的 Windows 原生文本编辑器。"),
             _=>if let Some(command)=source_command(id){if let Err(e)=self.source_action(command){self.notice.set(e);}},
         }
+    }
+    fn request_mode(self: &Rc<Self>, doc: Rc<Document>, target_rich: bool) {
+        if doc.pending_mode.get().is_some() || doc.gate.rich_mode.get() == target_rich {
+            return;
+        }
+        doc.pending_mode.set(Some(target_rich));
+        let shell = self.clone();
+        self.owner.run(|| {
+            spawn(async move {
+                wait_for_editor_frame(doc.progress).await;
+                let mounted = shell
+                    .docs
+                    .with(|docs| docs.iter().any(|entry| Rc::ptr_eq(entry, &doc)))
+                    || shell
+                        .split
+                        .with(|entry| entry.as_ref().is_some_and(|entry| Rc::ptr_eq(entry, &doc)));
+                if mounted {
+                    if target_rich {
+                        doc.gate.to_rich();
+                    } else {
+                        doc.gate.to_source();
+                    }
+                    if doc.gate.rich_mode.get() == target_rich {
+                        wait_for_editor_frame(doc.body).await;
+                    }
+                }
+                doc.pending_mode.set(None);
+            });
+        });
     }
     fn markdown_command(self: &Rc<Self>, id: &str) {
         let Some(doc) = self.current() else { return };
@@ -1565,12 +1627,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let rich_mode = doc.gate.rich_mode;
     let rich = doc.gate.clone();
     let source = doc.gate.clone();
-    let status = doc.gate.status;
     let wrap = doc.wrap;
-    let src = doc.gate.clone();
-    let formatted = doc.gate.clone();
-    let source_owner = s.owner;
-    let rich_owner = s.owner;
+    let body = doc.body;
     let source_focus = s.second_active;
     let rich_focus = s.second_active;
     let block_controls = doc.controls.blocks.clone();
@@ -1582,6 +1640,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let controls_owner = s.owner;
     let controls_shell = s.clone();
     let header_doc = doc.clone();
+    let status_doc = doc.clone();
     view()
         .flex_1()
         .min_w(px(0.0))
@@ -1597,6 +1656,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 .gap(px(8.0))
                 .p(px(6.0))
                 .bg(frame)
+                .border_b(px(1.0))
+                .border_color(divider)
                 .child(
                     text(move || {
                         format!("组 {} · {}", if second { 2 } else { 1 }, header_doc.name())
@@ -1604,20 +1665,20 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .flex_1()
                     .min_w(px(0.0)),
                 )
+                .child(view().element_ref(&doc.progress).child(text(move || {
+                    match status_doc.pending_mode.get() {
+                        Some(true) => "正在切换到富文本…".into(),
+                        Some(false) => "正在切换到源码…".into(),
+                        None => status_doc.gate.status.get(),
+                    }
+                })))
                 .child(
-                    nsh_base::button()
-                        .child(text("源码"))
-                        .on_press(move |_: &()| source_owner.run(|| src.to_source())),
-                )
-                .child(
-                    nsh_base::button()
-                        .child(text("富文本"))
-                        .on_press(move |_: &()| rich_owner.run(|| formatted.to_rich())),
-                )
-                .child(
-                    text(move || status.get())
-                        .max_w(relative(1.0))
-                        .min_w(px(0.0)),
+                    view()
+                        .flex_row()
+                        .gap(px(1.0))
+                        .bg(divider)
+                        .child(mode_button(s.clone(), doc.clone(), false))
+                        .child(mode_button(s, doc, true)),
                 ),
         )
         .child(
@@ -1677,11 +1738,12 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     )
                     .child(
                         nsh_base::rich_editor::view::rich_editor()
+                            .element_ref(&body)
                             .component_ref(&rich_reference)
                             .editor(rich.session())
                             .application_shortcuts(crate::native_menu::application_shortcuts())
                             .classes(crate::app::rich_classes())
-                            .auto_focus(true)
+                            .auto_focus(move || rich_focus.get() == second)
                             .on_focus(move |_: &()| rich_focus.set(second))
                             .flex_1()
                             .min_w(px(0.0))
@@ -1691,8 +1753,9 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
             .otherwise(move || {
                 source.source_mounted();
                 nsh_base::editor::editor()
+                    .element_ref(&body)
                     .component_ref(&reference)
-                    .auto_focus(true)
+                    .auto_focus(move || source_focus.get() == second)
                     .on_focus(move |_: &()| source_focus.set(second))
                     .language(move || {
                         let markdown = source_document_path
@@ -1720,6 +1783,36 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
         )
 }
 
+fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, rich: bool) -> impl IntoElement {
+    let selected = doc.clone();
+    let surface = doc.clone();
+    let label_doc = doc.clone();
+    let disabled = doc.clone();
+    let label = if rich { "富文本" } else { "源码" };
+    nsh_base::button()
+        .h(px(30.0))
+        .min_w(px(70.0))
+        .selected(move || selected.displayed_rich() == rich)
+        .bg(move || {
+            if surface.displayed_rich() == rich {
+                selected_surface()
+            } else {
+                frame()
+            }
+        })
+        .disabled(move || disabled.pending_mode.get().is_some())
+        .child(dynamic(move || {
+            if label_doc.displayed_rich() == rich {
+                text(format!("✓ {label}"))
+                    .app_class("font-semibold")
+                    .into_element()
+            } else {
+                text(label).into_element()
+            }
+        }))
+        .on_press(move |_: &()| shell.request_mode(doc.clone(), rich))
+}
+
 fn groups(s: Rc<Shell>) -> AnyElement {
     let down = s.split_down.get();
     let primary = s.clone();
@@ -1745,11 +1838,7 @@ pub fn view_shell() -> impl IntoElement {
     render_shell(Shell::new())
 }
 
-fn title_menu_button(
-    label: &'static str,
-    shell: Rc<Shell>,
-    group: Option<usize>,
-) -> impl IntoElement {
+fn title_menu_button(label: &'static str, shell: Rc<Shell>, group: MenuGroup) -> impl IntoElement {
     view()
         .w(px(TITLE_MENU_WIDTH))
         .h(px(32.0))
@@ -1761,14 +1850,19 @@ fn title_menu_button(
         .window_drag(false)
         .role(AccessibilityRole::Button)
         .child(text(label))
-        .on_press(move |_: &()| shell.show_title_menu(group))
+        .on_press(move |_: &()| shell.show_title_menu(Some(group)))
 }
 
 fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
     let window = shell.window.clone();
-    let compact = shell.clone();
     let search = shell.clone();
-    let search_label = shell.clone();
+    let width = shell.clone();
+    let panel = shell.panel;
+    let mut menus = view().flex_row();
+    for group in MenuGroup::ALL {
+        let label = group.label().split_once('(').unwrap().0;
+        menus = menus.child(title_menu_button(label, shell.clone(), group));
+    }
     let icon = ImageSrc::rgba(
         32,
         32,
@@ -1781,6 +1875,8 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
         .flex_shrink_0()
         .pr(move || window.title_bar().right)
         .bg(frame)
+        .border_b(px(1.0))
+        .border_color(divider)
         .window_drag(true)
         .child(
             view()
@@ -1789,39 +1885,34 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                 .justify_center()
                 .child(image(icon).w(px(20.0)).h(px(20.0))),
         )
-        .child(dynamic(move || {
-            if compact.compact_title_bar() {
-                return title_menu_button("菜单", compact.clone(), None).into_element();
-            }
-            let mut row = view().flex_row();
-            for (index, (name, _)) in crate::native_menu::MENU_GROUPS.iter().enumerate() {
-                let label = name.split_once('(').map_or(*name, |(label, _)| label);
-                row = row.child(title_menu_button(label, compact.clone(), Some(index)));
-            }
-            row.into_element()
-        }))
+        .child(menus)
         .child(
             view()
-                .flex_1()
-                .min_w(px(36.0))
-                .max_w(px(460.0))
+                .w(move || width.title_search_width())
+                .min_w(px(0.0))
                 .ml(px(14.0))
                 .h(px(32.0))
-                .px(px(10.0))
-                .flex_row()
-                .gap(px(8.0))
-                .items_center()
-                .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
                 .window_drag(false)
-                .focusable(true)
-                .role(AccessibilityRole::Button)
-                .label("搜索文件或命令")
-                .child(text("🔍︎").text_size(px(15.0)))
                 .child(when(
-                    move || !search_label.compact_title_bar(),
-                    || text("搜索文件或命令").text_size(px(14.0)),
-                ))
-                .on_press(move |_: &()| search.run("texzi.navigation.quickOpen")),
+                    move || !is_quick_panel(&panel.get()),
+                    move || {
+                        let search = search.clone();
+                        view()
+                            .size_full()
+                            .px(px(10.0))
+                            .items_center()
+                            .justify_center()
+                            .overflow_hidden()
+                            .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
+                            .border(px(1.0))
+                            .border_color(divider)
+                            .focusable(true)
+                            .role(AccessibilityRole::Button)
+                            .label("搜索文件或命令")
+                            .child(text("搜索文件或命令…").text_size(px(14.0)))
+                            .on_press(move |_: &()| search.run("texzi.navigation.quickOpen"))
+                    },
+                )),
         )
         .child(view().flex_1().min_w(px(18.0)).h_full())
 }
@@ -1833,18 +1924,59 @@ fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
         .w(px(44.0))
         .flex_shrink_0()
         .items_center()
-        .gap(px(4.0))
-        .py(px(4.0))
         .bg(frame)
-        .child(shell_icon("▤", "资源管理器").on_press(move |_: &()| {
-            files.run("texzi.sidebar.toggle");
-        }))
-        .child(shell_icon("⌕", "在文件夹中搜索").on_press(move |_: &()| {
-            search.run("texzi.find.inFolder");
-        }))
-        .child(view().flex_1())
-        .child(shell_icon("⚙", "设置").on_press(move |_: &()| {
-            s.panel.set("settings".into());
+        .border_r(px(1.0))
+        .border_color(divider)
+        .child(activity_icon(
+            "▤",
+            "资源管理器",
+            {
+                let s = s.clone();
+                move || s.sidebar.get() && s.panel.get() != "folder"
+            },
+            move || {
+                if files.panel.get() == "folder" {
+                    files.close_panel();
+                    files.sidebar.set(true);
+                } else {
+                    files.run("texzi.sidebar.toggle");
+                }
+            },
+        ))
+        .child(activity_icon(
+            "⌕",
+            "在文件夹中搜索",
+            move || s.panel.get() == "folder",
+            move || search.run("texzi.find.inFolder"),
+        ))
+}
+
+fn activity_icon(
+    glyph: &'static str,
+    label: &'static str,
+    selected: impl Fn() -> bool + Clone + 'static,
+    activate: impl Fn() + 'static,
+) -> impl IntoElement {
+    view()
+        .relative()
+        .w(px(44.0))
+        .h(px(44.0))
+        .child(
+            nsh_base::button()
+                .size_full()
+                .accessibility_label(label)
+                .selected(selected.clone())
+                .child(text(glyph).text_size(px(20.0)))
+                .on_press(move |_: &()| activate()),
+        )
+        .child(when(selected, || {
+            view()
+                .absolute()
+                .left(px(0.0))
+                .top(px(8.0))
+                .bottom(px(8.0))
+                .w(px(2.0))
+                .bg(indicator)
         }))
 }
 
@@ -1871,12 +2003,28 @@ fn file_sidebar(s: Rc<Shell>) -> impl IntoElement {
         .relative()
         .w(move || px(width.get().min(layout_max())))
         .flex_shrink_0()
-        .p(px(8.0))
-        .gap(px(8.0))
         .bg(frame)
-        .child(text("资源管理器"))
-        .child(button("打开文件夹", s.clone(), "texzi.folder.open"))
-        .child(dynamic(move || folder(s.clone())))
+        .border_r(px(1.0))
+        .border_color(divider)
+        .child(
+            view()
+                .h(px(38.0))
+                .px(px(8.0))
+                .flex_shrink_0()
+                .justify_center()
+                .border_b(px(1.0))
+                .border_color(divider)
+                .child(text("资源管理器")),
+        )
+        .child(
+            view()
+                .flex_1()
+                .min_h(px(0.0))
+                .p(px(8.0))
+                .gap(px(8.0))
+                .child(button("打开文件夹", s.clone(), "texzi.folder.open"))
+                .child(dynamic(move || folder(s.clone()))),
+        )
         .child(
             nsh_base::resize_handle()
                 .edge(nsh_base::HandleEdge::Trailing)
@@ -1898,6 +2046,8 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
         .items_center()
         .flex_row()
         .bg(frame)
+        .border_b(px(1.0))
+        .border_color(divider)
         .child(scroll().horizontal().scrollbar(false).min_w(px(0.0)).child(
             view().flex_row().child(each(
                 move || docs.get(),
@@ -1912,6 +2062,8 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                         .h(px(38.0))
                         .flex_row()
                         .items_center()
+                        .border_r(px(1.0))
+                        .border_color(divider)
                         .child(
                             nsh_base::button()
                                 .selected(move || active.get() == id)
@@ -1942,9 +2094,7 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                                     .left(px(0.0))
                                     .right(px(0.0))
                                     .h(px(2.0))
-                                    .bg(|| -> Hsla {
-                                        rgb(if dark() { 0x79aaef } else { 0x3267b0 }).into()
-                                    })
+                                    .bg(indicator)
                             },
                         ))
                 },
@@ -2060,19 +2210,32 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
             },
         ))
         .child(dynamic(move || {
-            if !is_quick_panel(&quick.panel.get()) {
+            let mode = quick.panel.get();
+            if !is_quick_panel(&mode) {
                 return None;
             }
-            panel(quick.clone()).map(|panel| {
+            let palette = quick_panel(quick.clone(), mode == "files");
+            Some(if zen.get() {
                 view()
                     .absolute()
-                    .top(px(TITLE_BAR_HEIGHT + 8.0))
+                    .top(px(6.0))
                     .left(px(0.0))
                     .right(px(0.0))
                     .z_index(1)
                     .flex_row()
                     .justify_center()
-                    .child(view().w(px(560.0)).max_w(relative(1.0)).child(panel))
+                    .child(view().w(px(460.0)).max_w(relative(1.0)).child(palette))
+                    .into_element()
+            } else {
+                view()
+                    .absolute()
+                    .top(px(6.0))
+                    .left(px(TITLE_SEARCH_LEFT))
+                    .z_index(1)
+                    .w(quick.title_search_width())
+                    .window_drag(false)
+                    .child(palette)
+                    .into_element()
             })
         }))
 }
@@ -2154,8 +2317,7 @@ fn folder(s: Rc<Shell>) -> AnyElement {
                     move |row, _| {
                         let (path, depth, directory) = row.get_untracked();
                         let label = format!(
-                            "{}{}{}",
-                            "  ".repeat(depth),
+                            "{}{}",
                             if directory {
                                 if expanded.contains(&path) {
                                     "▾ "
@@ -2168,7 +2330,27 @@ fn folder(s: Rc<Shell>) -> AnyElement {
                             path.file_name().unwrap_or_default().to_string_lossy()
                         );
                         let s = s.clone();
+                        let highlighted = s.clone();
+                        let row_path = path.clone();
                         nsh_base::button()
+                            .w_full()
+                            .justify_start()
+                            .pl(px(8.0 + depth as f32 * 14.0))
+                            .bg(move || {
+                                if highlighted.current().is_some_and(|d| {
+                                    d.path.with(|p| {
+                                        p.as_ref().is_some_and(|current| {
+                                            current
+                                                .as_os_str()
+                                                .eq_ignore_ascii_case(row_path.as_os_str())
+                                        })
+                                    })
+                                }) {
+                                    selected_surface()
+                                } else {
+                                    frame()
+                                }
+                            })
                             .child(text(label))
                             .on_press(move |_: &()| {
                                 if directory {
@@ -2189,134 +2371,103 @@ fn folder(s: Rc<Shell>) -> AnyElement {
         .into_element()
 }
 
-fn panel(s: Rc<Shell>) -> Option<AnyElement> {
-    let mode = s.panel.get();
-    if mode.is_empty() {
-        return None;
-    }
-    let query = if mode == "commands" || mode == "files" {
-        s.palette_query
+fn quick_panel(s: Rc<Shell>, files: bool) -> impl IntoElement {
+    let query = s.palette_query;
+    let markdown = if !files {
+        s.current()
+            .map(|doc| crate::rich_commands::availability_all(&doc.gate, &doc.source, true))
     } else {
-        s.query
+        None
     };
-    let replacement = s.replacement;
-    let close = s.clone();
-    let mut panel = view().p(px(8.0)).gap(px(8.0)).bg(frame).child(
-        nsh_base::button()
-            .child(text("关闭面板（Esc）"))
-            .on_press(move |_: &()| close.close_panel()),
-    );
-    if mode == "settings" {
-        return Some(
-            panel
-                .child(text("外观"))
-                .child(button("浅色", s.clone(), "texzi.appearance.light"))
-                .child(button("深色", s, "texzi.appearance.dark"))
-                .into_element(),
-        );
-    }
-    if mode == "commands" || mode == "files" {
-        let markdown = if mode == "commands" {
-            s.current()
-                .map(|doc| crate::rich_commands::availability_all(&doc.gate, &doc.source, true))
-        } else {
-            None
-        };
-        let mut quick_paths: Vec<PathBuf> = vec![];
-        let entries = if mode == "commands" {
-            crate::native_menu::commands()
-                .into_iter()
-                .filter_map(|c| {
-                    // One immutable source projection per palette build, not
-                    // one full parse for every Markdown command row.
-                    let blocked = markdown
-                        .as_ref()
-                        .and_then(|results| results.get(&c.id))
-                        .map_or_else(|| s.blocked(&c.id).is_some(), Result::is_err);
-                    if blocked {
-                        return None;
-                    }
-                    let keys = if c.keys.is_empty() {
-                        String::new()
-                    } else {
-                        format!("    {}", c.keys.join(" / "))
-                    };
-                    Some(
-                        nsh_base::CommandItem::new(c.id.clone(), format!("{}{keys}", c.name))
-                            .keywords([c.id])
-                            .group(c.group),
-                    )
-                })
-                .collect::<Vec<_>>()
-        } else {
-            let docs = s.docs.get();
-            let mut known = docs.iter().filter_map(|d| d.path.get()).collect::<Vec<_>>();
-            let mut entries = docs
+    let mut quick_paths: Vec<PathBuf> = vec![];
+    let entries = if !files {
+        crate::native_menu::commands()
+            .into_iter()
+            .filter_map(|c| {
+                // One immutable source projection per palette build, not
+                // one full parse for every Markdown command row.
+                let blocked = markdown
+                    .as_ref()
+                    .and_then(|results| results.get(&c.id))
+                    .map_or_else(|| s.blocked(&c.id).is_some(), Result::is_err);
+                if blocked {
+                    return None;
+                }
+                let keys = if c.keys.is_empty() {
+                    String::new()
+                } else {
+                    format!("    {}", c.keys.join(" / "))
+                };
+                Some(
+                    nsh_base::CommandItem::new(c.id.clone(), format!("{}{keys}", c.name))
+                        .keywords([c.id])
+                        .group(c.group),
+                )
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let docs = s.docs.get();
+        let mut known = docs.iter().filter_map(|d| d.path.get()).collect::<Vec<_>>();
+        let mut entries = docs
+            .iter()
+            .map(|d| nsh_base::CommandItem::new(format!("file:{}", d.id), d.name()).group("已打开"))
+            .collect::<Vec<_>>();
+        let mut add = |path: PathBuf, display: String, group: &'static str| {
+            if known
                 .iter()
-                .map(|d| {
-                    nsh_base::CommandItem::new(format!("file:{}", d.id), d.name()).group("已打开")
-                })
-                .collect::<Vec<_>>();
-            let mut add = |path: PathBuf, display: String, group: &'static str| {
-                if known
-                    .iter()
-                    .any(|old| old.as_os_str().eq_ignore_ascii_case(path.as_os_str()))
-                {
-                    return;
-                }
-                known.push(path.clone());
-                let id = format!("quick:{}", quick_paths.len());
-                let keyword = path.to_string_lossy().into_owned();
-                quick_paths.push(path);
-                entries.push(
-                    nsh_base::CommandItem::new(id, display)
-                        .keywords([keyword])
-                        .group(group),
-                );
-            };
-            for path in s.recent.get() {
-                add(path.clone(), path.display().to_string(), "最近打开");
+                .any(|old| old.as_os_str().eq_ignore_ascii_case(path.as_os_str()))
+            {
+                return;
             }
-            if s.quick_origin.get() == s.root.get() {
-                for file in s.quick_files.get() {
-                    add(file.path, file.display, "当前文件夹");
-                }
-            }
-            entries
+            known.push(path.clone());
+            let id = format!("quick:{}", quick_paths.len());
+            let keyword = path.to_string_lossy().into_owned();
+            quick_paths.push(path);
+            entries.push(
+                nsh_base::CommandItem::new(id, display)
+                    .keywords([keyword])
+                    .group(group),
+            );
         };
-        let run = s.clone();
-        let cancel = s.clone();
-        let search = s.clone();
-        let files = mode == "files";
-        if files {
-            let notice = s.quick_notice;
-            let scanning = s.quick_scanning;
-            let stop = s.clone();
-            panel = panel
-                .child(text(move || notice.get()))
-                .child(when(scanning, move || {
-                    let stop = stop.clone();
-                    nsh_base::button()
-                        .child(text("取消目录扫描"))
-                        .on_press(move |_: &()| stop.cancel_quick(true))
-                }));
+        for path in s.recent.get() {
+            add(path.clone(), path.display().to_string(), "最近打开");
         }
-        panel = panel.child(
+        if s.quick_origin.get() == s.root.get() {
+            for file in s.quick_files.get() {
+                add(file.path, file.display, "当前文件夹");
+            }
+        }
+        entries
+    };
+    let run = s.clone();
+    let cancel = s.clone();
+    let search = s.clone();
+    let notice = s.quick_notice;
+    let scanning = s.quick_scanning;
+    let stop = s.clone();
+    view()
+        .bg(frame)
+        .border(px(1.0))
+        .border_color(divider)
+        .child(
             nsh_base::command()
                 .items(entries)
                 .query(move || Some(query.get().into()))
                 .placeholder(if files {
-                    "搜索已打开、最近和当前文件夹；输入 > 查找命令"
+                    "搜索文件或命令…（> 查找命令）"
                 } else {
                     "搜索命令名称或 ID"
                 })
                 .auto_focus(true)
+                .search_class("h-8")
+                .search_accessibility_label("搜索文件或命令")
                 .list_class("max-h-64")
                 .on_query_change(move |q: &SharedString| {
-                    query.set(q.to_string());
-                    if files && q.starts_with('>') {
-                        query.set(String::new());
+                    if let Some(command) = files.then(|| q.strip_prefix('>')).flatten() {
+                        query.set(command.trim_start().to_owned());
                         search.panel.set("commands".into());
+                    } else {
+                        query.set(q.to_string());
                     }
                 })
                 .on_select(move |id: &SharedString| {
@@ -2344,8 +2495,40 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                     }
                 })
                 .on_cancel(move |_: &()| cancel.close_panel()),
-        );
-    } else if mode == "groups" {
+        )
+        .child(when(
+            move || files,
+            move || {
+                let stop = stop.clone();
+                view()
+                    .p(px(8.0))
+                    .border_t(px(1.0))
+                    .border_color(divider)
+                    .child(text(move || notice.get()))
+                    .child(when(scanning, move || {
+                        let stop = stop.clone();
+                        nsh_base::button()
+                            .child(text("取消目录扫描"))
+                            .on_press(move |_: &()| stop.cancel_quick(true))
+                    }))
+            },
+        ))
+}
+
+fn panel(s: Rc<Shell>) -> Option<AnyElement> {
+    let mode = s.panel.get();
+    if mode.is_empty() || is_quick_panel(&mode) {
+        return None;
+    }
+    let query = s.query;
+    let replacement = s.replacement;
+    let close = s.clone();
+    let mut panel = view().p(px(8.0)).gap(px(8.0)).bg(frame).child(
+        nsh_base::button()
+            .child(text("关闭面板（Esc）"))
+            .on_press(move |_: &()| close.close_panel()),
+    );
+    if mode == "groups" {
         let first = s.clone();
         let second = s.clone();
         let exists = s.split.get().is_some();

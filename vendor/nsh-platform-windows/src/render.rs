@@ -1501,6 +1501,7 @@ pub(crate) fn frame(surface: &Rc<Surface>) -> bool {
                 device_lost(surface);
                 return false;
             }
+            surface.presentation.set(surface.presentation.get().wrapping_add(1));
             if let (Some(fps), Some(painted)) = (&fps, painted) {
                 fps.painted(painted, shown.elapsed());
             }
