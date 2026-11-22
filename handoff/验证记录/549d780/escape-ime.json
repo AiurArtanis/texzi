@@ -1,0 +1,11 @@
+{
+  "commit": "549d7802169d9d54f3efd8f266c80aa29d4b45e7",
+  "exe_sha256": "1ACE5ED4C93656B061EBDB3F2C2AE60C535346C436917B8D70E3B4434824EF73",
+  "run": "D:\\Work\\texzi\\evidence\\steamy\\549d780-paladin\\ime-round",
+  "preedit_observed": true,
+  "cancellation_observed": true,
+  "driver_exit": 0,
+  "app_exit": 0,
+  "panel_after_first": true,
+  "panel_after_second": false
+}

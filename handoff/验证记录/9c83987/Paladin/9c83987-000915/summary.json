@@ -1,0 +1,81 @@
+{
+  "commit": "9c839871e94e864ffc9b0c07ba35716db2097a37",
+  "exe_sha256": "C8ABD1A3F95CCFDFCF61C27AFA859052F0EBD1BE0BDC62838B96C06A99AF4422",
+  "run": "D:\\Work\\texzi\\evidence\\v0.2-markdown-anchor\\steamy-9c83987-000914\\9c83987-000915",
+  "layout": {
+    "origin": {
+      "X": 38,
+      "Y": 27
+    },
+    "width": 1748,
+    "hwnd": 24446498,
+    "pid": 413812,
+    "maximized": false,
+    "height": 755,
+    "dpi": 192
+  },
+  "markdown_rich_dip": {
+    "name": "切换到源码",
+    "x": 826.0,
+    "y": 94.0,
+    "width": 32.0,
+    "height": 28.0
+  },
+  "markdown_source_dip": {
+    "name": "返回所见即所得",
+    "x": 826.0,
+    "y": 94.0,
+    "width": 32.0,
+    "height": 28.0
+  },
+  "markdown_file_unchanged": true,
+  "frames": [
+    {
+      "file": "03-markdown-restored.png",
+      "paragraph": true,
+      "heading": true
+    },
+    {
+      "file": "03-markdown-rich.png",
+      "paragraph": true,
+      "heading": true
+    },
+    {
+      "file": "03-markdown-source.png",
+      "paragraph": true,
+      "heading": true
+    }
+  ],
+  "round_trip_caret": "行 43，列 25",
+  "direct_input_saved": true,
+  "dirty_survived_switch": true,
+  "format_popup_and_dialog": true,
+  "format_palette_and_dialog": true,
+  "driver_exit": 0,
+  "application": {
+    "forced": false,
+    "failure": null,
+    "clipboard_access": false,
+    "pid": 413812,
+    "hwnd": 24446498,
+    "residual": false,
+    "exit": 0,
+    "status": "PASS"
+  },
+  "mode_trace": [
+    "[INFO texzi_app::app_shell] TEXZI_MODE_VIEW phase=before rich=true position=Some(\"行 43，列 25\") scroll=Some(960.0) caret_top=Some(76.0)",
+    "[INFO texzi_app::app_shell] TEXZI_MODE_VIEW phase=after rich=false position=Some(\"行 43，列 25\") scroll=Some(932.0) caret_top=Some(76.0)",
+    "[INFO texzi_app::app_shell] TEXZI_MODE_VIEW phase=before rich=false position=Some(\"行 43，列 25\") scroll=Some(932.0) caret_top=Some(76.0)",
+    "[INFO texzi_app::app_shell] TEXZI_MODE_VIEW phase=after rich=true position=Some(\"行 43，列 25\") scroll=Some(960.0) caret_top=Some(76.0)",
+    "[INFO texzi_app::app_shell] TEXZI_MODE_VIEW phase=before rich=true position=Some(\"行 43，列 34\") scroll=Some(960.0) caret_top=Some(76.0)",
+    "[INFO texzi_app::app_shell] TEXZI_MODE_VIEW phase=after rich=false position=Some(\"行 43，列 34\") scroll=Some(932.0) caret_top=Some(76.0)",
+    "[INFO texzi_app::app_shell] TEXZI_MODE_VIEW phase=before rich=false position=Some(\"行 43，列 34\") scroll=Some(932.0) caret_top=Some(76.0)",
+    "[INFO texzi_app::app_shell] TEXZI_MODE_VIEW phase=after rich=true position=Some(\"行 43，列 34\") scroll=Some(960.0) caret_top=Some(76.0)"
+  ],
+  "first_round_trip_caret_top_dip": [
+    76.0,
+    76.0,
+    76.0,
+    76.0
+  ]
+}

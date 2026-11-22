@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>texzi · 交互原型</title>
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="reviewbar">
+  <div class="review-brand"><span class="brand-dot"></span><strong>texzi</strong><span>设计审阅 · v1.0</span></div>
+  <nav class="scene-nav" aria-label="原型场景">
+    <button data-scene="main" class="selected">主界面</button>
+    <button data-scene="split">分屏编辑</button>
+    <button data-scene="settings">设置</button>
+    <button id="scenario-trigger">状态演示 <span>⌄</span></button>
+  </nav>
+  <button class="review-help" id="prototype-help">原型说明</button>
+</div>
+<main id="app" aria-label="texzi 编辑器原型">
+  <header class="titlebar">
+    <div class="app-icon" aria-hidden="true"></div>
+    <nav id="menubar" aria-label="应用菜单"></nav>
+    <button class="quick-open" id="quick-open"><span class="search-icon"></span><span>搜索文件或命令</span><kbd>Ctrl P</kbd></button>
+    <div class="drag-space" title="原生产品中的窗口拖动区域"></div>
+    <div class="window-actions"><button id="minimize" aria-label="最小化演示">−</button><button id="maximize" aria-label="最大化原型">□</button><button id="close-window" aria-label="关闭演示窗口">×</button></div>
+  </header>
+  <div class="workbench">
+    <aside class="activitybar" aria-label="主要功能">
+      <button id="activity-files" class="active" title="资源管理器" aria-label="资源管理器"></button>
+      <button id="activity-search" title="文件夹搜索" aria-label="文件夹搜索"></button>
+      <div class="activity-spacer"></div>
+      <button id="activity-settings" title="设置" aria-label="设置"></button>
+    </aside>
+    <aside id="sidebar" aria-label="侧栏"></aside>
+    <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="调整侧栏宽度"></div>
+    <section id="workspace" aria-label="编辑区域"></section>
+  </div>
+  <footer class="statusbar">
+    <div id="status-left"></div>
+    <div id="status-right"></div>
+  </footer>
+  <div id="zen-exit"><button id="exit-zen">退出 Zen <kbd>Esc Esc</kbd></button></div>
+</main>
+<div id="minimized-state" hidden><p>演示窗口已最小化</p><button id="restore-window" class="primary">恢复 texzi</button></div>
+<div id="menu-root"></div>
+<div id="dialog-root"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<input id="file-input" type="file" accept=".txt,.md,.markdown,.json,.js,.ts,.css,.html,.py,.rs,.log,.csv,.xml,.yml,.yaml" multiple hidden>
+<input id="folder-input" type="file" webkitdirectory multiple hidden>
+<script src="app.js"></script>
+</body>
+</html>

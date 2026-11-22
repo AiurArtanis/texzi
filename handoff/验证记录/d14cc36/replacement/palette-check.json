@@ -1,0 +1,15 @@
+{
+  "actual": [
+    "PALETTENEW target"
+  ],
+  "control_expected": "STEAMYOLD control",
+  "entry": "palette",
+  "control_actual": [
+    "STEAMYOLD control"
+  ],
+  "pass": true,
+  "expected": "PALETTENEW target",
+  "before": [
+    "STEAMYOLD target"
+  ]
+}

@@ -1,0 +1,834 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-11-15",
+  "note": "Document references are not automatically runtime-verified. Fixed source reviews and native tests have different statuses.",
+  "sources": [
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/browser/coreCommands.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/browser/coreCommands.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/browser/editorExtensions.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/browser/editorExtensions.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/wordOperations/browser/wordOperations.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/contrib/wordOperations/browser/wordOperations.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/linesOperations/browser/linesOperations.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/contrib/linesOperations/browser/linesOperations.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/multicursor/browser/multicursor.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/contrib/multicursor/browser/multicursor.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/cursorUndo/browser/cursorUndo.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/contrib/cursorUndo/browser/cursorUndo.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/clipboard/browser/clipboard.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/contrib/clipboard/browser/clipboard.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/lineSelection/browser/lineSelection.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/contrib/lineSelection/browser/lineSelection.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/find/browser/findController.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/contrib/find/browser/findController.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/find/browser/findModel.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/contrib/find/browser/findModel.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/files/browser/fileCommands.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/files/browser/fileCommands.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/files/browser/fileConstants.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/files/browser/fileConstants.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/actions/workspaceActions.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/browser/actions/workspaceActions.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/parts/editor/editorCommands.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/browser/parts/editor/editorCommands.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/parts/editor/editorActions.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/browser/parts/editor/editorActions.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/actions/windowActions.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/browser/actions/windowActions.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/electron-browser/actions/windowActions.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/electron-browser/actions/windowActions.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/actions/layoutActions.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/browser/actions/layoutActions.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/preferences/browser/preferences.contribution.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/preferences/browser/preferences.contribution.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/codeEditor/browser/quickaccess/gotoLineQuickAccess.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/codeEditor/browser/quickaccess/gotoLineQuickAccess.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/actions/quickAccessActions.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/browser/actions/quickAccessActions.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/codeEditor/browser/toggleWordWrap.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/codeEditor/browser/toggleWordWrap.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/search/browser/search.contribution.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/search/browser/search.contribution.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://code.visualstudio.com/updates/v1_146",
+      "title": "VS Code 1.146 Stable（2026-11-11，下载版本1.146.0）",
+      "kind": "official_release",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md",
+        "docs/SETTINGS.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://api.github.com/repos/microsoft/vscode/git/ref/tags/1.146.0",
+      "title": "1.146.0 tag指向固定commit",
+      "kind": "official_tag",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://code.visualstudio.com/docs/reference/default-keybindings",
+      "title": "官方Windows默认快捷键参考（动态页面，不能单独证明固定版本）",
+      "kind": "official_reference",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://code.visualstudio.com/shortcuts/keyboard-shortcuts-windows.pdf",
+      "title": "官方Windows快捷键PDF（动态文件）",
+      "kind": "official_reference",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/workbench.zenMode.contribution.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/browser/workbench.zenMode.contribution.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/files/electron-browser/fileActions.contribution.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/files/electron-browser/fileActions.contribution.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/contrib/toggleTabFocusMode/browser/toggleTabFocusMode.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/contrib/toggleTabFocusMode/browser/toggleTabFocusMode.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/browser/parts/editor/editorStatus.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/browser/parts/editor/editorStatus.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/search/browser/searchActionsFind.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/search/browser/searchActionsFind.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/workbench/contrib/search/common/constants.ts",
+      "title": "VS Code 1.146.0 src/vs/workbench/contrib/search/common/constants.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/common/config/editorOptions.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/common/config/editorOptions.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/browser/view/viewController.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/browser/view/viewController.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/blob/69047191fc427f2f92828279aae1d90d8eeda7ab/src/vs/editor/browser/controller/mouseHandler.ts",
+      "title": "VS Code 1.146.0 src/vs/editor/browser/controller/mouseHandler.ts",
+      "kind": "pinned_source",
+      "verification": "source_reviewed",
+      "documents": [
+        "docs/COMMANDS.md"
+      ]
+    },
+    {
+      "url": "https://nsh.dev/elements/editor/",
+      "title": "NSH Editor 官方文档",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/PRD.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://nsh.dev/elements/text-view/",
+      "title": "NSH TextView 官方文档",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/PRD.md"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/vscode/tree/69047191fc427f2f92828279aae1d90d8eeda7ab",
+      "title": "VS Code 基线源码",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/PRD.md",
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/tsf/text-stores",
+      "title": "Windows Text Services Framework",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/PRD.md"
+      ]
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/hidpi/high-dpi-reference",
+      "title": "Windows High DPI Reference",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/PRD.md",
+        "docs/UI_SPEC.md"
+      ]
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/apps/design/accessibility/accessibility",
+      "title": "Windows accessibility guidance",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/UI_SPEC.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/v0.1.12/crates/core/src/markdown.rs",
+      "title": "Quiet.md v0.1.12 Markdown解析/保存",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/SETTINGS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/v0.1.12/docs/ARCHITECTURE.md",
+      "title": "Quiet.md v0.1.12架构",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/SETTINGS.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/releases/tag/v0.5.1",
+      "title": "NSH v0.5.1 发布",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/HANDOFF.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/commit/224d9a795c7ac9d10d75750de9351adac5549675",
+      "title": "固定 commit",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/HANDOFF.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://nsh.dev/docs/windows/",
+      "title": "Windows 后端及最低系统",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/PERFORMANCE_PLAN.md",
+        "docs/HANDOFF.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/docs/dev/windows.md",
+      "title": "固定 Windows 后端说明",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/HANDOFF.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/crates/nsh-platform-windows/Cargo.toml",
+      "title": "固定平台依赖及 feature",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/Cargo.toml",
+      "title": "固定 Cargo.toml",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/docs/dev/rich-editor.md",
+      "title": "RichEditor 说明",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/docs/dev/editor.md",
+      "title": "Editor 固定设计说明",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/crates/nsh-base/src/editor/buffer.rs",
+      "title": "Editor buffer",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/crates/nsh-base/src/rich_editor/formats/markdown.rs",
+      "title": "Markdown 格式实现",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/crates/nsh-platform-windows/src/text_input.rs",
+      "title": "Windows 输入桥接",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://nsh.dev/elements/dock/",
+      "title": "Dock",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://nsh.dev/modules/nsh-desktop/",
+      "title": "桌面窗口 API",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/crates/nsh-base/src/editor/state.rs",
+      "title": "state.rs",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/crates/nsh-base/src/rich_editor/view/session.rs",
+      "title": "session.rs",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/crates/nsh-base/src/rich_editor/view/render.rs",
+      "title": "render.rs",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://github.com/longbridge/nsh/blob/v0.5.1/crates/nsh-base/src/rich_editor/view/controller.rs",
+      "title": "controller.rs",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://www.pcre.org/current/doc/html/pcre2pattern.html",
+      "title": "PCRE2 pattern",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://www.pcre.org/current/doc/html/pcre2api.html",
+      "title": "PCRE2 API",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/PERFORMANCE_PLAN.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew",
+      "title": "ReplaceFileW",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers",
+      "title": "FlushFileBuffers",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw",
+      "title": "ReadDirectoryChangesW",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://nsh.dev/elements/resizable/",
+      "title": "Resizable",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md"
+      ]
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/hidpi/high-dpi-desktop-application-development-on-windows",
+      "title": "微软高 DPI 指南",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://nsh.dev/docs/native-components/",
+      "title": "NSH Native Components",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/HANDOFF.md"
+      ]
+    },
+    {
+      "url": "https://nsh.dev/docs/performance-report/",
+      "title": "官方性能报告及环境",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/PERFORMANCE_PLAN.md"
+      ]
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps",
+      "title": "微软 QPC 指南",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/PERFORMANCE_PLAN.md"
+      ]
+    },
+    {
+      "url": "https://github.com/GameTechDev/PresentMon",
+      "title": "PresentMon 官方仓库",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/PERFORMANCE_PLAN.md"
+      ]
+    },
+    {
+      "url": "https://example.com",
+      "title": "标题",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/ACCEPTANCE.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/tree/874763d2c9fd19204db727ddc0bcc6f5742e8970",
+      "title": "quiet.md 0.1.12 固定源码",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/874763d2c9fd19204db727ddc0bcc6f5742e8970/README.md",
+      "title": "实际功能、平台、版本记录与许可例外",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/874763d2c9fd19204db727ddc0bcc6f5742e8970/src/local_files.rs",
+      "title": "本地Markdown打开、导入与移除语义",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/874763d2c9fd19204db727ddc0bcc6f5742e8970/docs/ARCHITECTURE.md",
+      "title": "块模型、Core、历史与虚拟化",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/874763d2c9fd19204db727ddc0bcc6f5742e8970/crates/core/src/editor/core.rs",
+      "title": "Snapshot、checkpoint、undo、redo",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/874763d2c9fd19204db727ddc0bcc6f5742e8970/crates/core/Cargo.toml",
+      "title": "fdl_core版本与依赖声明",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/874763d2c9fd19204db727ddc0bcc6f5742e8970/crates/core/src/markdown.rs",
+      "title": "write_file_with、preserve、reads_as及canonical回退",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/874763d2c9fd19204db727ddc0bcc6f5742e8970/docs/PERFORMANCE.md",
+      "title": "原始性能环境、版本、指标边界与结果",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/874763d2c9fd19204db727ddc0bcc6f5742e8970/LICENSE",
+      "title": "MIT代码许可",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/874763d2c9fd19204db727ddc0bcc6f5742e8970/assets/icons/LICENSE-nucleo",
+      "title": "Nucleo资源许可",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/REFERENCE_RESEARCH.md"
+      ]
+    },
+    {
+      "url": "https://nsh.dev/elements/rich-editor/",
+      "title": "RichEditor文档",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md",
+      "title": "项目官方说明",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/releases/tag/v0.1.12",
+      "title": "v0.1.12发布",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md/blob/v0.1.12/docs/PERFORMANCE.md",
+      "title": "官方性能说明",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/SOURCES.md"
+      ]
+    },
+    {
+      "url": "https://github.com/s1dashu/quiet-md#license",
+      "title": "quiet.md许可说明",
+      "kind": "document_reference",
+      "verification": "referenced_in_spec",
+      "documents": [
+        "docs/SOURCES.md"
+      ]
+    }
+  ]
+}

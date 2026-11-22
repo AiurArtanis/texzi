@@ -1,0 +1,20 @@
+[
+  {
+    "mtime": "2026-11-21T16:09:36.8953594Z",
+    "length": 2689,
+    "path": "notes.md",
+    "hash": "B0D0DD371570EED2E6CA4B99C506F29D9A67DEF3BA2CE193B91A330D486025FE"
+  },
+  {
+    "mtime": "2026-11-21T16:09:21.0990720Z",
+    "length": 33,
+    "path": "report.txt",
+    "hash": "36CDEC2122C32A1C38F47D3A56D16E3BF2D3FA808FC351D4ECC65951D25B53EE"
+  },
+  {
+    "mtime": "2026-11-21T16:09:18.2048785Z",
+    "length": 36,
+    "path": "untouched.txt",
+    "hash": "4E879BAD1302C1D7D952F68E8171C8C548F4E061D157B0BFC6ECF85A331BBA44"
+  }
+]

@@ -1,0 +1,58 @@
+[
+  {
+    "round": "replacement",
+    "before": "menu-esc-before.png",
+    "after": "menu-esc-after-first.png",
+    "focus": "查找文字输入框，点击后输入的探针文字和光标可见",
+    "panel_pixels_sampled": 22120,
+    "changed_pixels": 18
+  },
+  {
+    "round": "escape-direct",
+    "before": "menu-direct-panel.png",
+    "after": "menu-direct-after-first.png",
+    "focus": "面板打开后的默认焦点，未切换焦点",
+    "panel_pixels_sampled": 22120,
+    "changed_pixels": 396
+  },
+  {
+    "round": "replacement",
+    "before": "palette-esc-before.png",
+    "after": "palette-esc-after-first.png",
+    "focus": "查找文字输入框，点击后输入的探针文字和光标可见",
+    "panel_pixels_sampled": 22120,
+    "changed_pixels": 18
+  },
+  {
+    "round": "escape-direct",
+    "before": "palette-direct-panel.png",
+    "after": "palette-direct-after-first.png",
+    "focus": "面板打开后的默认焦点，未切换焦点",
+    "panel_pixels_sampled": 22120,
+    "changed_pixels": 396
+  },
+  {
+    "round": "replacement",
+    "before": "hotkey-esc-before.png",
+    "after": "hotkey-esc-after-first.png",
+    "focus": "查找文字输入框，点击后输入的探针文字和光标可见",
+    "panel_pixels_sampled": 22120,
+    "changed_pixels": 18
+  },
+  {
+    "round": "escape-direct",
+    "before": "hotkey-direct-panel.png",
+    "after": "hotkey-direct-after-first.png",
+    "focus": "面板打开后的默认焦点，未切换焦点",
+    "panel_pixels_sampled": 22120,
+    "changed_pixels": 18
+  },
+  {
+    "round": "escape-direct",
+    "before": "editor-focus-before.png",
+    "after": "editor-focus-after-first.png",
+    "focus": "点击目标文档正文，面板仍显示",
+    "panel_pixels_sampled": 22120,
+    "changed_pixels": 0
+  }
+]

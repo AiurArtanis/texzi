@@ -1,0 +1,90 @@
+diff --git a/D:/Work/texzi/.tx00-tools/cargo/git/checkouts/nsh-9218b667fc8c8325/224d9a7/crates/nsh-core/src/lib.rs b/D:/Work/texzi/evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-core/src/lib.rs
+index 572f805..f8115e7 100644
+--- a/D:/Work/texzi/.tx00-tools/cargo/git/checkouts/nsh-9218b667fc8c8325/224d9a7/crates/nsh-core/src/lib.rs
++++ b/D:/Work/texzi/evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-core/src/lib.rs
+@@ -56,6 +56,7 @@ pub mod runtime_data;
+ pub mod scroll;
+ pub mod selection;
+ pub mod shader;
++pub mod texzi_first_frame_probe;
+ pub mod shape;
+ pub mod single_instance;
+ pub mod speech;
+diff --git a/D:/Work/texzi/.tx00-tools/cargo/git/checkouts/nsh-9218b667fc8c8325/224d9a7/crates/nsh-core/src/core/mod.rs b/D:/Work/texzi/evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-core/src/core/mod.rs
+index 79eb466..3275471 100644
+--- a/D:/Work/texzi/.tx00-tools/cargo/git/checkouts/nsh-9218b667fc8c8325/224d9a7/crates/nsh-core/src/core/mod.rs
++++ b/D:/Work/texzi/evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-core/src/core/mod.rs
+@@ -2980,7 +2980,9 @@ impl<M: TextEngine> Core<M> {
+             self.sync_scrollbars();
+         }
+         // The views' patches and the views to make first.
++        crate::texzi_first_frame_probe::mark("core_render_begin", 0, 0);
+         self.render_components();
++        crate::texzi_first_frame_probe::mark("core_render_end", 0, 0);
+         self.prepare_reveals();
+         // The focus reported since, after the components made and released
+         // what they did: one change of the chain, the views both chains
+@@ -3021,6 +3023,7 @@ impl<M: TextEngine> Core<M> {
+         self.flush_dirty();
+         let relayout = self.needs_layout;
+         if relayout {
++            crate::texzi_first_frame_probe::mark("layout_begin", 0, 0);
+             self.needs_layout = false;
+             let settling = std::mem::take(&mut self.resize_settling);
+             let anchors = if settling || self.measure_cache.resizing.is_some() {
+@@ -3036,7 +3039,10 @@ impl<M: TextEngine> Core<M> {
+             let relaid = self.relayout_boundaries();
+             // Only walk the main tree when it was laid out again (a change
+             // inside a list cell leaves it untouched).
+-            if self.layout_main() {
++            crate::texzi_first_frame_probe::mark("layout_main_begin", 0, 0);
++            let main_layout = self.layout_main();
++            crate::texzi_first_frame_probe::mark("layout_main_end", u64::from(main_layout), 0);
++            if main_layout {
+                 let root = self.root;
+                 let children = std::mem::take(&mut self.nodes[root as usize].children);
+                 for &child in &children {
+@@ -3053,6 +3059,7 @@ impl<M: TextEngine> Core<M> {
+                 self.emit_frames(key);
+             }
+             self.keep_resize_anchors(anchors);
++            crate::texzi_first_frame_probe::mark("layout_end", 0, 0);
+         }
+         // Placeholders sized again are laid out again, in another round,
+         // before culling looks at them.
+@@ -3082,7 +3089,10 @@ impl<M: TextEngine> Core<M> {
+         if !self.fitted_pending.is_empty() {
+             self.send_fitted();
+         }
+-        self.flush_text();
++        {
++            let _span = crate::texzi_first_frame_probe::span("core_flush_text");
++            self.flush_text();
++        }
+         // What this turn's status bar settings add up to, once.
+         self.sync_status_bars();
+         if let Some(config) = self.components.status_bars.take_changed() {
+diff --git a/D:/Work/texzi/.tx00-tools/cargo/git/checkouts/nsh-9218b667fc8c8325/224d9a7/crates/nsh-engine/src/lib.rs b/D:/Work/texzi/evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-engine/src/lib.rs
+index fd577a4..ed7f1a7 100644
+--- a/D:/Work/texzi/.tx00-tools/cargo/git/checkouts/nsh-9218b667fc8c8325/224d9a7/crates/nsh-engine/src/lib.rs
++++ b/D:/Work/texzi/evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-engine/src/lib.rs
+@@ -3317,6 +3317,7 @@ impl<M: TextEngine> State<M> {
+     }
+ 
+     fn commit(&mut self, script: Option<&Script>) -> Option<MountBatch> {
++        nsh_core::texzi_first_frame_probe::mark("engine_commit_begin", 0, 0);
+         let start = Instant::now();
+         let mut merged: Option<MountBatch> = None;
+         let mut commits = 0;
+@@ -3494,6 +3495,11 @@ impl<M: TextEngine> State<M> {
+                 self.core.node_count(),
+             );
+         }
++        nsh_core::texzi_first_frame_probe::mark(
++            "engine_commit_end",
++            merged.as_ref().map_or(0, |batch| batch.items.len() as u64),
++            self.core.node_count() as u64,
++        );
+         merged
+     }
+ }

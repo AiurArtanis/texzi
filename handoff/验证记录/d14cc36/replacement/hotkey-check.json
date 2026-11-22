@@ -1,0 +1,15 @@
+{
+  "actual": [
+    "HOTKEYNEW target"
+  ],
+  "control_expected": "STEAMYOLD control",
+  "entry": "hotkey",
+  "control_actual": [
+    "STEAMYOLD control"
+  ],
+  "pass": true,
+  "expected": "HOTKEYNEW target",
+  "before": [
+    "STEAMYOLD target"
+  ]
+}

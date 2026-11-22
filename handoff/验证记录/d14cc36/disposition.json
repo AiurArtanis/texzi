@@ -1,0 +1,16 @@
+{
+  "menu_groups": {
+    "编辑": 8,
+    "文件": 6,
+    "外观": 4
+  },
+  "total": 120,
+  "menu": 18,
+  "commit": "d14cc36",
+  "menu_missing_from_search": [],
+  "search_only": 90,
+  "pass": true,
+  "differences": [],
+  "disposition_sha256": "117A29EF82616D56174E58312460CE6FDAFF2FC2C5163D3344FB36BDC6535074",
+  "removed": 12
+}

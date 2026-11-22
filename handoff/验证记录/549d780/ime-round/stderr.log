@@ -1,0 +1,74 @@
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x100 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO texzi_app::app_shell] TX_SHELL_COMMAND id=texzi.find.replaceOpen modal=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x200 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x100 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x713 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_WAKE source=invalidate
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_WAKE source=caret
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_WAKE source=invalidate
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::text_input] TX04_IME_NATIVE_NOTES changed=false selection=false preedit_note=true ending=false preedit_utf16=1
+[INFO nsh_platform_windows::text_input] TX04_IME_NATIVE_EVENT composing=true preedit_utf16=1
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_WAKE source=invalidate
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_WAKE source=caret
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_WAKE source=invalidate
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::text_input] TX04_IME_NATIVE_NOTES changed=false selection=false preedit_note=true ending=false preedit_utf16=2
+[INFO nsh_platform_windows::text_input] TX04_IME_NATIVE_EVENT composing=true preedit_utf16=2
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_WAKE source=invalidate
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_WAKE source=caret
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x714 composing=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::text_input] TX04_IME_NATIVE_NOTES changed=true selection=true preedit_note=true ending=true preedit_utf16=0
+[INFO nsh_platform_windows::text_input] TX04_IME_NATIVE_EVENT composing=false preedit_utf16=0
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x200 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x100 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x200 composing=false

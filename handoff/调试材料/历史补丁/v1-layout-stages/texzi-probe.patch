@@ -1,0 +1,189 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 8b659cd..f9350cf 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1343,7 +1343,6 @@ dependencies = [
+ [[package]]
+ name = "nsh-core"
+ version = "0.5.1"
+-source = "git+https://github.com/longbridge/nsh?rev=224d9a795c7ac9d10d75750de9351adac5549675#224d9a795c7ac9d10d75750de9351adac5549675"
+ dependencies = [
+  "cap-std",
+  "crc32fast",
+@@ -1383,7 +1382,6 @@ dependencies = [
+ [[package]]
+ name = "nsh-engine"
+ version = "0.5.1"
+-source = "git+https://github.com/longbridge/nsh?rev=224d9a795c7ac9d10d75750de9351adac5549675#224d9a795c7ac9d10d75750de9351adac5549675"
+ dependencies = [
+  "crossbeam-channel",
+  "libc",
+@@ -1401,7 +1399,6 @@ dependencies = [
+ [[package]]
+ name = "nsh-macros"
+ version = "0.5.1"
+-source = "git+https://github.com/longbridge/nsh?rev=224d9a795c7ac9d10d75750de9351adac5549675#224d9a795c7ac9d10d75750de9351adac5549675"
+ dependencies = [
+  "imagesize 0.15.0",
+  "proc-macro2",
+@@ -1434,7 +1431,6 @@ dependencies = [
+ [[package]]
+ name = "nsh-updater"
+ version = "0.5.1"
+-source = "git+https://github.com/longbridge/nsh?rev=224d9a795c7ac9d10d75750de9351adac5549675#224d9a795c7ac9d10d75750de9351adac5549675"
+ dependencies = [
+  "base64 0.22.1",
+  "ed25519-dalek",
+diff --git a/Cargo.toml b/Cargo.toml
+index cd41932..7981c46 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -17,6 +17,10 @@ log = "=0.4.29"
+ [patch."https://github.com/longbridge/nsh"]
+ nsh-base = { path = "vendor/nsh-base" }
+ nsh-platform-windows = { path = "vendor/nsh-platform-windows" }
++nsh-core = { path = "../../evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-core" }
++nsh-engine = { path = "../../evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-engine" }
++nsh-macros = { path = "../../evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-macros" }
++nsh-updater = { path = "../../evidence/v1-layout-stages/nsh-diagnostic/crates/nsh-updater" }
+ 
+ [patch.crates-io]
+ markdown = { path = "vendor/markdown" }
+diff --git a/crates/texzi-app/src/app_shell.rs b/crates/texzi-app/src/app_shell.rs
+index 7ac24f4..c6c2e3a 100644
+--- a/crates/texzi-app/src/app_shell.rs
++++ b/crates/texzi-app/src/app_shell.rs
+@@ -1127,6 +1127,9 @@ impl Shell {
+         if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+             log::info!("TX_SHELL_COMMAND id={id} modal={}", self.modal.get());
+         }
++        if id == "texzi.window.close" {
++            nsh_core::texzi_first_frame_probe::dump();
++        }
+         if self.modal.get() {
+             return;
+         }
+@@ -1571,6 +1574,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
+         )
+         .child(
+             when(rich_mode, move || {
++                nsh_core::texzi_first_frame_probe::mark("rich_shell_begin", 0, 0);
++                let _span = nsh_core::texzi_first_frame_probe::span("rich_shell_end");
+                 let session = rich.session();
+                 effect(move || crate::rich_images::install(&session, image_document_path.get()));
+                 let shell = controls_shell.clone();
+diff --git a/crates/texzi-app/src/rich_projection.rs b/crates/texzi-app/src/rich_projection.rs
+index 2bfb75e..ed4a2eb 100644
+--- a/crates/texzi-app/src/rich_projection.rs
++++ b/crates/texzi-app/src/rich_projection.rs
+@@ -640,6 +640,13 @@ impl Projection {
+         }
+         let doc = root(schema, blocks.iter().map(|b| b.node.clone()).collect())?;
+         doc.check().map_err(message)?;
++        nsh_core::texzi_first_frame_probe::mark(
++            "projection_import_end",
++            blocks.len() as u64,
++            blocks.iter().filter(|block| {
++                block.node.ty().name() == "paragraph" && block.node.content().size() > 0
++            }).count() as u64,
++        );
+         if let (Some(ast), Some(import)) = (ast_started, import_started) {
+             log::info!(
+                 "RICH_PROJECTION action=phase_timing ast_us={} import_us={}",
+diff --git a/vendor/nsh-base/src/rich_editor/view/render.rs b/vendor/nsh-base/src/rich_editor/view/render.rs
+index 302d96b..e8b56f7 100644
+--- a/vendor/nsh-base/src/rich_editor/view/render.rs
++++ b/vendor/nsh-base/src/rich_editor/view/render.rs
+@@ -308,6 +308,8 @@ enum Kind {
+ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
+     let first = item.get_untracked();
+     let (id, parent) = (first.id, first.parent);
++    let paragraph = first.node.ty().name() == "paragraph";
++    let nonempty = first.node.content().size() > 0;
+     let kind = match rv.node_view(first.node.ty().name()) {
+         Some(v) => Kind::View(v),
+         None if first.node.is_textblock() => Kind::Text,
+@@ -331,7 +333,12 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
+     }
+     let (class_rv, style_rv, layout_rv) = (rv.clone(), rv.clone(), rv.clone());
+     let wrapper = view()
+-        .on_layout(move |b: &Bounds<Points>| layout_rv.set_frame(id, Some(parent), *b))
++        .on_layout(move |b: &Bounds<Points>| {
++            if paragraph {
++                nsh_core::texzi_first_frame_probe::mark("paragraph_layout", id, u64::from(nonempty));
++            }
++            layout_rv.set_frame(id, Some(parent), *b);
++        })
+         .app_class(move || {
+             let it = item.get();
+             class_rv.deco_rev.get();
+diff --git a/vendor/nsh-platform-windows/src/surface.rs b/vendor/nsh-platform-windows/src/surface.rs
+index 79b85ab..6d9478d 100644
+--- a/vendor/nsh-platform-windows/src/surface.rs
++++ b/vendor/nsh-platform-windows/src/surface.rs
+@@ -90,6 +90,7 @@ impl Sink {
+ 
+ impl MountSink for Sink {
+     fn submit(&self, batch: MountBatch) {
++        nsh_core::texzi_first_frame_probe::mark("engine_submit", batch.items.len() as u64, 0);
+         self.send(Message::Batch(batch));
+     }
+ 
+@@ -796,11 +797,13 @@ impl Surface {
+ 
+     /// Draws the window (`WM_PAINT`).
+     pub(crate) fn paint(self: &Rc<Self>) {
++        nsh_core::texzi_first_frame_probe::mark("windows_paint_begin", 0, 0);
+         self.invalid.set(false);
+         self.painting.set(true);
+         // Deferred: the swap chain posts `WM_NSH_PAINT` when it has room, so
+         // `invalid` stays set (no second `WM_PAINT` meanwhile).
+         let deferred = crate::render::frame(self);
++        nsh_core::texzi_first_frame_probe::mark("windows_paint_end", u64::from(deferred), 0);
+         self.painting.set(false);
+         if deferred {
+             self.invalid.set(true);
+@@ -933,6 +936,7 @@ impl Surface {
+     }
+ 
+     fn apply(self: &Rc<Self>, batch: &MountBatch) {
++        nsh_core::texzi_first_frame_probe::mark("windows_mount_begin", batch.items.len() as u64, 0);
+         crate::access::prepare(batch);
+         for item in &batch.items {
+             self.anim.borrow_mut().apply(item);
+@@ -964,6 +968,7 @@ impl Surface {
+         }
+         crate::access::batch_applied(self);
+         crate::input::batch_applied(self);
++        nsh_core::texzi_first_frame_probe::mark("windows_mount_end", batch.items.len() as u64, 0);
+     }
+ 
+     /// Writes the animated values to the views and reports finished
+diff --git a/vendor/nsh-platform-windows/src/text.rs b/vendor/nsh-platform-windows/src/text.rs
+index 71f1a85..f8711d9 100644
+--- a/vendor/nsh-platform-windows/src/text.rs
++++ b/vendor/nsh-platform-windows/src/text.rs
+@@ -1648,6 +1648,7 @@ impl TextEngine for DWriteTextEngine {
+         t: &AttributedText,
+         alignments: &nsh_core::AttachmentAlignments,
+     ) -> Prepared {
++        let _span = nsh_core::texzi_first_frame_probe::span("dwrite_prepare");
+         let text: Vec<u16> = t.text.encode_utf16().collect();
+         let rtl = t
+             .writing_direction
+@@ -1754,6 +1755,7 @@ impl TextEngine for DWriteTextEngine {
+     }
+ 
+     fn measure(&self, p: &Prepared, max_width: Option<Points>) -> Size<Points> {
++        let _span = nsh_core::texzi_first_frame_probe::span("dwrite_measure");
+         let max_width = max_width.map(|m| m.0);
+         let shown = self.configure(p, max_width);
+         let Some(layout) = &p.layout else {
+@@ -1792,6 +1794,7 @@ impl TextEngine for DWriteTextEngine {
+     }
+ 
+     fn layout(&self, p: &Prepared, size: Size<Points>) -> TextLayout {
++        let _span = nsh_core::texzi_first_frame_probe::span("dwrite_layout");
+         let shown = self.configure(p, Some(size.width.0));
+         let Some(layout) = &p.layout else {
+             return TextLayout(Arc::new(WinLayout::default()));

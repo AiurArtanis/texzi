@@ -1,0 +1,25 @@
+{
+  "commit": "d14cc36d47961732515b9bfa3768e8b698376068",
+  "exe_sha256": "CFB716FFC6C74038EBA45DFCD0CE6033A158817A8DDC16DAE2562FCD6ED07B34",
+  "run": "D:\\Work\\texzi\\evidence\\steamy\\d14cc36-paladin\\chord-round",
+  "before": "962F85A27854336F3286AD54B49321F62525043B5F3508B2ECC887FDD6E7550E",
+  "after_removed": "962F85A27854336F3286AD54B49321F62525043B5F3508B2ECC887FDD6E7550E",
+  "second_prefix_gap_ms": 926.28,
+  "save_since_first_prefix_ms": 1679.998,
+  "save_since_second_prefix_ms": 753.718,
+  "after_save": "EA9A797D689A4E47C8019E473BCAEF8D656905E31EE9CA3CE0C42F1495AFC0D1",
+  "expected_original": "ORIGINAL",
+  "actual_saved_body": "SAVEDCHORDORIGINAL",
+  "input_mode": "English mode selected by left Shift, then restored",
+  "driverExit": 0,
+  "app": {
+    "pid": 296328,
+    "residual": false,
+    "failure": null,
+    "forced": false,
+    "hwnd": 23202484,
+    "exit": 0,
+    "status": "PASS",
+    "clipboard_access": false
+  }
+}

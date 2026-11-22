@@ -1,0 +1,259 @@
+diff --git a/crates/texzi-app/src/app_shell.rs b/crates/texzi-app/src/app_shell.rs
+index 7ac24f4..74f275f 100644
+--- a/crates/texzi-app/src/app_shell.rs
++++ b/crates/texzi-app/src/app_shell.rs
+@@ -1571,13 +1571,21 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
+         )
+         .child(
+             when(rich_mode, move || {
++                log::info!("MODE_PHASE stage=rich_shell_begin");
++                let mounted_at = std::time::Instant::now();
++                let measured = Cell::new(false);
+                 let session = rich.session();
+                 effect(move || crate::rich_images::install(&session, image_document_path.get()));
+                 let shell = controls_shell.clone();
+                 let focus: Rc<dyn Fn()> =
+                     Rc::new(move || shell.focus_group(if second { 2 } else { 1 }));
+                 let raw_focus = focus.clone();
+-                view()
++                let rich_shell = view()
++                    .on_layout(move |_: &nsh_core::geometry::Bounds<Points>| {
++                        if !measured.replace(true) {
++                            log::info!("MODE_PHASE stage=rich_first_layout_callback elapsed_from_shell_us={}", mounted_at.elapsed().as_micros());
++                        }
++                    })
+                     .flex_1()
+                     .w_full()
+                     .max_w(relative(1.0))
+@@ -1635,7 +1643,9 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
+                             .flex_1()
+                             .min_w(px(0.0))
+                             .min_h(px(0.0)),
+-                    )
++                    );
++                log::info!("MODE_PHASE stage=rich_shell_end elapsed_us={}", mounted_at.elapsed().as_micros());
++                rich_shell
+             })
+             .otherwise(move || {
+                 source.source_mounted();
+diff --git a/crates/texzi-app/src/main.rs b/crates/texzi-app/src/main.rs
+index 7f4296f..f063aaa 100644
+--- a/crates/texzi-app/src/main.rs
++++ b/crates/texzi-app/src/main.rs
+@@ -10,7 +10,7 @@ impl log::Log for StderrLogger {
+ 
+     fn log(&self, record: &log::Record<'_>) {
+         if self.enabled(record.metadata()) {
+-            eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
++            eprintln!("[{} {} utc_us={}] {}", record.level(), record.target(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros(), record.args());
+         }
+     }
+ 
+@@ -132,6 +132,7 @@ mod app {
+                 title: "texzi — 原生编辑".to_owned(),
+                 app_id: "dev.texzi.tx00".to_owned(),
+                 size: (960, 640),
++                fps: true,
+                 ..Default::default()
+             },
+         )
+diff --git a/crates/texzi-app/src/rich_owner.rs b/crates/texzi-app/src/rich_owner.rs
+index 73ac9c1..a8e39b1 100644
+--- a/crates/texzi-app/src/rich_owner.rs
++++ b/crates/texzi-app/src/rich_owner.rs
+@@ -50,7 +50,10 @@ impl RichOwner {
+     pub fn new(native: Rc<NativeView>, status: Signal<String>) -> Result<Rc<Self>, String> {
+         let m = manager();
+         let s = native.snapshot()?;
++        let phase = std::time::Instant::now();
+         let p = Projection::parse(m.schema(), s.rope.to_string())?;
++        log::info!("MODE_PHASE stage=projection elapsed_us={}", phase.elapsed().as_micros());
++        let phase = std::time::Instant::now();
+         if std::env::var_os("TEXZI_T05_FAIL_PREPARE").as_deref() == Some(std::ffi::OsStr::new("1"))
+         {
+             return Err("测试故障：富文本投影准备失败，已保留源码视图".into());
+@@ -110,6 +113,7 @@ impl RichOwner {
+             config = config.selection(TextSelection::create(&p.doc, a, Some(h)));
+         }
+         let state = EditorState::create(config).map_err(|e| e.to_string())?;
++        log::info!("MODE_PHASE stage=editor_state elapsed_us={}", phase.elapsed().as_micros());
+         let session = EditorSession::new(state, NodeViews::new());
+         let this = Rc::new(Self {
+             id,
+@@ -693,7 +697,9 @@ impl ModeGate {
+         };
+         owner.native.track();
+         let p = owner.projection.borrow();
+-        p.blocks
++        let phase = std::time::Instant::now();
++        log::info!("MODE_PHASE stage=raw_controls_begin");
++        let actions: Vec<_> = p.blocks
+             .iter()
+             .filter(|block| block.opaque)
+             .map(|block| RawBlockAction {
+@@ -712,7 +718,9 @@ impl ModeGate {
+                     .take(60)
+                     .collect(),
+             })
+-            .collect()
++            .collect();
++        log::info!("MODE_PHASE stage=raw_controls_end elapsed_us={} count={}", phase.elapsed().as_micros(), actions.len());
++        actions
+     }
+     /// A local source entry is view state only. Its captured revision and exact
+     /// opaque span must still match; a stale control never selects newer text.
+@@ -812,7 +820,9 @@ impl ModeGate {
+         if self.rich_mode.get() {
+             return Ok(());
+         }
++        let phase = std::time::Instant::now();
+         let next = prepare()?;
++        log::info!("MODE_TIMING phase=prepare_rich elapsed_us={}", phase.elapsed().as_micros());
+         let origin = self.source.snapshot()?;
+         let state = next.session.state();
+         let selection = restored_selection(&next.projection.borrow(), &origin.selections)
+@@ -825,16 +835,24 @@ impl ModeGate {
+         ));
+         let restored = state.apply(tr).map_err(|e| e.to_string())?;
+         next.session.update_state(restored);
++        let phase = std::time::Instant::now();
+         next.activate()?;
++        log::info!("MODE_PHASE stage=activate elapsed_us={}", phase.elapsed().as_micros());
+         self.source.fence();
++        let phase = std::time::Instant::now();
+         self.source.trace_state("mode_rich");
++        log::info!("MODE_TIMING phase=trace_rich elapsed_us={}", phase.elapsed().as_micros());
+         // Revision equality is necessary but not sufficient: real navigation
+         // in either logical view invalidates the saved multi-selection, even
+         // if the user later returns to the same coordinates. Freeze actual
+         // epochs after successful activation/fencing; pure rendering and
+         // selecting the same position do not change those epochs.
++        let phase = std::time::Instant::now();
+         let source = self.source.snapshot()?;
++        log::info!("MODE_TIMING phase=post_source_snapshot elapsed_us={}", phase.elapsed().as_micros());
++        let phase = std::time::Instant::now();
+         let rich = self.rich.snapshot()?;
++        log::info!("MODE_TIMING phase=post_rich_snapshot elapsed_us={}", phase.elapsed().as_micros());
+         let multiple = source.selections.ranges.len() > 1;
+         *self.source_multi.borrow_mut() = multiple.then_some(SourceMultiSelection {
+             revision: source.revision,
+@@ -843,7 +861,9 @@ impl ModeGate {
+             selections: source.selections,
+         });
+         *self.active.borrow_mut() = Some(next);
++        let phase = std::time::Instant::now();
+         self.rich_mode.set(true);
++        log::info!("MODE_TIMING phase=set_rich_signal elapsed_us={}", phase.elapsed().as_micros());
+         self.status.set(if multiple {
+             "排版视图使用主选区".into()
+         } else {
+@@ -852,11 +872,14 @@ impl ModeGate {
+         Ok(())
+     }
+     pub fn to_rich(&self) {
++        let phase = std::time::Instant::now();
+         if let Err(e) = self.prepare_and_switch(|| RichOwner::new(self.rich.clone(), self.status)) {
+             self.status.set(e);
+         }
++        log::info!("MODE_TIMING phase=return_to_rich elapsed_us={} rich={}", phase.elapsed().as_micros(), self.rich_mode.get());
+     }
+     pub fn to_source(&self) {
++        let phase = std::time::Instant::now();
+         if self.busy() {
+             self.status.set("请先完成或取消中文组合，再切换模式".into());
+             return;
+@@ -902,6 +925,7 @@ impl ModeGate {
+         } else {
+             String::new()
+         });
++        log::info!("MODE_TIMING phase=return_to_source elapsed_us={}", phase.elapsed().as_micros());
+     }
+     pub fn session(&self) -> EditorSession {
+         self.active
+diff --git a/crates/texzi-app/src/rich_projection.rs b/crates/texzi-app/src/rich_projection.rs
+index 9031bb9..8ffc27d 100644
+--- a/crates/texzi-app/src/rich_projection.rs
++++ b/crates/texzi-app/src/rich_projection.rs
+@@ -477,7 +477,26 @@ impl Projection {
+         Ok(edits)
+     }
+     pub fn parse(schema: &Schema, source: String) -> Result<Self, String> {
++        let ast_start = std::time::Instant::now();
+         let mut tree = markdown::to_mdast(&source, &parse_options()).map_err(message)?;
++        let ast_us = ast_start.elapsed().as_micros();
++        let mut paragraphs = 0;
++        let mut longest = 0;
++        fn count(node: &mdast::Node, paragraphs: &mut usize, longest: &mut usize) {
++            if let mdast::Node::Paragraph(p) = node {
++                *paragraphs += 1;
++                if let Some(pos) = &p.position {
++                    *longest = (*longest).max(pos.end.offset - pos.start.offset);
++                }
++            }
++            if let Some(children) = node.children() {
++                for child in children {
++                    count(child, paragraphs, longest);
++                }
++            }
++        }
++        count(&tree, &mut paragraphs, &mut longest);
++        let import_start = std::time::Instant::now();
+         list_items::recognize_empty_tasks(&mut tree, &source);
+         let mut blocks = Vec::new();
+         let definitions: Vec<_> = tree
+@@ -607,6 +626,8 @@ impl Projection {
+         }
+         let doc = root(schema, blocks.iter().map(|b| b.node.clone()).collect())?;
+         doc.check().map_err(message)?;
++        log::info!("MODE_PHASE stage=parse_detail ast_us={} import_us={} paragraphs={} longest_paragraph_bytes={} projected_blocks={} opaque_blocks={}",
++            ast_us, import_start.elapsed().as_micros(), paragraphs, longest, blocks.len(), blocks.iter().filter(|b| b.opaque).count());
+         Ok(Self {
+             source,
+             doc,
+diff --git a/vendor/nsh-platform-windows/src/app_window.rs b/vendor/nsh-platform-windows/src/app_window.rs
+index 1a542f9..b74b349 100644
+--- a/vendor/nsh-platform-windows/src/app_window.rs
++++ b/vendor/nsh-platform-windows/src/app_window.rs
+@@ -525,6 +525,8 @@ fn resized(surface: &Surface, window: &AppWindow) {
+ 
+ /// Draws `window` (`WM_PAINT`, and at once when resized).
+ fn paint(surface: &Rc<Surface>, window: &AppWindow) {
++    let phase = std::time::Instant::now();
++    log::info!("MODE_PHASE stage=window_paint_begin");
+     window.invalid.set(false);
+     let web = window.web.borrow().upgrade();
+     // Deferred: the swap chain posts `WM_NSH_PAINT` when it has room, so
+@@ -544,6 +546,7 @@ fn paint(surface: &Rc<Surface>, window: &AppWindow) {
+             composed: &window.composed,
+         },
+     );
++    log::info!("MODE_PHASE stage=window_paint_end elapsed_us={} deferred={}",phase.elapsed().as_micros(),deferred);
+     if deferred {
+         window.invalid.set(true);
+     }
+diff --git a/vendor/nsh-platform-windows/src/surface.rs b/vendor/nsh-platform-windows/src/surface.rs
+index 79b85ab..f908a37 100644
+--- a/vendor/nsh-platform-windows/src/surface.rs
++++ b/vendor/nsh-platform-windows/src/surface.rs
+@@ -933,6 +933,11 @@ impl Surface {
+     }
+ 
+     fn apply(self: &Rc<Self>, batch: &MountBatch) {
++        let measure = std::time::Instant::now();
++        let large_batch = batch.items.len() >= 100;
++        if large_batch {
++            log::info!("MODE_PHASE stage=platform_apply_begin items={}", batch.items.len());
++        }
+         crate::access::prepare(batch);
+         for item in &batch.items {
+             self.anim.borrow_mut().apply(item);
+@@ -964,6 +969,9 @@ impl Surface {
+         }
+         crate::access::batch_applied(self);
+         crate::input::batch_applied(self);
++        if large_batch {
++            log::info!("MODE_PHASE stage=platform_apply_end elapsed_us={} items={}", measure.elapsed().as_micros(), batch.items.len());
++        }
+     }
+ 
+     /// Writes the animated values to the views and reports finished

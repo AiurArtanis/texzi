@@ -1,0 +1,153 @@
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x100 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245320333685 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245320341349 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245320436791 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO texzi_app::app_shell] TX_SHELL_COMMAND id=texzi.file.open modal=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245320446256 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x200 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x100 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x200 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x100 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324749404 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324763430 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324784271 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=0 revision=1 bytes=9
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324794682 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=1 revision=2 bytes=10
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324828048 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324841312 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=2 revision=3 bytes=11
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324868625 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324886257 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324906704 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=3 revision=4 bytes=12
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324919345 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=4 revision=5 bytes=13
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324948145 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324962629 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=5 revision=6 bytes=14
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245324989371 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245325005665 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245325030415 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=6 revision=7 bytes=15
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245325041358 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=7 revision=8 bytes=16
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245325066080 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245325083233 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=8 revision=9 bytes=17
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245325105423 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245325119628 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x702 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x300 composing=false
+[INFO texzi_app::editor_owner] TX04_IME_OWNER action=submit kind=Typing previous=9 revision=10 bytes=18
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245325414368 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=true meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245325426853 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=true meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245326093046 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245326105274 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245326164117 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO texzi_app::app_shell] TX_CHORD_SHELL utc_us=1795245326172736 stage=prefix_begin prefix_pending=true modal=false active_document=true ime_busy=false known_command=false command=none
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245326172867 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=true
+[INFO texzi_app::app_shell] TX_CHORD_SHELL utc_us=1795245326178361 stage=continuations_registered prefix_pending=true modal=false active_document=true ime_busy=false known_command=false command=none
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245326443835 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245326462945 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245326515067 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO texzi_app::app_shell] TX_CHORD_SHELL utc_us=1795245326522325 stage=continuation_hit prefix_pending=true modal=false active_document=true ime_busy=false known_command=false command=none
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245326522598 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245327019686 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245327037638 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245327092392 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO texzi_app::app_shell] TX_CHORD_SHELL utc_us=1795245327099016 stage=prefix_begin prefix_pending=true modal=false active_document=true ime_busy=false known_command=false command=none
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245327099288 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=true
+[INFO texzi_app::app_shell] TX_CHORD_SHELL utc_us=1795245327101758 stage=continuations_registered prefix_pending=true modal=false active_document=true ime_busy=false known_command=false command=none
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245327843917 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO texzi_app::app_shell] TX_CHORD_SHELL utc_us=1795245327852734 stage=continuation_hit prefix_pending=true modal=false active_document=true ime_busy=false known_command=true command=texzi.file.saveAll
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245327853031 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=true
+[INFO texzi_app::app_shell] TX_SHELL_COMMAND id=texzi.file.saveAll modal=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245328634387 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245328645991 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245328717489 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO texzi_app::app_shell] TX_SHELL_COMMAND id=texzi.find.replaceOpen modal=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245328732844 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=true alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x200 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x100 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245329385857 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x200 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245329404039 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=true
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::richedit] TX04_IME_HOST_NOTIFY code=0x400 composing=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245330007139 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=true meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245330010924 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=false shift=true meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245330661299 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=true shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245330665478 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=true shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245330744958 stage=pre_translate hwnd=0x1620ab4 processkey=false ctrl=false alt=true shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=false handled=false
+[INFO nsh_platform_windows::window] TX_CHORD_NATIVE utc_us=1795245330751236 stage=post_key_dispatch hwnd=0x1620ab4 processkey=false ctrl=false alt=true shift=false meta=false repeat=false native_composing=false input_composing=false host_composing=false handled_known=true handled=false

@@ -1,0 +1,40 @@
+diff --git a/crates/texzi-app/src/app_shell.rs b/crates/texzi-app/src/app_shell.rs
+index 64acd3b..62f6ede 100644
+--- a/crates/texzi-app/src/app_shell.rs
++++ b/crates/texzi-app/src/app_shell.rs
+@@ -394,6 +394,11 @@ impl Shell {
+         }
+         let escape = s.clone();
+         on_key("escape", move |_| {
++            let doc = escape.current();
++            log::info!("ESC_PROBE callback panel={} modal={} busy={} controls_open={}",
++                escape.panel.get(), escape.modal.get(),
++                doc.as_ref().is_some_and(|d| d.gate.busy()),
++                doc.as_ref().is_some_and(|d| d.controls.open()));
+             if escape.modal.get()
+                 || escape
+                     .current()
+@@ -1256,7 +1261,7 @@ impl Shell {
+             "texzi.navigation.gotoLine"=>{if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}}self.query.set(String::new());self.panel.set("line".into());self.notice.set("转到行的范围已切换为源码".into());},
+             "texzi.group.focusIndex"=>self.panel.set("groups".into()),
+             "texzi.markdown.toggleSource"=>if let Some(doc)=self.current(){let target = !doc.displayed_rich(); self.request_mode(doc, target);},
+-            "texzi.find.open"|"texzi.find.replaceOpen"=>{let replace=id.ends_with("replaceOpen");if replace{if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}}}self.panel.set(if replace{"replace"}else{"find"}.into());let scope=if self.current().is_some_and(|d|d.gate.rich_mode.get()){"正文"}else{"源码"};self.notice.set(format!("查找范围：{scope} · 普通文字 · 区分大小写"));},
++            "texzi.find.open"|"texzi.find.replaceOpen"=>{let replace=id.ends_with("replaceOpen");if replace{let probe=self.clone();self.owner.run(||{spawn(async move{let _=next_frame().await;let doc=probe.current();log::info!("ESC_PROBE pre_key panel={} modal={} busy={} controls_open={}",probe.panel.get(),probe.modal.get(),doc.as_ref().is_some_and(|d|d.gate.busy()),doc.as_ref().is_some_and(|d|d.controls.open()));});});if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}}}self.panel.set(if replace{"replace"}else{"find"}.into());let scope=if self.current().is_some_and(|d|d.gate.rich_mode.get()){"正文"}else{"源码"};self.notice.set(format!("查找范围：{scope} · 普通文字 · 区分大小写"));},
+             "texzi.find.next"=>self.find(false),"texzi.find.previous"=>self.find(true),"texzi.find.close"=>self.close_panel(),
+             "texzi.find.replaceOne"|"texzi.find.replaceAll"=>if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}match doc.source.replace_literal(&self.query.get(),&self.replacement.get(),id.ends_with("All")){Ok(n)=>{self.notice.set(format!("源码 · 已替换 {n} 处，可一次撤销"));self.restore_editor_focus();},Err(e)=>self.notice.set(e)}},
+             "texzi.appearance.light"=>set_color_scheme(Appearance::Light),"texzi.appearance.dark"=>set_color_scheme(Appearance::Dark),
+diff --git a/vendor/nsh-platform-windows/src/keymap.rs b/vendor/nsh-platform-windows/src/keymap.rs
+index 7f84551..c5a1c95 100644
+--- a/vendor/nsh-platform-windows/src/keymap.rs
++++ b/vendor/nsh-platform-windows/src/keymap.rs
+@@ -58,6 +58,10 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
+     // Only the bindings of the window the key is in (and JS's) take it.
+     let window = surface.input_root().id();
+     let found = table.find_in(window, keystroke, editing, event.repeat);
++    if event.vk == 0x1b {
++        log::info!("ESC_PROBE keymap editing={} callback={} consumed={}",
++            editing, found.fired().is_some(), found.consumed());
++    }
+     if let Some(id) = found.fired() {
+         surface.event(
+             ROOT_ID,

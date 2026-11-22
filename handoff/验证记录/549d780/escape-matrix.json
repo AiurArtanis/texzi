@@ -1,0 +1,91 @@
+{
+  "commit": "549d7802169d9d54f3efd8f266c80aa29d4b45e7",
+  "exe_sha256": "1ACE5ED4C93656B061EBDB3F2C2AE60C535346C436917B8D70E3B4434824EF73",
+  "run": "D:\\Work\\texzi\\evidence\\steamy\\549d780-paladin\\matrix-round",
+  "fixture": "D:\\Work\\texzi\\evidence\\steamy\\549d780-paladin\\matrix-round-test.txt",
+  "dpi": 192,
+  "driver_exit": 0,
+  "app": {
+    "pid": 324116,
+    "clipboard_access": false,
+    "residual": false,
+    "failure": null,
+    "hwnd": 1772600,
+    "forced": false,
+    "status": "PASS",
+    "exit": 0
+  },
+  "saved_fixture_sha256": "F1DCBE242806C214F5637C6359C690E3C0CB695260CB02C4931D11F200E8D6D0",
+  "rows": [
+    {
+      "name": "01-menu-default",
+      "entry": "menu",
+      "focus": "default",
+      "focus_probe": null,
+      "edit_persisted": true,
+      "panel_before": true,
+      "panel_after": false,
+      "focus_probe_visible": false
+    },
+    {
+      "name": "02-menu-find",
+      "entry": "menu",
+      "focus": "find",
+      "focus_probe": "PROBEALPHA",
+      "edit_persisted": true,
+      "panel_before": true,
+      "panel_after": false,
+      "focus_probe_visible": true
+    },
+    {
+      "name": "03-palette-default",
+      "entry": "palette",
+      "focus": "default",
+      "focus_probe": null,
+      "edit_persisted": true,
+      "panel_before": true,
+      "panel_after": false,
+      "focus_probe_visible": false
+    },
+    {
+      "name": "04-palette-find",
+      "entry": "palette",
+      "focus": "find",
+      "focus_probe": "PROBEBETA",
+      "edit_persisted": true,
+      "panel_before": true,
+      "panel_after": false,
+      "focus_probe_visible": true
+    },
+    {
+      "name": "05-hotkey-default",
+      "entry": "hotkey",
+      "focus": "default",
+      "focus_probe": null,
+      "edit_persisted": true,
+      "panel_before": true,
+      "panel_after": false,
+      "focus_probe_visible": false
+    },
+    {
+      "name": "06-hotkey-find",
+      "entry": "hotkey",
+      "focus": "find",
+      "focus_probe": "PROBEGAMMA",
+      "edit_persisted": true,
+      "panel_before": true,
+      "panel_after": false,
+      "focus_probe_visible": true
+    },
+    {
+      "name": "07-menu-editor",
+      "entry": "menu",
+      "focus": "editor",
+      "focus_probe": null,
+      "edit_persisted": true,
+      "panel_before": true,
+      "panel_after": false,
+      "focus_probe_visible": false
+    }
+  ]
+}

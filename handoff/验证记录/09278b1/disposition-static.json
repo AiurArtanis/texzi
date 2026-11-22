@@ -1,0 +1,15 @@
+{
+  "total": 120,
+  "search_only_missing_registry": [],
+  "expected_removed_count": 12,
+  "matrix": "static",
+  "missing_menu": [
+    "texzi.find.replaceOpen"
+  ],
+  "expected_search_only_count": 90,
+  "actual_menu_count": 17,
+  "expected_menu_count": 18,
+  "unexpected_menu": [],
+  "actual_removed_count": 12,
+  "removed_with_binding": []
+}

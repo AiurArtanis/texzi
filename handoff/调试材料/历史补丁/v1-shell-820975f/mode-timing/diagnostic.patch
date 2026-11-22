@@ -1,0 +1,68 @@
+diff --git a/crates/texzi-app/src/rich_owner.rs b/crates/texzi-app/src/rich_owner.rs
+index 73ac9c1..a4b390a 100644
+--- a/crates/texzi-app/src/rich_owner.rs
++++ b/crates/texzi-app/src/rich_owner.rs
+@@ -812,7 +812,9 @@ impl ModeGate {
+         if self.rich_mode.get() {
+             return Ok(());
+         }
++        let phase = std::time::Instant::now();
+         let next = prepare()?;
++        log::info!("MODE_TIMING phase=prepare_rich elapsed_us={}", phase.elapsed().as_micros());
+         let origin = self.source.snapshot()?;
+         let state = next.session.state();
+         let selection = restored_selection(&next.projection.borrow(), &origin.selections)
+@@ -827,14 +829,20 @@ impl ModeGate {
+         next.session.update_state(restored);
+         next.activate()?;
+         self.source.fence();
++        let phase = std::time::Instant::now();
+         self.source.trace_state("mode_rich");
++        log::info!("MODE_TIMING phase=trace_rich elapsed_us={}", phase.elapsed().as_micros());
+         // Revision equality is necessary but not sufficient: real navigation
+         // in either logical view invalidates the saved multi-selection, even
+         // if the user later returns to the same coordinates. Freeze actual
+         // epochs after successful activation/fencing; pure rendering and
+         // selecting the same position do not change those epochs.
++        let phase = std::time::Instant::now();
+         let source = self.source.snapshot()?;
++        log::info!("MODE_TIMING phase=post_source_snapshot elapsed_us={}", phase.elapsed().as_micros());
++        let phase = std::time::Instant::now();
+         let rich = self.rich.snapshot()?;
++        log::info!("MODE_TIMING phase=post_rich_snapshot elapsed_us={}", phase.elapsed().as_micros());
+         let multiple = source.selections.ranges.len() > 1;
+         *self.source_multi.borrow_mut() = multiple.then_some(SourceMultiSelection {
+             revision: source.revision,
+@@ -843,7 +851,9 @@ impl ModeGate {
+             selections: source.selections,
+         });
+         *self.active.borrow_mut() = Some(next);
++        let phase = std::time::Instant::now();
+         self.rich_mode.set(true);
++        log::info!("MODE_TIMING phase=set_rich_signal elapsed_us={}", phase.elapsed().as_micros());
+         self.status.set(if multiple {
+             "排版视图使用主选区".into()
+         } else {
+@@ -852,11 +862,14 @@ impl ModeGate {
+         Ok(())
+     }
+     pub fn to_rich(&self) {
++        let phase = std::time::Instant::now();
+         if let Err(e) = self.prepare_and_switch(|| RichOwner::new(self.rich.clone(), self.status)) {
+             self.status.set(e);
+         }
++        log::info!("MODE_TIMING phase=return_to_rich elapsed_us={} rich={}", phase.elapsed().as_micros(), self.rich_mode.get());
+     }
+     pub fn to_source(&self) {
++        let phase = std::time::Instant::now();
+         if self.busy() {
+             self.status.set("请先完成或取消中文组合，再切换模式".into());
+             return;
+@@ -902,6 +915,7 @@ impl ModeGate {
+         } else {
+             String::new()
+         });
++        log::info!("MODE_TIMING phase=return_to_source elapsed_us={}", phase.elapsed().as_micros());
+     }
+     pub fn session(&self) -> EditorSession {
+         self.active

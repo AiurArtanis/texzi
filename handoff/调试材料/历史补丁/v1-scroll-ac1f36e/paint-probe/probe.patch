@@ -1,0 +1,117 @@
+diff --git a/vendor/nsh-base/src/rich_editor/view/visible_rows.rs b/vendor/nsh-base/src/rich_editor/view/visible_rows.rs
+index aaf10c7..dd27a19 100644
+--- a/vendor/nsh-base/src/rich_editor/view/visible_rows.rs
++++ b/vendor/nsh-base/src/rich_editor/view/visible_rows.rs
+@@ -218,6 +218,9 @@ impl Rv {
+         let generation = self.wheel_generation.get().wrapping_add(1);
+         self.wheel_generation.set(generation);
+         self.wheel_target.set(Some((generation, target)));
++        if std::env::var_os("TEXZI_WHEEL_PAINT_PROBE").is_some() {
++            log::info!("WHEEL_PAINT {} request gen={} y={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros(), generation, target);
++        }
+         // Keep the displayed rows while mounting the destination. The
+         // platform runs this fence after applying the preceding mount.
+         let mounted = nsh_core::element::run_on_main_thread(|| ());
+@@ -225,6 +228,9 @@ impl Rv {
+         self.owner.run(|| {
+             spawn(async move {
+                 let ready = mounted.await.is_ok();
++                if std::env::var_os("TEXZI_WHEEL_PAINT_PROBE").is_some() {
++                    log::info!("WHEEL_PAINT {} fence gen={} y={} ready={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros(), generation, target, ready);
++                }
+                 if rv.wheel_target.get_untracked() != Some((generation, target)) {
+                     return;
+                 }
+diff --git a/vendor/nsh-platform-windows/src/app.rs b/vendor/nsh-platform-windows/src/app.rs
+index 6e38ce7..cdabbe0 100644
+--- a/vendor/nsh-platform-windows/src/app.rs
++++ b/vendor/nsh-platform-windows/src/app.rs
+@@ -432,7 +432,7 @@ impl AppView {
+             app,
+             viewport: nsh_core::Size::new(px(0.0), px(0.0)),
+             trace: options.trace,
+-            content_culling: true,
++            content_culling: std::env::var_os("TEXZI_WHEEL_NO_NATIVE_CULL").is_none(),
+             network: Some(nsh_engine::net::network()),
+             websocket: None,
+             refuse_connections: None,
+diff --git a/vendor/nsh-platform-windows/src/input.rs b/vendor/nsh-platform-windows/src/input.rs
+index 6e07924..d15ef03 100644
+--- a/vendor/nsh-platform-windows/src/input.rs
++++ b/vendor/nsh-platform-windows/src/input.rs
+@@ -2524,6 +2524,9 @@ fn scroll_target(surface: &Surface, x: f32, y: f32, dx: f32, dy: f32) -> Option<
+ /// text) by a wheel's `(dx, dy)`.
+ fn scroll_wheel(surface: &Rc<Surface>, view: &NshView, event: &WheelEvent) {
+     let (dx, dy) = (event.dx, event.dy);
++    if std::env::var_os("TEXZI_WHEEL_PAINT_PROBE").is_some() {
++        log::info!("WHEEL_PAINT {} dispatch managed={} dy={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros(), is_virtual_rich_scroll(view), dy);
++    }
+     if is_virtual_rich_scroll(view) {
+         // Preserve native target selection and wheel latching. The editor
+         // waits for the destination mount before sending the next offset.
+diff --git a/vendor/nsh-platform-windows/src/scroll.rs b/vendor/nsh-platform-windows/src/scroll.rs
+index db6c19a..e977c92 100644
+--- a/vendor/nsh-platform-windows/src/scroll.rs
++++ b/vendor/nsh-platform-windows/src/scroll.rs
+@@ -320,7 +320,14 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
+ 
+ /// `scrollTo` and `scrollToEnd`.
+ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) {
++    let managed = view.state().props.test_id.as_deref() == Some("texzi.rich.virtual-scroll");
++    if managed && std::env::var_os("TEXZI_WHEEL_PAINT_PROBE").is_some() {
++        log::info!("WHEEL_PAINT {} native_command {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros(), command);
++    }
+     shared::command(&Host::new(surface, view), command);
++    if managed && std::env::var_os("TEXZI_WHEEL_FULL_DAMAGE").is_some() {
++        surface.invalidate();
++    }
+ }
+ 
+ // Input.
+diff --git a/vendor/nsh-platform-windows/src/surface.rs b/vendor/nsh-platform-windows/src/surface.rs
+index 79b85ab..f203da3 100644
+--- a/vendor/nsh-platform-windows/src/surface.rs
++++ b/vendor/nsh-platform-windows/src/surface.rs
+@@ -794,13 +794,42 @@ impl Surface {
+         (!rects.is_empty()).then_some(rects)
+     }
+ 
++    fn rich_wheel_paint(&self, stage: &str, deferred: bool) {
++        if std::env::var_os("TEXZI_WHEEL_PAINT_PROBE").is_none() {
++            return;
++        }
++        fn scroll(view: &crate::view::NshView) -> Option<crate::view::NshView> {
++            if view.state().props.test_id.as_deref() == Some("texzi.rich.virtual-scroll") {
++                return Some(view.clone());
++            }
++            view.with_children(|children| children.iter().find_map(scroll))
++        }
++        fn texts(view: &crate::view::NshView) -> (usize, usize) {
++            let own = view.state().text.is_some();
++            let visible = own && view.visible_bounds().size.height.0 > 1.0;
++            view.with_children(|children| {
++                children.iter().map(texts).fold(
++                    (usize::from(own), usize::from(visible)),
++                    |(total, visible), (t, v)| (total + t, visible + v),
++                )
++            })
++        }
++        if let Some(view) = scroll(&self.input_root()) {
++            let y = view.state().scroll.as_ref().map_or(0., |scroll| scroll.y.0);
++            let (total, visible) = texts(&view);
++            log::info!("WHEEL_PAINT {} {} offset={} texts={} visible={} deferred={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros(), stage, y, total, visible, deferred);
++        }
++    }
++
+     /// Draws the window (`WM_PAINT`).
+     pub(crate) fn paint(self: &Rc<Self>) {
+         self.invalid.set(false);
+         self.painting.set(true);
+         // Deferred: the swap chain posts `WM_NSH_PAINT` when it has room, so
+         // `invalid` stays set (no second `WM_PAINT` meanwhile).
++        self.rich_wheel_paint("paint_begin", false);
+         let deferred = crate::render::frame(self);
++        self.rich_wheel_paint("paint_end", deferred);
+         self.painting.set(false);
+         if deferred {
+             self.invalid.set(true);

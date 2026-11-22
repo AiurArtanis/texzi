@@ -1,0 +1,8 @@
+{
+  "actual": "HOTKEYNEW target",
+  "entry": "hotkey",
+  "pass": true,
+  "expected": "HOTKEYNEW target",
+  "control_actual": "STEAMYOLD control",
+  "control_expected": "STEAMYOLD control"
+}

@@ -1,0 +1,8 @@
+{
+  "actual": "PALETTENEW target",
+  "entry": "palette",
+  "pass": true,
+  "expected": "PALETTENEW target",
+  "control_actual": "STEAMYOLD control",
+  "control_expected": "STEAMYOLD control"
+}
