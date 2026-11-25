@@ -44,12 +44,13 @@ validated separately before any product acceptance claim.
 ### 2026-11-26 RichEditor Escape
 
 `rich_editor/view/{mod,controller}.rs` emits `UnhandledEscape`
-for a plain Escape at an empty text caret on non-terminal platforms. The
-focused RichEditor still receives the keystroke first. Composition, selected
+for a plain Escape at an empty text caret or gap cursor on non-terminal
+platforms. The focused RichEditor still receives the keystroke first. Composition, selected
 node views, plugins, and the base keymap have priority. Non-empty selections
 retain their existing collapse behavior, and the terminal retains its focus
 behavior. Texzi uses the event for Zen only in the active rich document and
 group, using the existing priority for modals, editor panels, and format controls.
+A composition notification also resets any pending Zen exit.
 
 The focused RichEditor and source Editor cases run as part of `Windows x64
 verify`. Run the focused regressions from the workspace on Windows x64 with

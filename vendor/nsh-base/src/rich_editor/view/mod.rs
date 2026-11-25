@@ -212,7 +212,7 @@ pub enum RichEditorEvent {
     Focus,
     /// The editor lost the focus.
     Blur,
-    /// A plain Escape at a text caret remained after the editor's own handlers.
+    /// A plain Escape at a text caret or gap cursor remained after the editor's own handlers.
     UnhandledEscape,
 }
 

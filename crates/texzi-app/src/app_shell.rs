@@ -412,10 +412,12 @@ impl Shell {
         // one newest match, so later registration could shadow a real command.
         let reset = s.zen_exit.clone();
         crate::zen_state::bind_reset_on_other_keys(reset.armed, Rc::new(move || reset.reset()));
-        let window = s.clone();
+        let shell = s.clone();
         effect(move || {
-            if !window.window.state().is_some_and(|state| state.focused) {
-                window.zen_exit.reset();
+            if !shell.window.state().is_some_and(|state| state.focused)
+                || shell.zen.get() && shell.current().is_some_and(|doc| doc.gate.busy())
+            {
+                untracked(|| shell.zen_exit.reset());
             }
         });
         let quick = s.clone();

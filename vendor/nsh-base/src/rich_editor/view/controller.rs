@@ -815,13 +815,13 @@ impl Rv {
         // Escape no plugin, node view or keymap took collapses a selection
         // to its head. With nothing to collapse, a terminal's focus leaves
         // the editor, so it is no trap there (Tab then goes on after it);
-        // elsewhere the host can handle an unused Escape at a text caret.
+        // elsewhere the host can handle an unused Escape at a caret.
         if plain && event.key == "Escape" {
             let sel = state.selection();
             if sel.empty() {
                 if crate::terminal::is_terminal() {
                     self.blur();
-                } else if sel.cursor().is_some() {
+                } else if sel.cursor().is_some() || sel.is_gap_cursor() {
                     self.cx.emit(RichEditorEvent::UnhandledEscape);
                 }
             } else if let Ok(p) = state.doc().resolve(sel.head()) {

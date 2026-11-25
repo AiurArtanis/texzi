@@ -6,7 +6,7 @@ use crate::{editor_owner::NativeView, rich_owner::ModeGate};
 use nsh_base::{
     editor::ExternalDocument,
     rich_editor::{
-        state::{EditorState, KeyEvent, PluginSpec, Transaction},
+        state::{EditorState, GapCursor, KeyEvent, PluginSpec, Transaction},
         view::EditorSession,
     },
 };
@@ -205,7 +205,7 @@ fn FocusedZenFixture() -> impl IntoElement {
 fn FocusedRichZenFixture() -> impl IntoElement {
     let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
     let shell = super::Shell::new();
-    shell.add(NativeView::fixture("Editable rich text."), None);
+    shell.add(NativeView::fixture("***\n\nEditable rich text."), None);
     let doc = shell.current().unwrap();
     doc.gate.to_rich();
     assert!(doc.gate.rich_mode.get(), "{}", doc.gate.status.get());
@@ -876,6 +876,18 @@ fn zen_rich_escape_defers_to_the_editor_before_counting_an_empty_text_caret() {
     assert!(session.state().selection().cursor().is_some());
     assert!(!fixture.probe.zen_armed.get());
 
+    plugin_active.store(true, Ordering::Relaxed);
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(!fixture.probe.zen_armed.get());
+    plugin_active.store(false, Ordering::Relaxed);
+
+    assert!(fixture.press("ctrl+f", false).consumed());
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(!fixture.probe.zen_armed.get());
+
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(fixture.probe.zen_armed.get());
+    let before_composition = session.state();
     for composing in [true, false] {
         assert!(fixture.core.component_event(
             fixture.input.unwrap(),
@@ -894,28 +906,44 @@ fn zen_rich_escape_defers_to_the_editor_before_counting_an_empty_text_caret() {
         ));
         fixture.flush();
         assert_eq!(session.composing(), composing);
+        assert!(!fixture.probe.zen_armed.get());
         if composing {
             assert_eq!(fixture.press("escape", false), escape);
             assert!(!fixture.probe.zen_armed.get());
         }
     }
-
-    plugin_active.store(true, Ordering::Relaxed);
-    assert_eq!(fixture.press("escape", false), escape);
-    assert!(!fixture.probe.zen_armed.get());
-    plugin_active.store(false, Ordering::Relaxed);
-
-    assert!(fixture.press("ctrl+f", false).consumed());
-    assert_eq!(fixture.press("escape", false), escape);
-    assert!(!fixture.probe.zen_armed.get());
+    let after_composition = session.state();
+    assert_eq!(after_composition.revision(), before_composition.revision());
+    assert!(
+        after_composition
+            .selection()
+            .eq(before_composition.selection())
+    );
 
     assert_eq!(fixture.press("escape", false), escape);
+    assert!(fixture.probe.zen.get());
     assert!(fixture.probe.zen_armed.get());
     fixture.press("escape", true);
     assert!(fixture.probe.zen.get());
     assert_eq!(fixture.press("escape", false), escape);
     assert!(!fixture.probe.zen.get());
     assert!(!fixture.probe.zen_armed.get());
+
+    let state = session.state();
+    let before_rule = state.doc().resolve(0).unwrap();
+    assert!(GapCursor::valid(&before_rule));
+    let mut transaction = state.tr();
+    transaction.set_selection(GapCursor::create(before_rule));
+    session.update_state(state.apply(transaction).unwrap());
+    fixture.flush();
+    assert!(session.state().selection().is_gap_cursor());
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("z", false).consumed());
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(fixture.probe.zen_armed.get());
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(!fixture.probe.zen.get());
+    assert!(session.state().selection().is_gap_cursor());
 }
 
 #[test]
