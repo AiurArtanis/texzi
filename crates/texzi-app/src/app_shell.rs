@@ -1287,6 +1287,18 @@ impl Shell {
             })
     }
 
+    fn handle_rich_escape(self: &Rc<Self>, document: u64, second: bool) {
+        if self.zen.get()
+            && !self.chord.get()
+            && self.second_active.get() == second
+            && self
+                .current()
+                .is_some_and(|doc| doc.id == document && doc.gate.rich_mode.get())
+        {
+            self.handle_escape();
+        }
+    }
+
     fn handle_escape(self: &Rc<Self>) {
         if self.escape_blocked() {
             self.zen_exit.escape(None, true);
@@ -1875,6 +1887,7 @@ fn scan_folder(root: PathBuf, query: String, cancel: Arc<AtomicBool>) -> SearchR
 
 fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     provide_context(doc.source.buffer());
+    let document = doc.id;
     let reference = doc.reference;
     let rich_reference = doc.rich_reference;
     let rich_mode = doc.gate.rich_mode;
@@ -1910,6 +1923,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 let session = rich.session();
                 effect(move || crate::rich_images::install(&session, image_document_path.get()));
                 let shell = controls_shell.clone();
+                let escape = shell.clone();
                 let focus: Rc<dyn Fn()> =
                     Rc::new(move || shell.focus_group(if second { 2 } else { 1 }));
                 let raw_focus = focus.clone();
@@ -1952,6 +1966,9 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             .classes(crate::app::rich_classes())
                             .auto_focus(move || rich_focus.get() == second)
                             .on_focus(move |_: &()| rich_focus.set(second))
+                            .on_unhandled_escape(move |_: &()| {
+                                escape.handle_rich_escape(document, second)
+                            })
                             .flex_1()
                             .min_w(px(0.0))
                             .min_h(px(0.0)),
