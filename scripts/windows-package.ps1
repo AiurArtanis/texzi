@@ -18,6 +18,7 @@ function Confirm-WindowsCandidate {
         [ValidatePattern('^[0-9a-f]{64}$')] [string] $ApprovedZipHash
     )
 
+    $Directory = (Resolve-Path -LiteralPath $Directory).Path
     $zipName = "texzi-$($Commit.Substring(0, 7))-win-x64.zip"
     $zipPath = Join-Path $Directory $zipName
     $checksumPath = Join-Path $Directory 'SHA256SUMS.txt'

@@ -24,7 +24,13 @@ Copy-Item -LiteralPath 'crates/texzi-app/assets/README.md' -Destination (Join-Pa
 Copy-Item -LiteralPath 'docs/t05/LICENSE-SOURCES.json' -Destination (Join-Path $licenses 'supplemental-rich-sources.json')
 Copy-Item -LiteralPath 'docs/tx00/licenses' -Destination (Join-Path $licenses 'supplemental') -Recurse
 $metadata = (cargo metadata --locked --format-version 1 --filter-platform $windowsTarget) | ConvertFrom-Json
-Copy-DependencyLicenses -Metadata $metadata -Destination $licenses -ProjectLicense LICENSE | Out-Null
+$sbom = @(Copy-DependencyLicenses -Metadata $metadata -Destination $licenses -ProjectLicense LICENSE |
+    ForEach-Object {
+        if ($_.id -like 'path+file:*') { $_.id = "path:$($_.name)@$($_.version)" }
+        $_
+    })
+ConvertTo-Json -InputObject $sbom -Depth 6 |
+    Set-Content -LiteralPath (Join-Path $package 'sbom.json') -Encoding utf8
 $sysroot = (rustc --print sysroot).Trim()
 Copy-Item -LiteralPath (Join-Path $sysroot 'share/doc/rust') -Destination (Join-Path $licenses 'rust-runtime') -Recurse
 

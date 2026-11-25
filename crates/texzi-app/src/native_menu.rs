@@ -369,7 +369,11 @@ mod tests {
                 .contains(&"texzi.find.replaceOpen")
         );
         assert!(SHELL_SHORTCUTS.contains(&("mod+h", "texzi.find.replaceOpen")));
-        for id in ["texzi.file.saveAll", "texzi.view.toggleZen", "texzi.help.guide"] {
+        for id in [
+            "texzi.file.saveAll",
+            "texzi.view.toggleZen",
+            "texzi.help.guide",
+        ] {
             assert!(commands.iter().any(|command| command.id == id));
             assert!(
                 MenuGroup::ALL
