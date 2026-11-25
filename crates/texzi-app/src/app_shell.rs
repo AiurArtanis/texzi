@@ -481,28 +481,28 @@ impl Shell {
             });
         }
         let escape = s.clone();
-        on_key("escape", move |_| {
-            if escape.escape_blocked() {
-                escape.zen_exit.escape(None, true);
+        on_key("escape", move |_| escape.handle_escape());
+        let escape = s.clone();
+        effect(move || {
+            if !escape.zen_source_escape() || escape.escape_blocked() {
                 return;
             }
-            if !escape.panel.get().is_empty() {
-                escape.zen_exit.escape(None, true);
-                escape.close_panel();
-            } else {
-                let stamp = escape.zen.get().then(|| escape.zen_stamp()).flatten();
-                match escape.zen_exit.escape(stamp, false) {
-                    crate::zen_state::EscapeAction::Exit => {
-                        escape.zen.set(false);
-                        escape.notice.set(String::new());
-                        escape.restore_editor_focus();
+            let escape = escape.clone();
+            // Windows treats Escape as a text key. Let Zen observe it before
+            // the focused input's native Escape handling can blur the field.
+            on_key_with(
+                "escape",
+                KeyOptions {
+                    when: nsh_core::keymap::When::Always,
+                    pass_through: true,
+                    ..Default::default()
+                },
+                move |_| {
+                    if escape.zen_source_escape() {
+                        escape.handle_escape();
                     }
-                    crate::zen_state::EscapeAction::Armed => {
-                        escape.notice.set("再按一次 Esc 退出 Zen".into())
-                    }
-                    crate::zen_state::EscapeAction::Ignored => {}
-                }
-            }
+                },
+            );
         });
         s
     }
@@ -1271,6 +1271,37 @@ impl Shell {
             || self
                 .current()
                 .is_some_and(|d| d.gate.busy() || d.controls.open())
+    }
+
+    fn zen_source_escape(&self) -> bool {
+        self.zen.get()
+            && !self.chord.get()
+            && self.panel.get().is_empty()
+            && self.current().is_some_and(|doc| !doc.gate.rich_mode.get())
+    }
+
+    fn handle_escape(self: &Rc<Self>) {
+        if self.escape_blocked() {
+            self.zen_exit.escape(None, true);
+            return;
+        }
+        if !self.panel.get().is_empty() {
+            self.zen_exit.escape(None, true);
+            self.close_panel();
+        } else {
+            let stamp = self.zen.get().then(|| self.zen_stamp()).flatten();
+            match self.zen_exit.escape(stamp, false) {
+                crate::zen_state::EscapeAction::Exit => {
+                    self.zen.set(false);
+                    self.notice.set(String::new());
+                    self.restore_editor_focus();
+                }
+                crate::zen_state::EscapeAction::Armed => {
+                    self.notice.set("再按一次 Esc 退出 Zen".into())
+                }
+                crate::zen_state::EscapeAction::Ignored => {}
+            }
+        }
     }
 
     fn close_panel(self: &Rc<Self>) {

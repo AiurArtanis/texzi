@@ -29,6 +29,8 @@ struct Probe {
     input_text: RefCell<String>,
     cancellations: Cell<usize>,
     answers: Cell<usize>,
+    zen: Cell<bool>,
+    zen_armed: Cell<bool>,
 }
 
 #[component]
@@ -116,6 +118,8 @@ impl Probe {
             input_text: RefCell::new("保留输入框正文".into()),
             cancellations: Cell::new(0),
             answers: Cell::new(0),
+            zen: Cell::new(false),
+            zen_armed: Cell::new(false),
         })
     }
 
@@ -157,6 +161,20 @@ fn ShortcutFixture() -> impl IntoElement {
                 *changed.input_text.borrow_mut() = value.into();
             }),
     )
+}
+
+#[component]
+fn FocusedZenFixture() -> impl IntoElement {
+    let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
+    let shell = super::Shell::new();
+    let observe = probe.clone();
+    effect(move || {
+        observe.zen.set(shell.zen.get());
+        observe.zen_armed.set(shell.zen_exit.armed.get());
+    });
+    input()
+        .auto_focus(true)
+        .on_focus(move |_: &()| probe.focus_events.set(probe.focus_events.get() + 1))
 }
 
 fn bind_fixture_shortcuts(probe: Rc<Probe>) {
@@ -220,6 +238,10 @@ impl Drop for Harness {
 
 impl Harness {
     fn new(install_shell: bool) -> Self {
+        Self::with_root(install_shell, Root::new::<ShortcutFixture>(|| ()))
+    }
+
+    fn with_root(install_shell: bool, root: Root) -> Self {
         let probe = Probe::new(install_shell);
         PROBE.with(|p| *p.borrow_mut() = Some(probe.clone()));
         let mut core = Core::new(
@@ -233,7 +255,7 @@ impl Harness {
         environment.os = Os::Windows;
         environment.file_requests = true;
         core.set_environment(environment);
-        core.mount_root(&Root::new::<ShortcutFixture>(|| ()));
+        core.mount_root(&root);
         let mut fixture = Self {
             core,
             probe,
@@ -676,6 +698,54 @@ fn real_rich_ctrl_b_still_toggles_stored_bold_marks_without_source_or_history_wr
 
     assert_eq!(fixture.press("ctrl+b", false), bold);
     assert_eq!(fixture.rich_audit(&document), before);
+}
+
+#[test]
+fn zen_double_escape_reaches_the_shell_with_a_focused_source_input() {
+    use nsh_core::{
+        desktop::{WindowMode, WindowPlacement, WindowState},
+        geometry::{Bounds, point},
+    };
+
+    let mut fixture = Harness::with_root(false, Root::new::<FocusedZenFixture>(|| ()));
+    let bounds = Bounds {
+        origin: point(px(0.0), px(0.0)),
+        size: Size {
+            width: px(800.0),
+            height: px(600.0),
+        },
+    };
+    let mut window = WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+    window.focused = true;
+    window.visible = true;
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    environment.file_requests = true;
+    environment.window_state = Some(window);
+    fixture.core.set_environment(environment);
+    fixture.flush();
+
+    // Keep the core's matching in text-focus mode throughout, as on Win32
+    // before its fallback can blur the input. The old Auto binding misses it.
+    assert_eq!(fixture.matched("escape", false), KeyMatch::None);
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("z", false).consumed());
+    assert!(fixture.probe.zen.get());
+    assert!(matches!(fixture.press("escape", false), KeyMatch::Notify(_)));
+    assert!(fixture.probe.zen_armed.get());
+    fixture.press("escape", true);
+    assert!(fixture.probe.zen.get());
+    assert!(matches!(fixture.press("escape", false), KeyMatch::Notify(_)));
+    assert!(!fixture.probe.zen.get());
+    assert!(!fixture.probe.zen_armed.get());
+    assert_eq!(fixture.matched("escape", false), KeyMatch::None);
+
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("z", false).consumed());
+    assert!(fixture.press("ctrl+f", false).consumed());
+    assert_eq!(fixture.press("escape", false), KeyMatch::None);
+    assert!(fixture.probe.zen.get());
+    assert!(!fixture.probe.zen_armed.get());
 }
 
 #[test]
