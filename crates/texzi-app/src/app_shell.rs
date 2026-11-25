@@ -1603,6 +1603,7 @@ fn button(label: &'static str, s: Rc<Shell>, id: &'static str) -> impl IntoEleme
         .on_press(move |_: &()| s.run(id))
 }
 
+const CHORD_PREFIX: &str = "mod+k";
 const CHORDS: &[(&str, &str)] = &[
     ("mod+o", "texzi.folder.open"),
     ("f", "texzi.folder.close"),
@@ -1637,6 +1638,10 @@ fn bind_chord_continuations(run: Rc<dyn Fn(Option<&'static str>)>) {
     {
         for modifier in ["", "mod+", "shift+", "mod+shift+"] {
             let stroke = format!("{modifier}{base}");
+            // Let the prefix handler start a new timer generation on a repeated Ctrl+K.
+            if stroke == CHORD_PREFIX {
+                continue;
+            }
             let Ok(parsed) = nsh_core::keymap::Keystroke::parse_with(&stroke, apple_keys()) else {
                 continue;
             };
@@ -1685,7 +1690,7 @@ fn trace_chord_shell(stage: &'static str, s: &Shell, command: Option<&'static st
 
 fn bind_chords(s: Rc<Shell>) {
     let prefix = s.clone();
-    on_key("mod+k", move |_| {
+    on_key(CHORD_PREFIX, move |_| {
         prefix.zen_exit.reset();
         if prefix.modal.get() || prefix.current().is_some_and(|d| d.gate.busy()) {
             trace_chord_shell("prefix_rejected", &prefix, None);

@@ -178,7 +178,7 @@ fn bind_fixture_shortcuts(probe: Rc<Probe>) {
         // The full shell's timeout, modal and IME handling are not replaced
         // or claimed here.
         let prefix = signal(false);
-        on_key("mod+k", move |_| prefix.set(true));
+        on_key(super::CHORD_PREFIX, move |_| prefix.set(true));
         let run = probe.clone();
         effect(move || {
             if !prefix.get() {
@@ -676,6 +676,33 @@ fn real_rich_ctrl_b_still_toggles_stored_bold_marks_without_source_or_history_wr
 
     assert_eq!(fixture.press("ctrl+b", false), bold);
     assert_eq!(fixture.rich_audit(&document), before);
+}
+
+#[test]
+fn repeated_chord_prefix_reaches_the_prefix_handler_and_preserves_save_all() {
+    let mut fixture = Harness::new(true);
+    let prefix = fixture.press("ctrl+k", false);
+    assert!(matches!(prefix, KeyMatch::Fire(_)));
+    assert_eq!(fixture.press("ctrl+k", false), prefix);
+    assert!(fixture.press("s", false).consumed());
+    assert_eq!(fixture.probe.cancellations.get(), 0);
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        ["texzi.file.saveAll"],
+    );
+
+    assert_eq!(fixture.press("ctrl+k", false), prefix);
+    assert!(fixture.press("s", false).consumed());
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        ["texzi.file.saveAll", "texzi.file.saveAll"],
+    );
+
+    assert_eq!(fixture.press("ctrl+k", false), prefix);
+    assert!(fixture.press("ctrl+s", false).consumed());
+    assert_eq!(fixture.probe.cancellations.get(), 1);
+    assert_eq!(fixture.probe.calls.borrow().len(), 2);
+    assert_eq!(fixture.probe.input_changes.get(), 0);
 }
 
 #[test]
