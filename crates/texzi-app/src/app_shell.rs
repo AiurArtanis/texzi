@@ -412,10 +412,12 @@ impl Shell {
         // one newest match, so later registration could shadow a real command.
         let reset = s.zen_exit.clone();
         crate::zen_state::bind_reset_on_other_keys(reset.armed, Rc::new(move || reset.reset()));
-        let window = s.clone();
+        let shell = s.clone();
         effect(move || {
-            if !window.window.state().is_some_and(|state| state.focused) {
-                window.zen_exit.reset();
+            if !shell.window.state().is_some_and(|state| state.focused)
+                || shell.zen.get() && shell.current().is_some_and(|doc| doc.gate.busy())
+            {
+                untracked(|| shell.zen_exit.reset());
             }
         });
         let quick = s.clone();
@@ -481,28 +483,32 @@ impl Shell {
             });
         }
         let escape = s.clone();
-        on_key("escape", move |_| {
-            if escape.escape_blocked() {
-                escape.zen_exit.escape(None, true);
+        on_key("escape", move |_| escape.handle_escape());
+        let source_escape = {
+            let escape = s.clone();
+            computed(move || escape.zen_source_escape())
+        };
+        let escape = s.clone();
+        effect(move || {
+            if !source_escape.get() || escape.escape_blocked() {
                 return;
             }
-            if !escape.panel.get().is_empty() {
-                escape.zen_exit.escape(None, true);
-                escape.close_panel();
-            } else {
-                let stamp = escape.zen.get().then(|| escape.zen_stamp()).flatten();
-                match escape.zen_exit.escape(stamp, false) {
-                    crate::zen_state::EscapeAction::Exit => {
-                        escape.zen.set(false);
-                        escape.notice.set(String::new());
-                        escape.restore_editor_focus();
+            let escape = escape.clone();
+            // Windows treats Escape as a text key. Let Zen observe it before
+            // the focused input's native Escape handling can blur the field.
+            on_key_with(
+                "escape",
+                KeyOptions {
+                    when: nsh_core::keymap::When::Always,
+                    pass_through: true,
+                    ..Default::default()
+                },
+                move |_| {
+                    if source_escape.get() {
+                        escape.handle_escape();
                     }
-                    crate::zen_state::EscapeAction::Armed => {
-                        escape.notice.set("再按一次 Esc 退出 Zen".into())
-                    }
-                    crate::zen_state::EscapeAction::Ignored => {}
-                }
-            }
+                },
+            );
         });
         s
     }
@@ -1273,6 +1279,52 @@ impl Shell {
                 .is_some_and(|d| d.gate.busy() || d.controls.open())
     }
 
+    fn zen_source_escape(&self) -> bool {
+        self.zen.get()
+            && !self.chord.get()
+            && self.panel.get().is_empty()
+            // A newer binding would mask the Editor's selection collapse.
+            && self.current().is_some_and(|doc| {
+                !doc.gate.rich_mode.get() && doc.source.has_single_caret()
+            })
+    }
+
+    fn handle_rich_escape(self: &Rc<Self>, document: u64, second: bool) {
+        if self.zen.get()
+            && !self.chord.get()
+            && self.second_active.get() == second
+            && self
+                .current()
+                .is_some_and(|doc| doc.id == document && doc.gate.rich_mode.get())
+        {
+            self.handle_escape();
+        }
+    }
+
+    fn handle_escape(self: &Rc<Self>) {
+        if self.escape_blocked() {
+            self.zen_exit.escape(None, true);
+            return;
+        }
+        if !self.panel.get().is_empty() {
+            self.zen_exit.escape(None, true);
+            self.close_panel();
+        } else {
+            let stamp = self.zen.get().then(|| self.zen_stamp()).flatten();
+            match self.zen_exit.escape(stamp, false) {
+                crate::zen_state::EscapeAction::Exit => {
+                    self.zen.set(false);
+                    self.notice.set(String::new());
+                    self.restore_editor_focus();
+                }
+                crate::zen_state::EscapeAction::Armed => {
+                    self.notice.set("再按一次 Esc 退出 Zen".into())
+                }
+                crate::zen_state::EscapeAction::Ignored => {}
+            }
+        }
+    }
+
     fn close_panel(self: &Rc<Self>) {
         self.zen_exit.reset();
         self.cancel_quick(false);
@@ -1603,6 +1655,7 @@ fn button(label: &'static str, s: Rc<Shell>, id: &'static str) -> impl IntoEleme
         .on_press(move |_: &()| s.run(id))
 }
 
+const CHORD_PREFIX: &str = "mod+k";
 const CHORDS: &[(&str, &str)] = &[
     ("mod+o", "texzi.folder.open"),
     ("f", "texzi.folder.close"),
@@ -1637,6 +1690,10 @@ fn bind_chord_continuations(run: Rc<dyn Fn(Option<&'static str>)>) {
     {
         for modifier in ["", "mod+", "shift+", "mod+shift+"] {
             let stroke = format!("{modifier}{base}");
+            // Let the prefix handler start a new timer generation on a repeated Ctrl+K.
+            if stroke == CHORD_PREFIX {
+                continue;
+            }
             let Ok(parsed) = nsh_core::keymap::Keystroke::parse_with(&stroke, apple_keys()) else {
                 continue;
             };
@@ -1685,7 +1742,7 @@ fn trace_chord_shell(stage: &'static str, s: &Shell, command: Option<&'static st
 
 fn bind_chords(s: Rc<Shell>) {
     let prefix = s.clone();
-    on_key("mod+k", move |_| {
+    on_key(CHORD_PREFIX, move |_| {
         prefix.zen_exit.reset();
         if prefix.modal.get() || prefix.current().is_some_and(|d| d.gate.busy()) {
             trace_chord_shell("prefix_rejected", &prefix, None);
@@ -1832,6 +1889,7 @@ fn scan_folder(root: PathBuf, query: String, cancel: Arc<AtomicBool>) -> SearchR
 
 fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     provide_context(doc.source.buffer());
+    let document = doc.id;
     let reference = doc.reference;
     let rich_reference = doc.rich_reference;
     let rich_mode = doc.gate.rich_mode;
@@ -1867,6 +1925,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 let session = rich.session();
                 effect(move || crate::rich_images::install(&session, image_document_path.get()));
                 let shell = controls_shell.clone();
+                let escape = shell.clone();
                 let focus: Rc<dyn Fn()> =
                     Rc::new(move || shell.focus_group(if second { 2 } else { 1 }));
                 let raw_focus = focus.clone();
@@ -1909,6 +1968,9 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             .classes(crate::app::rich_classes())
                             .auto_focus(move || rich_focus.get() == second)
                             .on_focus(move |_: &()| rich_focus.set(second))
+                            .on_unhandled_escape(move |_: &()| {
+                                escape.handle_rich_escape(document, second)
+                            })
                             .flex_1()
                             .min_w(px(0.0))
                             .min_h(px(0.0)),

@@ -3,7 +3,13 @@
 //! this does not exercise Win32 key delivery, native menus or a visible dialog.
 use super::{CHORDS, SHELL_SHORTCUTS, bind_chord_continuations, bind_shell_shortcuts};
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
-use nsh_base::editor::ExternalDocument;
+use nsh_base::{
+    editor::ExternalDocument,
+    rich_editor::{
+        state::{EditorState, GapCursor, KeyEvent, PluginSpec, Transaction},
+        view::EditorSession,
+    },
+};
 use nsh_core::{
     ApproxTextEngine, Command, Core, EventKind, EventPayload, MountItem, NodeId, Op, PayloadValue,
     ROOT_ID, Size, ViewKind,
@@ -17,7 +23,10 @@ use nsh_core::{
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 struct Probe {
@@ -29,6 +38,10 @@ struct Probe {
     input_text: RefCell<String>,
     cancellations: Cell<usize>,
     answers: Cell<usize>,
+    zen: Cell<bool>,
+    zen_armed: Cell<bool>,
+    source: RefCell<Option<Rc<NativeView>>>,
+    rich_session: RefCell<Option<EditorSession>>,
 }
 
 #[component]
@@ -116,7 +129,19 @@ impl Probe {
             input_text: RefCell::new("保留输入框正文".into()),
             cancellations: Cell::new(0),
             answers: Cell::new(0),
+            zen: Cell::new(false),
+            zen_armed: Cell::new(false),
+            source: RefCell::new(None),
+            rich_session: RefCell::new(None),
         })
+    }
+
+    fn observe_zen(self: &Rc<Self>, shell: Rc<super::Shell>) {
+        let probe = self.clone();
+        effect(move || {
+            probe.zen.set(shell.zen.get());
+            probe.zen_armed.set(shell.zen_exit.armed.get());
+        });
     }
 
     fn run(self: &Rc<Self>, id: &str) {
@@ -159,6 +184,44 @@ fn ShortcutFixture() -> impl IntoElement {
     )
 }
 
+#[component]
+fn FocusedZenFixture() -> impl IntoElement {
+    let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
+    let shell = super::Shell::new();
+    let source = NativeView::fixture("first\nsecond");
+    shell.add(source.clone(), None);
+    let doc = shell.current().unwrap();
+    doc.gate.source_mounted();
+    provide_context(source.buffer());
+    *probe.source.borrow_mut() = Some(source);
+    probe.observe_zen(shell);
+    nsh_base::editor::editor()
+        .component_ref(&doc.reference)
+        .auto_focus(true)
+        .on_focus(move |_: &()| probe.focus_events.set(probe.focus_events.get() + 1))
+}
+
+#[component]
+fn FocusedRichZenFixture() -> impl IntoElement {
+    let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
+    let shell = super::Shell::new();
+    shell.add(NativeView::fixture("***\n\nEditable rich text."), None);
+    let doc = shell.current().unwrap();
+    doc.gate.to_rich();
+    assert!(doc.gate.rich_mode.get(), "{}", doc.gate.status.get());
+    let session = doc.gate.session();
+    *probe.rich_session.borrow_mut() = Some(session.clone());
+    probe.observe_zen(shell.clone());
+    let document = doc.id;
+    nsh_base::rich_editor::view::rich_editor()
+        .editor(session)
+        .component_ref(&doc.rich_reference)
+        .application_shortcuts(crate::native_menu::application_shortcuts())
+        .auto_focus(true)
+        .on_focus(move |_: &()| probe.focus_events.set(probe.focus_events.get() + 1))
+        .on_unhandled_escape(move |_: &()| shell.handle_rich_escape(document, false))
+}
+
 fn bind_fixture_shortcuts(probe: Rc<Probe>) {
     let owner = Owner::current();
     let armed = signal(true);
@@ -178,7 +241,7 @@ fn bind_fixture_shortcuts(probe: Rc<Probe>) {
         // The full shell's timeout, modal and IME handling are not replaced
         // or claimed here.
         let prefix = signal(false);
-        on_key("mod+k", move |_| prefix.set(true));
+        on_key(super::CHORD_PREFIX, move |_| prefix.set(true));
         let run = probe.clone();
         effect(move || {
             if !prefix.get() {
@@ -220,6 +283,10 @@ impl Drop for Harness {
 
 impl Harness {
     fn new(install_shell: bool) -> Self {
+        Self::with_root(install_shell, Root::new::<ShortcutFixture>(|| ()))
+    }
+
+    fn with_root(install_shell: bool, root: Root) -> Self {
         let probe = Probe::new(install_shell);
         PROBE.with(|p| *p.borrow_mut() = Some(probe.clone()));
         let mut core = Core::new(
@@ -233,7 +300,7 @@ impl Harness {
         environment.os = Os::Windows;
         environment.file_requests = true;
         core.set_environment(environment);
-        core.mount_root(&Root::new::<ShortcutFixture>(|| ()));
+        core.mount_root(&root);
         let mut fixture = Self {
             core,
             probe,
@@ -251,6 +318,30 @@ impl Harness {
         fixture.flush();
         assert_eq!(fixture.probe.focus_events.get(), 1);
         fixture
+    }
+
+    fn focus_window(&mut self) {
+        use nsh_core::{
+            desktop::{WindowMode, WindowPlacement, WindowState},
+            geometry::{Bounds, point},
+        };
+
+        let bounds = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: Size {
+                width: px(800.0),
+                height: px(600.0),
+            },
+        };
+        let mut window = WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+        window.focused = true;
+        window.visible = true;
+        let mut environment = Environment::default();
+        environment.os = Os::Windows;
+        environment.file_requests = true;
+        environment.window_state = Some(window);
+        self.core.set_environment(environment);
+        self.flush();
     }
 
     fn flush(&mut self) {
@@ -676,6 +767,210 @@ fn real_rich_ctrl_b_still_toggles_stored_bold_marks_without_source_or_history_wr
 
     assert_eq!(fixture.press("ctrl+b", false), bold);
     assert_eq!(fixture.rich_audit(&document), before);
+}
+
+#[test]
+fn zen_double_escape_reaches_the_shell_with_a_focused_source_input() {
+    let mut fixture = Harness::with_root(false, Root::new::<FocusedZenFixture>(|| ()));
+    fixture.focus_window();
+
+    // Keep the core's matching in text-focus mode throughout, as on Win32
+    // before its fallback can blur the input. The old Auto binding misses it.
+    assert_eq!(fixture.matched("escape", false), KeyMatch::None);
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("z", false).consumed());
+    assert!(fixture.probe.zen.get());
+    assert!(matches!(
+        fixture.press("escape", false),
+        KeyMatch::Notify(_)
+    ));
+    assert!(fixture.probe.zen_armed.get());
+    fixture.press("escape", true);
+    assert!(fixture.probe.zen.get());
+    assert!(matches!(
+        fixture.press("escape", false),
+        KeyMatch::Notify(_)
+    ));
+    assert!(!fixture.probe.zen.get());
+    assert!(!fixture.probe.zen_armed.get());
+    assert_eq!(fixture.matched("escape", false), KeyMatch::None);
+
+    let source = fixture.probe.source.borrow().as_ref().unwrap().clone();
+    let selections = || source.snapshot().unwrap().selections.ranges;
+    for (key, expected) in [
+        ("ctrl+a", vec![(0, 12)]),
+        ("ctrl+alt+down", vec![(0, 0), (6, 6)]),
+    ] {
+        assert!(fixture.press("ctrl+home", false).consumed());
+        assert!(fixture.press(key, false).consumed());
+        assert_eq!(selections(), expected);
+        let collapse = fixture.matched("escape", false);
+        assert!(matches!(collapse, KeyMatch::Fire(_)));
+        assert!(fixture.press("ctrl+k", false).consumed());
+        assert!(fixture.press("z", false).consumed());
+        assert_eq!(fixture.press("escape", false), collapse);
+        assert!(fixture.probe.zen.get());
+        assert!(!fixture.probe.zen_armed.get());
+        assert!(matches!(selections().as_slice(), [(a, h)] if a == h));
+        assert!(matches!(
+            fixture.press("escape", false),
+            KeyMatch::Notify(_)
+        ));
+        assert!(fixture.probe.zen_armed.get());
+        assert!(matches!(
+            fixture.press("escape", false),
+            KeyMatch::Notify(_)
+        ));
+        assert!(!fixture.probe.zen.get());
+    }
+
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("z", false).consumed());
+    assert!(fixture.press("ctrl+f", false).consumed());
+    assert_eq!(fixture.press("escape", false), KeyMatch::None);
+    assert!(fixture.probe.zen.get());
+    assert!(!fixture.probe.zen_armed.get());
+}
+
+struct EscapePlugin(Arc<AtomicBool>);
+
+impl PluginSpec for EscapePlugin {
+    fn handle_key_down(
+        &self,
+        _: &EditorState,
+        event: &KeyEvent,
+        _: &mut dyn FnMut(Transaction),
+    ) -> bool {
+        event.key == "Escape" && self.0.load(Ordering::Relaxed)
+    }
+}
+
+#[test]
+fn zen_rich_escape_defers_to_the_editor_before_counting_an_empty_text_caret() {
+    let mut fixture = Harness::with_root(false, Root::new::<FocusedRichZenFixture>(|| ()));
+    fixture.focus_window();
+    let session = fixture
+        .probe
+        .rich_session
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .clone();
+    let state = session.state();
+    let mut plugins = state.plugins().to_vec();
+    let plugin_active = Arc::new(AtomicBool::new(false));
+    plugins.push(Arc::new(EscapePlugin(plugin_active.clone())));
+    session.update_state(state.reconfigure(plugins).unwrap());
+    fixture.flush();
+
+    let escape = fixture.press("escape", false);
+    assert!(matches!(escape, KeyMatch::Fire(_)));
+    assert!(!fixture.probe.zen_armed.get());
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("z", false).consumed());
+    assert!(fixture.probe.zen.get());
+
+    assert!(fixture.press("ctrl+a", false).consumed());
+    assert!(!session.state().selection().empty());
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(session.state().selection().cursor().is_some());
+    assert!(!fixture.probe.zen_armed.get());
+
+    plugin_active.store(true, Ordering::Relaxed);
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(!fixture.probe.zen_armed.get());
+    plugin_active.store(false, Ordering::Relaxed);
+
+    assert!(fixture.press("ctrl+f", false).consumed());
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(!fixture.probe.zen_armed.get());
+
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(fixture.probe.zen_armed.get());
+    let before_composition = session.state();
+    for composing in [true, false] {
+        assert!(fixture.core.component_event(
+            fixture.input.unwrap(),
+            EventKind::CompositionChange,
+            &EventPayload::Map(vec![
+                ("composing", PayloadValue::Bool(composing)),
+                (
+                    "text",
+                    PayloadValue::Str(if composing {
+                        "中".into()
+                    } else {
+                        String::new()
+                    })
+                ),
+            ]),
+        ));
+        fixture.flush();
+        assert_eq!(session.composing(), composing);
+        assert!(!fixture.probe.zen_armed.get());
+        if composing {
+            assert_eq!(fixture.press("escape", false), escape);
+            assert!(!fixture.probe.zen_armed.get());
+        }
+    }
+    let after_composition = session.state();
+    assert_eq!(after_composition.revision(), before_composition.revision());
+    assert!(
+        after_composition
+            .selection()
+            .eq(before_composition.selection())
+    );
+
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(fixture.probe.zen.get());
+    assert!(fixture.probe.zen_armed.get());
+    fixture.press("escape", true);
+    assert!(fixture.probe.zen.get());
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(!fixture.probe.zen.get());
+    assert!(!fixture.probe.zen_armed.get());
+
+    let state = session.state();
+    let before_rule = state.doc().resolve(0).unwrap();
+    assert!(GapCursor::valid(&before_rule));
+    let mut transaction = state.tr();
+    transaction.set_selection(GapCursor::create(before_rule));
+    session.update_state(state.apply(transaction).unwrap());
+    fixture.flush();
+    assert!(session.state().selection().is_gap_cursor());
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("z", false).consumed());
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(fixture.probe.zen_armed.get());
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(!fixture.probe.zen.get());
+    assert!(session.state().selection().is_gap_cursor());
+}
+
+#[test]
+fn repeated_chord_prefix_reaches_the_prefix_handler_and_preserves_save_all() {
+    let mut fixture = Harness::new(true);
+    let prefix = fixture.press("ctrl+k", false);
+    assert!(matches!(prefix, KeyMatch::Fire(_)));
+    assert_eq!(fixture.press("ctrl+k", false), prefix);
+    assert!(fixture.press("s", false).consumed());
+    assert_eq!(fixture.probe.cancellations.get(), 0);
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        ["texzi.file.saveAll"],
+    );
+
+    assert_eq!(fixture.press("ctrl+k", false), prefix);
+    assert!(fixture.press("s", false).consumed());
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        ["texzi.file.saveAll", "texzi.file.saveAll"],
+    );
+
+    assert_eq!(fixture.press("ctrl+k", false), prefix);
+    assert!(fixture.press("ctrl+s", false).consumed());
+    assert_eq!(fixture.probe.cancellations.get(), 1);
+    assert_eq!(fixture.probe.calls.borrow().len(), 2);
+    assert_eq!(fixture.probe.input_changes.get(), 0);
 }
 
 #[test]

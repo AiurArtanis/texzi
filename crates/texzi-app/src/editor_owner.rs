@@ -76,6 +76,16 @@ impl NativeView {
     pub fn inspect<R>(&self, f: impl FnOnce(&doc::Store, doc::ViewId) -> R) -> R {
         f(&self.owner.store.borrow(), self.view)
     }
+    pub(crate) fn has_single_caret(&self) -> bool {
+        self.track();
+        self.selection_changed.get();
+        self.owner.store.borrow().view(self.view).is_ok_and(|view| {
+            matches!(
+                view.selection.selections.as_slice(),
+                [selection] if selection.anchor.position.offset == selection.head.position.offset
+            )
+        })
+    }
     pub(crate) fn cursor_status(&self) -> Option<String> {
         self.track();
         self.selection_changed.get();
