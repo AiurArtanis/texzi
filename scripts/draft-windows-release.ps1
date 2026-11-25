@@ -16,7 +16,7 @@ Set-StrictMode -Version Latest
 function Get-VersionRelease {
     param([string] $Repository, [string] $Tag)
 
-    $query = '.[] | select(.tag_name == "{0}") | {{id, draft, prerelease, html_url}}' -f $Tag
+    $query = '.[] | select(.tag_name == "{0}") | {{id, draft, prerelease, html_url, body}}' -f $Tag
     $matches = @(gh api "repos/$Repository/releases?per_page=100" --paginate --jq $query |
         ForEach-Object { ConvertFrom-Json -InputObject $_ })
     if ($matches.Count -gt 1) { throw "More than one Release uses tag $Tag." }
@@ -24,14 +24,34 @@ function Get-VersionRelease {
 }
 
 function Get-MissingReleaseAssets {
-    param([string] $Repository, [psobject] $Release, [bool] $Prerelease, [string[]] $Paths)
+    param(
+        [string] $Repository,
+        [psobject] $Release,
+        [bool] $Prerelease,
+        [string[]] $Paths,
+        [string[]] $IdentityLines
+    )
 
     if (!$Release.draft -or $Release.prerelease -ne $Prerelease) {
         throw 'An existing Release must be an unpublished draft with the expected prerelease status.'
     }
+    $bodyLines = ($Release.body -split '\r?\n').Trim()
+    foreach ($line in $IdentityLines) {
+        $prefix = ($line -split ':', 2)[0] + ':'
+        $found = @($bodyLines | Where-Object { $_.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+        if ($found.Count -ne 1 -or $found[0] -ne $line) {
+            throw "Existing draft notes do not match the approved build identity for $prefix"
+        }
+    }
+
     $endpoint = "repos/$Repository/releases/$($Release.id)/assets?per_page=100"
     $assets = @(gh api $endpoint --paginate --jq '.[] | {name, digest, state}' |
         ForEach-Object { ConvertFrom-Json -InputObject $_ })
+    $expectedNames = @($Paths | ForEach-Object { Split-Path $_ -Leaf })
+    $unexpected = @($assets | Where-Object { $_.name -cnotin $expectedNames })
+    if ($unexpected.Count) {
+        throw "Existing draft has assets outside the approved package: $($unexpected.name -join ', '). They were preserved."
+    }
     foreach ($path in $Paths) {
         $name = Split-Path $path -Leaf
         $matching = @($assets | Where-Object Name -EQ $name)
@@ -89,25 +109,30 @@ if ($VerifyOnly) { return }
 
 $paths = @($candidate.ZipPath, $candidate.ChecksumPath)
 $prerelease = $Tag.Contains('-')
+$identityLines = @(
+    "- Commit: $commit"
+    "- ZIP SHA-256: $($candidate.ZipSha256)"
+    "- EXE SHA-256: $($candidate.ExeSha256)"
+    "- Build: $($run.html_url)/attempts/$RunAttempt"
+)
+$expectedDraft = @{
+    Repository = $repository
+    Prerelease = $prerelease
+    Paths = $paths
+    IdentityLines = $identityLines
+}
 $draft = Get-VersionRelease -Repository $repository -Tag $Tag
 if ($draft) {
-    $missing = @(Get-MissingReleaseAssets -Repository $repository -Release $draft -Prerelease $prerelease -Paths $paths)
+    $missing = @(Get-MissingReleaseAssets @expectedDraft -Release $draft)
     if ($missing.Count) {
         gh release upload $Tag @missing --repo $repository
     }
 } else {
-    $notes = @"
-Windows x64 便携版。解压后运行 texzi-app.exe。
-
-- Commit: $commit
-- ZIP SHA-256: $($candidate.ZipSha256)
-- EXE SHA-256: $($candidate.ExeSha256)
-- Build: $($run.html_url)/attempts/$RunAttempt
-"@
+    $notes = @('Windows x64 便携版。解压后运行 texzi-app.exe。', '') + $identityLines
     $release = @(
         'release', 'create', $Tag, $candidate.ZipPath, $candidate.ChecksumPath,
         '--repo', $repository, '--verify-tag', '--draft', '--latest=false',
-        '--title', "texzi $Tag", '--notes', $notes
+        '--title', "texzi $Tag", '--notes', ($notes -join [Environment]::NewLine)
     )
     if ($prerelease) { $release += '--prerelease' }
     gh @release
@@ -115,6 +140,6 @@ Windows x64 便携版。解压后运行 texzi-app.exe。
 
 $draft = Get-VersionRelease -Repository $repository -Tag $Tag
 if (!$draft) { throw "The Release draft for $Tag could not be read back." }
-$missing = @(Get-MissingReleaseAssets -Repository $repository -Release $draft -Prerelease $prerelease -Paths $paths)
+$missing = @(Get-MissingReleaseAssets @expectedDraft -Release $draft)
 if ($missing.Count) { throw 'The Release draft still lacks verified assets. Retry with the same run and hash.' }
 Write-Host "Verified draft: $($draft.html_url)"
