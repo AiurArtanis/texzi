@@ -40,3 +40,21 @@ dependencies, features and original upstream manifests remain unchanged.
 Validation for this change: NOT_RUN (no Cargo, component execution or GUI in
 this scoped edit); the host integration and focused RichEditor regression are
 validated separately before any product acceptance claim.
+
+### 2026-11-26 RichEditor Escape
+
+`rich_editor/view/{mod,controller}.rs` emits `UnhandledEscape`
+for a plain Escape at an empty text caret on non-terminal platforms. The
+focused RichEditor still receives the keystroke first. Composition, selected
+node views, plugins, and the base keymap have priority. Non-empty selections
+retain their existing collapse behavior, and the terminal retains its focus
+behavior. Texzi uses the event for Zen only in the active rich document and
+group, using the existing priority for modals, editor panels, and format controls.
+
+The focused RichEditor and source Editor cases run as part of `Windows x64
+verify`. Run the focused regressions from the workspace on Windows x64 with
+the following command.
+
+```powershell
+cargo test -p texzi-app --release --locked --target x86_64-pc-windows-msvc zen_ -- --test-threads=1
+```
