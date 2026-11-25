@@ -120,25 +120,8 @@ try {
     $sysroot = (Get-Content build-evidence/rust-sysroot.txt -Raw).Trim()
     Copy-Item (Join-Path $sysroot 'share/doc/rust') dist/package/licenses/rust-runtime -Recurse
     $metadata = Get-Content build-evidence/metadata.json -Raw | ConvertFrom-Json
-    $sbom = foreach ($package in $metadata.packages) {
-        $folder = "dist/package/licenses/$($package.name)-$($package.version)"
-        New-Item $folder -ItemType Directory -Force | Out-Null
-        $root = Split-Path $package.manifest_path -Parent
-        if ($package.license_file) {
-            Copy-Item (Join-Path $root $package.license_file) -Destination $folder
-        }
-        Get-ChildItem $root -File | Where-Object { $_.Name -match '^(LICENSE|LICENCE|COPYING|NOTICE|COPYRIGHT)' } | Copy-Item -Destination $folder
-        if ($package.name -eq 'mac') {
-            Copy-Item (Join-Path $root 'README.md') $folder
-            Copy-Item LICENSE (Join-Path $folder 'Apache-2.0.txt')
-        }
-        # NSH inherits the repository's root license.
-        if ($package.source -like 'git+https://github.com/longbridge/nsh*') {
-            $repoRoot = Split-Path (Split-Path $root -Parent) -Parent
-            Get-ChildItem $repoRoot -File | Where-Object { $_.Name -match '^(LICENSE|NOTICE)' } | Copy-Item -Destination $folder -Force
-        }
-        [ordered]@{ name=$package.name; version=$package.version; source=$package.source; license=$package.license; license_file=$package.license_file; id=$package.id }
-    }
+    . "$PSScriptRoot/package-licenses.ps1"
+    $sbom = Copy-DependencyLicenses -Metadata $metadata -Destination 'dist/package/licenses' -ProjectLicense LICENSE
     $sbom | ConvertTo-Json -Depth 6 | Set-Content dist/package/sbom.json
     Copy-Item build-evidence/metadata.json dist/package/
     "commit=$commit`nrun=$env:GITHUB_RUN_ID`nattempt=$env:GITHUB_RUN_ATTEMPT`nimage=$env:ImageOS/$env:ImageVersion`n" | Set-Content dist/package/build-identity.txt

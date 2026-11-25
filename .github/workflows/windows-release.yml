@@ -1,0 +1,83 @@
+name: Windows release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag on the approved main commit
+        type: string
+        required: true
+      run_id:
+        description: Successful Windows CI push run ID from main
+        type: string
+        required: true
+      run_attempt:
+        description: Attempt that produced the approved package
+        type: string
+        required: true
+      zip_sha256:
+        description: SHA-256 of the approved Windows x64 ZIP
+        type: string
+        required: true
+      create_draft:
+        description: Create a Release draft after verifying the approved files
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  SOURCE_RUN_ID: ${{ inputs.run_id }}
+  SOURCE_RUN_ATTEMPT: ${{ inputs.run_attempt }}
+  APPROVED_ZIP_SHA256: ${{ inputs.zip_sha256 }}
+
+jobs:
+  verify:
+    name: Verify Windows release inputs
+    if: ${{ github.ref == 'refs/heads/main' && !inputs.create_draft }}
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify approved artifact and tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $release = @{
+            Tag = $env:RELEASE_TAG
+            RunId = $env:SOURCE_RUN_ID
+            RunAttempt = $env:SOURCE_RUN_ATTEMPT
+            ApprovedZipHash = $env:APPROVED_ZIP_SHA256
+          }
+          ./scripts/draft-windows-release.ps1 @release -VerifyOnly
+
+  draft:
+    name: Create Windows Release draft
+    if: ${{ github.ref == 'refs/heads/main' && inputs.create_draft }}
+    runs-on: windows-2022
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Create draft with the verified CI assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $release = @{
+            Tag = $env:RELEASE_TAG
+            RunId = $env:SOURCE_RUN_ID
+            RunAttempt = $env:SOURCE_RUN_ATTEMPT
+            ApprovedZipHash = $env:APPROVED_ZIP_SHA256
+          }
+          ./scripts/draft-windows-release.ps1 @release
