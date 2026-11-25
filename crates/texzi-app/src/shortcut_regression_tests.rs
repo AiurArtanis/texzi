@@ -731,11 +731,17 @@ fn zen_double_escape_reaches_the_shell_with_a_focused_source_input() {
     assert!(fixture.press("ctrl+k", false).consumed());
     assert!(fixture.press("z", false).consumed());
     assert!(fixture.probe.zen.get());
-    assert!(matches!(fixture.press("escape", false), KeyMatch::Notify(_)));
+    assert!(matches!(
+        fixture.press("escape", false),
+        KeyMatch::Notify(_)
+    ));
     assert!(fixture.probe.zen_armed.get());
     fixture.press("escape", true);
     assert!(fixture.probe.zen.get());
-    assert!(matches!(fixture.press("escape", false), KeyMatch::Notify(_)));
+    assert!(matches!(
+        fixture.press("escape", false),
+        KeyMatch::Notify(_)
+    ));
     assert!(!fixture.probe.zen.get());
     assert!(!fixture.probe.zen_armed.get());
     assert_eq!(fixture.matched("escape", false), KeyMatch::None);
