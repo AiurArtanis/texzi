@@ -1,0 +1,62 @@
+[
+  {
+    "width": 16,
+    "height": 16,
+    "bytes": 1128,
+    "offset": 166
+  },
+  {
+    "width": 20,
+    "height": 20,
+    "bytes": 1720,
+    "offset": 1294
+  },
+  {
+    "width": 24,
+    "height": 24,
+    "bytes": 2440,
+    "offset": 3014
+  },
+  {
+    "width": 32,
+    "height": 32,
+    "bytes": 4264,
+    "offset": 5454
+  },
+  {
+    "width": 40,
+    "height": 40,
+    "bytes": 6760,
+    "offset": 9718
+  },
+  {
+    "width": 48,
+    "height": 48,
+    "bytes": 9640,
+    "offset": 16478
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "bytes": 16936,
+    "offset": 26118
+  },
+  {
+    "width": 96,
+    "height": 96,
+    "bytes": 38056,
+    "offset": 43054
+  },
+  {
+    "width": 128,
+    "height": 128,
+    "bytes": 67624,
+    "offset": 81110
+  },
+  {
+    "width": 256,
+    "height": 256,
+    "bytes": 64582,
+    "offset": 148734
+  }
+]

@@ -3,10 +3,16 @@ on:
   push:
     branches: ['cindy/**']
   workflow_dispatch:
+    inputs:
+      oracle_only:
+        description: 'Build only the reviewed fixed 5a14645 independent oracle'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   logging-contract:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.oracle_only }}
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -24,6 +30,7 @@ jobs:
           path: logging-test-evidence/*
           if-no-files-found: error
   release:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.oracle_only }}
     needs: logging-contract
     runs-on: windows-2022
     steps:
@@ -48,3 +55,23 @@ jobs:
           name: tx00-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: build-evidence/*
           if-no-files-found: error
+  steamy-oracle-5a14645:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.oracle_only }}
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build and execute reviewed oracle against isolated fixed product
+        shell: pwsh
+        run: ./scripts/build-fixed-oracle.ps1
+      - name: Preserve oracle executable and all outcomes
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: steamy-oracle-5a14645-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: oracle-artifact/*
+          if-no-files-found: error
+          retention-days: 14

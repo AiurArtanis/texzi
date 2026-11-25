@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/texzi-app"]
+members = ["crates/texzi-app", "crates/texzi-document"]
+exclude = ["vendor/markdown", "vendor/nsh-base", "vendor/nsh-platform-windows"]
 resolver = "3"
 
 [workspace.package]
@@ -12,4 +13,11 @@ license = "Apache-2.0"
 nsh-core = { git = "https://github.com/longbridge/nsh", rev = "224d9a795c7ac9d10d75750de9351adac5549675", default-features = false }
 nsh-platform-windows = { git = "https://github.com/longbridge/nsh", rev = "224d9a795c7ac9d10d75750de9351adac5549675", default-features = false }
 log = "=0.4.29"
+
+[patch."https://github.com/longbridge/nsh"]
+nsh-base = { path = "vendor/nsh-base" }
+nsh-platform-windows = { path = "vendor/nsh-platform-windows" }
+
+[patch.crates-io]
+markdown = { path = "vendor/markdown" }
 

@@ -1,5 +1,7 @@
 # texzi 完整设计交付包
 
+> **2026-11-20 更新：** v1 的范围和验收只看 [docs/V1-SCOPE.md](../V1-SCOPE.md)。视觉部分仍以 DESIGN.md、UI_SPEC、concepts 和 prototype 为准。ACCEPTANCE、PERFORMANCE_PLAN、HANDOFF、VERIFICATION 已移到 [docs/archive/2026-11-20-gates/](../archive/2026-11-20-gates/)，下文提到 T00–T18、G0–G5 和 112 条验收的部分都已失效。
+
 **版本 1.0 · 2026-11-15 · Windows 10 x64 · 已获授权进入完整设计阶段**
 
 本包供产品审阅与另一个 Agent 团队实施。交付的是完整设计基线、可运行的浏览器交互原型、源文件和验证工具。原生 NSH 客户端将在实施阶段开发；本包没有将浏览器原型、概念图或上游性能报告当成 Windows 产品已达标的证据。

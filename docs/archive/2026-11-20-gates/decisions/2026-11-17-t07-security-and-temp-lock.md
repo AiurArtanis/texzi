@@ -1,0 +1,11 @@
+# T07 owner/group/DACL观察及暂存句柄锁
+
+在30c绑定链之上加入只读SecurityDescriptor。GetKernelObjectSecurity仅请求OWNER/GROUP/DACL，不读取SACL，不启用权限、不改系统或ACL；使用对齐、初始化且上限1MiB缓冲，失败不回退为“无ACL”。Debug只显示长度，不输出描述符/正文。windows-sys精确0.61.2增加Win32_Security feature，版本和锁依赖不变。
+
+FileVersion同一handle读前后核描述符，ObservedTarget父目录也保描述符并在recheck核对；parent现显式要求READ_CONTROL，读不到则失败。比较为原始self-relative描述符字节，可能因等价表示差异保守拒绝，不宣称语义ACL等价或复制策略完成。owner/group/DACL以外SACL、完整性标签、审计/EFS等未覆盖。并非CAS。
+
+BoundStaged.lock_temporary消耗同操作结果，打开实际temp只读handle、只允许FILE_SHARE_READ，核真实type/ID/bytes/metadata/security及原target后，返回持handle的LockedStaged。正常文件句柄数据写/删除/重命名冲突应受Windows sharing保护；不声称排除所有映射写/高权限/内核行为或ACL变更。继续需要最终复核。没有释放锁后按路径替换的捷径，没有Ready/permit/replace/success入口。
+
+失败返回原BoundStaged（包含capture和恢复路径）而不是丢唯一恢复线索；锁成功对象Drop只关handle、不删文件、不cancel Store。取消和句柄资源释放仍由owner分别处理。BoundFailure Debug同时改为只打印issue/operation/恢复路径，不把捕获正文Body带入默认错误格式。
+
+新增1Windows fixture：隔离temp锁期间普通write/remove/rename应ERROR_SHARING_VIOLATION32，原payload与target不动、security非空且等于观察、无permit，cancel并Drop后恢复文件保留可再写。原identity用例加只读security非空预期。全部NOT_RUN，累计26新增命名用例未执行；未声称普通Windows共享语义/ACL检查已实测。下一步仍须ACL保留策略、实际安全发布/最终fileID及恢复处理，不能把读取到ACL当作权限策略通过。

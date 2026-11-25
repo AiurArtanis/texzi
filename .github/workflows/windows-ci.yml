@@ -1,0 +1,49 @@
+name: Windows CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-verify:
+    name: Windows x64 verify
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Test, build and package the checked-out commit
+        shell: pwsh
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          Write-Host "checkout=$env:GITHUB_SHA head=$env:PR_HEAD_SHA base=$env:PR_BASE_SHA image=$env:ImageOS/$env:ImageVersion"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw 'The Windows x64 C++ build tools are missing.' }
+          & (Join-Path $installation 'Common7/Tools/Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          Write-Host "MSVC=$env:VCToolsVersion SDK=$env:WindowsSDKVersion"
+          rustc -Vv
+          cargo fmt --all -- --check
+          cargo test --workspace --release --locked --target x86_64-pc-windows-msvc -- --test-threads=1
+          cargo build -p texzi-app --release --locked --target x86_64-pc-windows-msvc
+          python scripts/verify-windows-identity.py --exe target/x86_64-pc-windows-msvc/release/texzi-app.exe --ico crates/texzi-app/assets/ink-z.ico --report windows-identity.json
+          Get-Content -LiteralPath windows-identity.json
+          ./scripts/package-windows.ps1
+      - name: Upload the verified Windows x64 candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: texzi-win-x64-${{ github.sha }}-attempt-${{ github.run_attempt }}
+          path: |
+            dist/texzi-*-win-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14

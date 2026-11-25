@@ -1,0 +1,2141 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-18",
+  "authority": "docs/design-v1/docs/PRD.md §8.1–8.3（原设计不改）",
+  "candidate": {
+    "worktree": "tx05-8ae-local-20261118",
+    "commit": null,
+    "executable_sha256": null,
+    "identity_source": "包内build-identity.txt与SHA256SUMS.txt；本文件随源码提交，不硬编码自身未来commit或把历史exe hash当当前包身份",
+    "scope": "下面component_run是独立标识的已完成组件基线，不等于当前包GUI或整体验收"
+  },
+  "status_policy": "每项每层独立取证；编写测试不等于运行；组件 PASS 不升级 GUI/人工；原样显示/源码可达不等于直接编辑；既有32-suite结果不继承。",
+  "command": "cargo test -p texzi-app --bin texzi-app --release --locked --offline --target x86_64-pc-windows-msvc -- --nocapture --test-threads=1",
+  "gui_and_manual": "本JSON的固定混合EOL语料GUI/人工NOT_RUN；其它语料有限GUI按独立报告及固定版本另列，不批量改变每行覆盖状态。剪贴板暂停，T07保存BLOCKED。",
+  "cases": [
+    {
+      "id": "MD01",
+      "syntax": "段落、空行、软/硬换行",
+      "raw": "anchor\r\n\r\napple line\nsoft line  \r\nhard line\\\r\nbackslash hard\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "apple line\nsoft line  \r\nhard line\\\r\nbackslash hard",
+      "display": {
+        "nodes": [
+          {
+            "name": "paragraph",
+            "min": 2
+          },
+          {
+            "name": "hardBreak",
+            "min": 2
+          }
+        ],
+        "marks": [],
+        "visible": [
+          "apple line"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "Enter 拆段、Shift+Enter 硬换行、块首 Backspace"
+      ]
+    },
+    {
+      "id": "MD02",
+      "syntax": "ATX 与 Setext 标题",
+      "raw": "anchor\r\n\r\n# apple\r\n\r\n## second\n\n### third\r\n\r\n#### fourth\n\n##### fifth\r\n\r\n###### sixth\n\nSetext one\r\n=====\n\nSetext two\r\n-----\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "# apple\r\n\r\n## second\n\n### third\r\n\r\n#### fourth\n\n##### fifth\r\n\r\n###### sixth\n\nSetext one\r\n=====\n\nSetext two\r\n-----",
+      "display": {
+        "nodes": [
+          {
+            "name": "heading",
+            "min": 8
+          }
+        ],
+        "marks": [],
+        "visible": [
+          "apple",
+          "Setext one",
+          "Setext two"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        },
+        {
+          "before": "Setext one",
+          "after": "Setext One",
+          "insert": "Setext One"
+        },
+        {
+          "before": "Setext two",
+          "after": "Setext Two",
+          "insert": "Setext Two"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "H1–H6 视觉与级别菜单；Setext 改级别仅改必要定界符"
+      ]
+    },
+    {
+      "id": "MD03",
+      "syntax": "粗体、斜体、删除线",
+      "raw": "anchor\r\n\r\n**apple** and __double__ *italic* _emphasis_ ~~strike~~\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "**apple** and __double__ *italic* _emphasis_ ~~strike~~",
+      "display": {
+        "nodes": [
+          {
+            "name": "paragraph",
+            "min": 1
+          }
+        ],
+        "marks": [
+          "bold",
+          "italic",
+          "strike"
+        ],
+        "visible": [
+          "apple",
+          "double",
+          "italic",
+          "emphasis",
+          "strike"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        },
+        {
+          "before": "double",
+          "after": "Double",
+          "insert": "Double"
+        },
+        {
+          "before": "italic",
+          "after": "Italic",
+          "insert": "Italic"
+        },
+        {
+          "before": "strike",
+          "after": "Strike",
+          "insert": "Strike"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "选择/后续输入格式动作、跨标记选择与未知交叉定界符"
+      ]
+    },
+    {
+      "id": "MD04",
+      "syntax": "行内代码",
+      "raw": "anchor\r\n\r\nbefore ``apple ` keep`` after\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "before ``apple ` keep`` after",
+      "display": {
+        "nodes": [
+          {
+            "name": "paragraph",
+            "min": 1
+          }
+        ],
+        "marks": [
+          "code"
+        ],
+        "visible": [
+          "apple ` keep"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history",
+            "syntax_matrix_inline_code_backtick_only_lengthens_its_own_fence"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history",
+            "syntax_matrix_inline_code_backtick_only_lengthens_its_own_fence"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "内部增加反引号时仅延长当前节点围栏（有严格组件反例）"
+      ]
+    },
+    {
+      "id": "MD05",
+      "syntax": "无序/有序列表、嵌套列表",
+      "raw": "anchor\r\n\r\n+ apple\r\n  + nested **leaf**\n\n7) seven\r\n8) eight\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "+ apple\r\n  + nested **leaf**\n\n7) seven\r\n8) eight",
+      "display": {
+        "nodes": [
+          {
+            "name": "bulletList",
+            "min": 2
+          },
+          {
+            "name": "orderedList",
+            "min": 1
+          }
+        ],
+        "marks": [
+          "bold"
+        ],
+        "visible": [
+          "apple",
+          "leaf",
+          "seven",
+          "eight"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        },
+        {
+          "before": "leaf",
+          "after": "Leaf",
+          "insert": "Leaf"
+        },
+        {
+          "before": "seven",
+          "after": "Seven",
+          "insert": "Seven"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "非空项 Enter、空项退出、缩进/反缩进、块首合并/降级"
+      ]
+    },
+    {
+      "id": "MD06",
+      "syntax": "任务列表",
+      "raw": "anchor\r\n\r\n+ [ ] apple\r\n+ [X] pear\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "+ [ ] apple\r\n+ [X] pear",
+      "display": {
+        "nodes": [
+          {
+            "name": "taskItem",
+            "min": 2
+          }
+        ],
+        "marks": [],
+        "visible": [
+          "apple",
+          "pear"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history",
+            "syntax_matrix_task_checkbox_only_changes_its_own_marker"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history",
+            "syntax_matrix_task_checkbox_only_changes_its_own_marker"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "原生勾选框视觉、文字与框分离命中、键盘焦点与切换"
+      ]
+    },
+    {
+      "id": "MD07",
+      "syntax": "引用、分隔线",
+      "raw": "anchor\r\n\r\n> apple\r\n> second\n\n* * *\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "> apple\r\n> second\n\n* * *",
+      "display": {
+        "nodes": [
+          {
+            "name": "blockquote",
+            "min": 1
+          },
+          {
+            "name": "horizontalRule",
+            "min": 1
+          }
+        ],
+        "marks": [],
+        "visible": [
+          "apple",
+          "second"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "引用结构操作、整块选择分隔线及删除/剪切"
+      ]
+    },
+    {
+      "id": "MD08",
+      "syntax": "普通/自动链接、引用链接",
+      "raw": "anchor\r\n\r\n[apple](<https://example.invalid/inline> \"keep title\")\r\n\r\n<https://example.invalid/auto>\n\n[reference leaf][shared]\r\n\r\n[shared]: <https://example.invalid/shared> \"keep definition\"\n[other]: /unchanged \"other\"\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "[apple](<https://example.invalid/inline> \"keep title\")\r\n\r\n<https://example.invalid/auto>\n\n[reference leaf][shared]\r\n\r\n[shared]: <https://example.invalid/shared> \"keep definition\"\n[other]: /unchanged \"other\"",
+      "display": {
+        "nodes": [
+          {
+            "name": "paragraph",
+            "min": 3
+          }
+        ],
+        "marks": [
+          "link"
+        ],
+        "visible": [
+          "apple",
+          "https://example.invalid/auto",
+          "reference leaf"
+        ],
+        "links": [
+          {
+            "text": "apple",
+            "href": "https://example.invalid/inline"
+          },
+          {
+            "text": "https://example.invalid/auto",
+            "href": "https://example.invalid/auto"
+          },
+          {
+            "text": "reference leaf",
+            "href": "https://example.invalid/shared"
+          }
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        },
+        {
+          "before": "reference leaf",
+          "after": "Reference leaf",
+          "insert": "Reference leaf"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "地址浮层、引用目标只改相应定义、悬停地址"
+      ]
+    },
+    {
+      "id": "MD09",
+      "syntax": "围栏与缩进代码块",
+      "raw": "anchor\r\n\r\n~~~~ rust keep-info\r\napple\nsecond\r\n~~~~\n\n    indented leaf\r\n    next\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "~~~~ rust keep-info\r\napple\nsecond\r\n~~~~\n\n    indented leaf\r\n    next",
+      "display": {
+        "nodes": [
+          {
+            "name": "codeBlock",
+            "min": 2
+          }
+        ],
+        "marks": [],
+        "visible": [
+          "apple\nsecond",
+          "indented leaf\nnext"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        },
+        {
+          "before": "indented leaf",
+          "after": "Indented leaf",
+          "insert": "Indented leaf"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "原生等宽/高亮、Enter/Tab 留块、退出代码块、语言标记与闭合围栏边界"
+      ]
+    },
+    {
+      "id": "MD10",
+      "syntax": "GFM 管道表格",
+      "raw": "anchor\r\n\r\n| headA | headB |\r\n| :--- | ---: |\n| apple | pear |\r\n| repeat | repeat |\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "| headA | headB |\r\n| :--- | ---: |\n| apple | pear |\r\n| repeat | repeat |",
+      "display": {
+        "nodes": [
+          {
+            "name": "table",
+            "min": 1
+          },
+          {
+            "name": "tableHeader",
+            "min": 2
+          },
+          {
+            "name": "tableCell",
+            "min": 4
+          }
+        ],
+        "marks": [],
+        "visible": [
+          "headA",
+          "headB",
+          "apple",
+          "pear"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "增删行列、对齐、Tab/Shift+Tab/Enter、删除表头升级、删末行列保空段"
+      ]
+    },
+    {
+      "id": "MD11",
+      "syntax": "本地/相对路径图片",
+      "raw": "anchor\r\n\r\n![apple](./images/photo.png \"keep title\")\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "![apple](./images/photo.png \"keep title\")",
+      "display": {
+        "nodes": [
+          {
+            "name": "image",
+            "min": 1
+          }
+        ],
+        "marks": [],
+        "visible": []
+      },
+      "direct_edits": [],
+      "attribute_edits": [
+        {
+          "node": "image",
+          "attribute": "alt",
+          "value": "changed alt",
+          "before": "![apple]",
+          "after": "![changed alt]"
+        },
+        {
+          "node": "image",
+          "attribute": "src",
+          "value": "./images/changed.png",
+          "before": "./images/photo.png",
+          "after": "./images/changed.png"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_image_address_and_alt_are_local_node_edits"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_image_address_and_alt_are_local_node_edits"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "地址/替代文本浮层、仅改图片节点、不复制/上传资产"
+      ]
+    },
+    {
+      "id": "MD12",
+      "syntax": "远程图片",
+      "raw": "anchor\r\n\r\n![apple](https://example.invalid/photo.png \"keep title\")\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "![apple](https://example.invalid/photo.png \"keep title\")",
+      "display": {
+        "nodes": [
+          {
+            "name": "image",
+            "min": 1
+          }
+        ],
+        "marks": [],
+        "visible": []
+      },
+      "direct_edits": [],
+      "attribute_edits": [
+        {
+          "node": "image",
+          "attribute": "alt",
+          "value": "changed alt",
+          "before": "![apple]",
+          "after": "![changed alt]"
+        },
+        {
+          "node": "image",
+          "attribute": "src",
+          "value": "https://example.invalid/changed.png",
+          "before": "https://example.invalid/photo.png",
+          "after": "https://example.invalid/changed.png"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_image_address_and_alt_are_local_node_edits"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_image_address_and_alt_are_local_node_edits"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "默认占位、ask 加载/取消/失败重试、失败不改链接、地址/alt 浮层"
+      ]
+    },
+    {
+      "id": "MD13",
+      "syntax": "原始 HTML",
+      "raw": "anchor\r\n\r\n<section data-mode=\"safe\">\r\n<script>window.raw=1;</script>\n<strong>raw</strong>\r\n</section>\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "<section data-mode=\"safe\">\r\n<script>window.raw=1;</script>\n<strong>raw</strong>\r\n</section>",
+      "display": {
+        "nodes": [
+          {
+            "name": "codeBlock",
+            "min": 1
+          }
+        ],
+        "marks": [],
+        "visible": [],
+        "literal_blocks": [
+          "<section data-mode=\"safe\">\n<script>window.raw=1;</script>\n<strong>raw</strong>\n</section>"
+        ]
+      },
+      "direct_edits": [],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "PRD 要求转源码编辑；不把原样显示计作直接编辑",
+          "tests": []
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "局部编辑源码动作、整块选择删除/剪切、脚本不执行"
+      ]
+    },
+    {
+      "id": "MD14",
+      "syntax": "数学 $…$ / $$…$$",
+      "raw": "anchor\r\n\r\n$x_1 + y^2$\r\n\r\n$$\na + b = c\r\n$$\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "$x_1 + y^2$\r\n\r\n$$\na + b = c\r\n$$",
+      "display": {
+        "nodes": [
+          {
+            "name": "codeBlock",
+            "min": 2
+          }
+        ],
+        "marks": [],
+        "visible": [],
+        "literal_blocks": [
+          "$x_1 + y^2$",
+          "$$\na + b = c\n$$"
+        ]
+      },
+      "direct_edits": [],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "PRD 要求转源码编辑；不把原样显示计作直接编辑",
+          "tests": []
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "局部编辑源码动作、原始定界符完整展示、不承诺数学排版"
+      ]
+    },
+    {
+      "id": "MD15",
+      "syntax": "Mermaid 围栏",
+      "raw": "anchor\r\n\r\n```mermaid\r\ngraph TD\n A-->B\r\n```\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "```mermaid\r\ngraph TD\n A-->B\r\n```",
+      "display": {
+        "nodes": [
+          {
+            "name": "codeBlock",
+            "min": 1
+          }
+        ],
+        "marks": [],
+        "visible": [
+          "graph TD\n A-->B"
+        ]
+      },
+      "direct_edits": [
+        {
+          "before": "graph TD",
+          "after": "graph LR",
+          "insert": "graph LR"
+        }
+      ],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "仅所列可见叶/属性固定修改与共享history断言；完整结构动作与浮层尚待GUI。",
+          "tests": [
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte",
+            "syntax_matrix_direct_visible_leaf_edits_preserve_unmodified_bytes_and_shared_history"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "原生代码文本编辑/快捷键；无图形渲染承诺"
+      ]
+    },
+    {
+      "id": "MD16",
+      "syntax": "脚注、自定义容器、未知方言",
+      "raw": "anchor\r\n\r\ntext[^note]\r\n\r\n[^note]: note body\n\n::: custom\r\nopaque body\n:::\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "text[^note]\r\n\r\n[^note]: note body\n\n::: custom\r\nopaque body\n:::",
+      "display": {
+        "nodes": [
+          {
+            "name": "codeBlock",
+            "min": 3
+          }
+        ],
+        "marks": [],
+        "visible": [],
+        "literal_blocks": [
+          "text[^note]",
+          "[^note]: note body",
+          "::: custom\nopaque body\n:::"
+        ]
+      },
+      "direct_edits": [],
+      "coverage": {
+        "original_bytes": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo"
+          ]
+        },
+        "formatted_display": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped"
+          ]
+        },
+        "direct_edit": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "PRD 要求转源码编辑；不把原样显示计作直接编辑",
+          "tests": []
+        },
+        "source_reachable": {
+          "status": "PASS",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本候选固定语料的实际组件断言通过；不是GUI/任意输入证明。",
+          "tests": [
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "component": {
+          "status": "PARTIAL",
+          "evidence": [
+            "evidence/local-menu-markdown-20261118/runtime03/build-evidence/command-002.stdout.log"
+          ],
+          "reason": "本行已列固定组件场景通过；PRD完整结构操作及GUI尚未完成。",
+          "tests": [
+            "syntax_matrix_100_real_modegate_roundtrips_are_zero_body_history_dirty_changes",
+            "syntax_matrix_100_real_modegate_roundtrips_keep_existing_redo",
+            "syntax_matrix_formatted_semantics_and_literal_blocks_are_visible_not_dropped",
+            "syntax_matrix_source_entry_is_editable_and_undo_restores_every_original_byte"
+          ]
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未运行本候选逐项 GUI；未实现入口不得填 PASS"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未做人工验收"
+        }
+      },
+      "pending_behaviors": [
+        "局部源码入口、整个原样块选择删除/剪切、未知顺序完整保留"
+      ]
+    }
+  ],
+  "combinations": [
+    {
+      "id": "COMBO01",
+      "syntax": "引用 > 有序列表 > 粗体",
+      "raw": "anchor\r\n\r\n > 7) **apple** and repeat\r\n >    continuation\n > 8) next\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": " > 7) **apple** and repeat\r\n >    continuation\n > 8) next",
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        }
+      ],
+      "coverage": {
+        "component": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "组合独立固定语料，未执行"
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        }
+      }
+    },
+    {
+      "id": "COMBO02",
+      "syntax": "嵌套任务/列表/链接",
+      "raw": "anchor\r\n\r\n+ [ ] **outer**\r\n  + [X] [apple](./target \"keep\")\n  + third\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "+ [ ] **outer**\r\n  + [X] [apple](./target \"keep\")\n  + third",
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        }
+      ],
+      "coverage": {
+        "component": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "组合独立固定语料，未执行"
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        }
+      }
+    },
+    {
+      "id": "COMBO03",
+      "syntax": "表格内格式/链接/代码/转义管道",
+      "raw": "anchor\r\n\r\n| key | value |\r\n| :--- | ---: |\n| **apple** | [site](./target) |\r\n| `code` | escaped \\| pipe |\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "| key | value |\r\n| :--- | ---: |\n| **apple** | [site](./target) |\r\n| `code` | escaped \\| pipe |",
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        }
+      ],
+      "coverage": {
+        "component": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "组合独立固定语料，未执行"
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        }
+      }
+    },
+    {
+      "id": "COMBO04",
+      "syntax": "重复节点和重复普通文字",
+      "raw": "anchor\r\n\r\n**repeat** repeat _repeat_ `repeat`\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "**repeat** repeat _repeat_ `repeat`",
+      "direct_edits": [
+        {
+          "before": "repeat",
+          "after": "Repeat",
+          "insert": "Repeat",
+          "occurrence": 0
+        },
+        {
+          "before": "repeat",
+          "after": "REPEAT",
+          "insert": "REPEAT",
+          "occurrence": 1
+        },
+        {
+          "before": "repeat",
+          "after": "rePeat",
+          "insert": "rePeat",
+          "occurrence": 2
+        },
+        {
+          "before": "repeat",
+          "after": "repeaT",
+          "insert": "repeaT",
+          "occurrence": 3
+        }
+      ],
+      "coverage": {
+        "component": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "组合独立固定语料，未执行"
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        }
+      }
+    },
+    {
+      "id": "COMBO05",
+      "syntax": "转义/实体替换",
+      "raw": "anchor\r\n\r\nescaped \\* &amp; &#x1F680; &#169; **apple**\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "escaped \\* &amp; &#x1F680; &#169; **apple**",
+      "direct_edits": [
+        {
+          "before": "\\*",
+          "after": "star",
+          "insert": "star"
+        },
+        {
+          "before": "&amp;",
+          "after": "and",
+          "insert": "and"
+        },
+        {
+          "before": "&#x1F680;",
+          "after": "rocket",
+          "insert": "rocket"
+        },
+        {
+          "before": "&#169;",
+          "after": "copy",
+          "insert": "copy"
+        },
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple"
+        }
+      ],
+      "coverage": {
+        "component": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "组合独立固定语料，未执行"
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        }
+      }
+    },
+    {
+      "id": "COMBO06",
+      "syntax": "Setext+实体+重复文字",
+      "raw": "anchor\r\n\r\napple &amp; apple\r\n=================\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "apple &amp; apple\r\n=================",
+      "direct_edits": [
+        {
+          "before": "apple",
+          "after": "Apple",
+          "insert": "Apple",
+          "occurrence": 1
+        }
+      ],
+      "coverage": {
+        "component": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "组合独立固定语料，未执行"
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        }
+      }
+    },
+    {
+      "id": "COMBO07",
+      "syntax": "代码内容与语言同文、反引号",
+      "raw": "anchor\r\n\r\n```rust\r\nrust ` keep\nrust\r\n```\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "```rust\r\nrust ` keep\nrust\r\n```",
+      "direct_edits": [
+        {
+          "before": "rust",
+          "after": "Rust",
+          "insert": "Rust",
+          "occurrence": 1
+        }
+      ],
+      "coverage": {
+        "component": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "组合独立固定语料，未执行"
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        }
+      }
+    },
+    {
+      "id": "COMBO08",
+      "syntax": "BOM/未知邻块/多脚本 Unicode",
+      "raw": "﻿anchor\r\n\r\n**中🚀文 apple** \r\nsoft line\n\n<opaque-neighbor data-stay=\"yes\">untouched</opaque-neighbor>\r\n\r\nend\r",
+      "body": "**中🚀文 apple** \r\nsoft line",
+      "direct_edits": [
+        {
+          "before": "中🚀文",
+          "after": "中🛰️文",
+          "insert": "中🛰️文"
+        }
+      ],
+      "coverage": {
+        "component": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "组合独立固定语料，未执行"
+        },
+        "gui": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        },
+        "manual": {
+          "status": "NOT_RUN",
+          "evidence": [],
+          "reason": "未执行"
+        }
+      }
+    }
+  ],
+  "rules": [
+    {
+      "id": "FR-MD-04",
+      "required": "标题/段落可见输入；段落拆分；列表 Enter 与退出；Backspace 合并/降级",
+      "component_scope": "可见叶文本与共享历史",
+      "pending_behaviors": "块结构/按键 GUI",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    },
+    {
+      "id": "FR-MD-05",
+      "required": "选择/后续输入样式；必要定界符；稳定节点 Markdown 自动转换；IME 期间禁止转换；一撤销恢复",
+      "component_scope": "定界符/转义/实体/重复节点与嵌套语料；inline-code 围栏严格反例",
+      "pending_behaviors": "格式入口、逐键转换、真实 IME",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    },
+    {
+      "id": "FR-MD-06",
+      "required": "任务框点击/键盘切换；文字与框分离命中；不永久夺焦",
+      "component_scope": "只修改一个 checked 标记并 Undo/Redo",
+      "pending_behaviors": "原生点击区、键盘焦点",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    },
+    {
+      "id": "FR-MD-07",
+      "required": "矩形表格编辑及全部行列/对齐/导航/表头升级/末行列删除",
+      "component_scope": "单元格可见文字与字节保真",
+      "pending_behaviors": "所有表格结构入口及按键矩阵",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    },
+    {
+      "id": "FR-MD-08",
+      "required": "代码 Enter/Tab、方向键/显式退出、语言标记、闭合围栏字符不吞后文",
+      "component_scope": "围栏/缩进/Mermaid 文本编辑；未知邻块保留",
+      "pending_behaviors": "完整代码块命令及按键矩阵",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    },
+    {
+      "id": "FR-MD-09",
+      "required": "同文档独立模式视图、修改传播、按源范围同步滚动",
+      "component_scope": "source/sibling 共享 Store/history 与 snapshot；ModeGate 真实组件往返",
+      "pending_behaviors": "并排 GUI 编辑/滚动循环抑制",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    },
+    {
+      "id": "FR-MD-10",
+      "required": "连续选择；多光标命令转源码并提示；源码多选主选区/恢复条件",
+      "component_scope": "本矩阵不覆盖多光标命令",
+      "pending_behaviors": "GUI 命令、提示、revision 条件恢复",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    },
+    {
+      "id": "FR-MD-11",
+      "required": "复制可见字/复制 Markdown 最小片段；普通纯文粘贴/显式 Markdown",
+      "component_scope": "本任务禁止剪贴板；未执行",
+      "pending_behaviors": "所有剪贴板与粘贴行为 NOT_RUN",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    },
+    {
+      "id": "FR-MD-12",
+      "required": "图片文件拖放路径；未保存绝对路径；另存可选相对；非图打开；不搬资产",
+      "component_scope": "本矩阵仅检查 image 属性源 patch",
+      "pending_behaviors": "拖放/未保存/另存及资产行为",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    },
+    {
+      "id": "FR-MD-13",
+      "required": "后台映射带 revision；只收最新完整映射；失败保稳定原文；超预算源码入口",
+      "component_scope": "本矩阵不以解析自比较替代过期/预算验证",
+      "pending_behaviors": "后台过期映射、失败稳定块、性能预算/提示",
+      "component": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "仅声明覆盖范围，等待候选实际执行"
+      },
+      "gui": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      },
+      "manual": {
+        "status": "NOT_RUN",
+        "evidence": [],
+        "reason": "未执行"
+      }
+    }
+  ],
+  "component_run": {
+    "identity": "125cd46 local attempt1, package build-evidence/command-014 (full app component suite)",
+    "registered": 108,
+    "passed": 108,
+    "failed": 0,
+    "exit_code": 0,
+    "boundary": "16 fixed rows and 8 combinations plus other named app components; selected model/byte/history assertions only; exact JSON fixtures GUI/manual remain NOT_RUN",
+    "evidence": "D:/Work/texzi/evidence/local-menu-markdown-20261118/125cd46-package/REPORT.md",
+    "historical_runtime03": {"registered": 52, "passed": 52, "failed": 0, "exit_code": 0, "identity": "original uncommitted integration, preserve historical scope"}
+  }
+}

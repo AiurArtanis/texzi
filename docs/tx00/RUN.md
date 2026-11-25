@@ -3,6 +3,13 @@
 This is a native NSH window baseline, not an editor. No document opening,
 editing, saving, recovery, Markdown or installer is implemented.
 
+The main content deliberately uses a fixed white background/black text for
+baseline readability. It is not theme adaptive; system window chrome is
+separate. Verify screenshots after startup, move, resize, maximize/restore,
+and normal keyboard close in the current environment. Do not infer coverage
+of other system themes or high-contrast modes, and do not change system
+settings just for this baseline test.
+
 Extract the entire ZIP, then in PowerShell 7 run:
 
 ```powershell

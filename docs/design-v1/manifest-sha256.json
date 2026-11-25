@@ -13,13 +13,13 @@
     },
     {
       "path": "PRODUCT.md",
-      "bytes": 2363,
-      "sha256": "e4bad61b40f30206b60b29cf06ab33740693e5f9466b32e6ed91eb881c11aaf2"
+      "bytes": 2472,
+      "sha256": "9a584e5c8d5245772938f12b15f6c83b41dbb518c7a5e7533b8398ba7f44e651"
     },
     {
       "path": "README.md",
-      "bytes": 6621,
-      "sha256": "5d24d09f97c0e9c57cf02988922cc6f394337e6359df51e426eba4959897e570"
+      "bytes": 6992,
+      "sha256": "e8fcf5c4c345e3bb70e685cd5b688d82f9e5ec8b258e7baffcafdace78a5e2e8"
     },
     {
       "path": "concepts/01-main.png",
@@ -57,34 +57,19 @@
       "sha256": "8301b3cf69f3f71da16eb090a056f1824cbd7f326eb10f554c7ec6cab1d5ccd5"
     },
     {
-      "path": "docs/ACCEPTANCE.md",
-      "bytes": 32995,
-      "sha256": "b5fb4be40f05c13f9acceff4e3b1069f7818f71f19b4a21cd1e48301ccf678d8"
-    },
-    {
       "path": "docs/COMMANDS.md",
-      "bytes": 79494,
-      "sha256": "d40903ed02c2be2039f136db4df4ecd70ff20028eddbc9bc3dc8275b00f69dc3"
+      "bytes": 79738,
+      "sha256": "2c913dab55bc5cd73dae2c3e5bc0790ca370a1c4707317866c27c837ad8a1938"
     },
     {
       "path": "docs/DECISIONS.md",
-      "bytes": 9904,
-      "sha256": "45fdebe5f9171b70c3a0e9a13cf5109112fb5a6798db5f37efc5bf1a45e9455b"
-    },
-    {
-      "path": "docs/HANDOFF.md",
-      "bytes": 26647,
-      "sha256": "ceaca70d35cc833bba2f7f8b7699f7120ee1c6f69f23e2d34819b36bc9f20193"
-    },
-    {
-      "path": "docs/PERFORMANCE_PLAN.md",
-      "bytes": 29304,
-      "sha256": "64604fc30bc91c6345cb21265b3edafb179fc80f5124f979f540d2f07648f184"
+      "bytes": 10148,
+      "sha256": "dce7b210e8ab851083da5fb5b335fa280366055abc4137cbd6a57a14c5380611"
     },
     {
       "path": "docs/PRD.md",
-      "bytes": 41596,
-      "sha256": "e8fe3d78501ee6b637037c9be2104178cad81a882ffd1a242df5d362d25b7418"
+      "bytes": 41840,
+      "sha256": "67e96ab36ee1d6563a3e00275d79b448be6c522feee8530aea1f69289ed66820"
     },
     {
       "path": "docs/PROTOTYPE_GUIDE.md",
@@ -98,8 +83,8 @@
     },
     {
       "path": "docs/SETTINGS.md",
-      "bytes": 29124,
-      "sha256": "987b5a50f1c44af8726cd8037af2351ae4e71e924f9b9a09bc4a8fe29f95eac3"
+      "bytes": 29368,
+      "sha256": "07f20f504293c3b6f6c6a3d2a6a9c444dba8656ae1ca6e1cd0982f882151bd17"
     },
     {
       "path": "docs/SOURCES.md",
@@ -108,18 +93,13 @@
     },
     {
       "path": "docs/TECHNICAL_DESIGN.md",
-      "bytes": 47030,
-      "sha256": "9bd94fb1981fe8ed5ec6a7d8ca9294c4da195b9f278710a3e7aad244be928b34"
+      "bytes": 47274,
+      "sha256": "2ac89824e16dc2a663e5695b7b7bbc47fa8043d33e52524163e101fdb7526983"
     },
     {
       "path": "docs/UI_SPEC.md",
       "bytes": 25105,
       "sha256": "86756a9faf06bfd443e062d6d5d0fac87d892bf15fb47ec0b04844663778d859"
-    },
-    {
-      "path": "docs/VERIFICATION.md",
-      "bytes": 5507,
-      "sha256": "587bbd04ba4ba628805f2044b7e5a89caff72b15d68a94489f445a73252c909a"
     },
     {
       "path": "prototype/index.html",
