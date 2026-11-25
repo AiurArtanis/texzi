@@ -39,30 +39,17 @@ pub(super) const MENU_KEY: &str = "f10";
 pub(super) enum MenuGroup {
     File,
     Edit,
-    Selection,
-    View,
-    Go,
-    Help,
+    Appearance,
 }
 
 impl MenuGroup {
-    pub(super) const ALL: [Self; 6] = [
-        Self::File,
-        Self::Edit,
-        Self::Selection,
-        Self::View,
-        Self::Go,
-        Self::Help,
-    ];
+    pub(super) const ALL: [Self; 3] = [Self::File, Self::Edit, Self::Appearance];
 
     pub(super) fn shortcut(self) -> &'static str {
         match self {
             Self::File => "alt+f",
             Self::Edit => "alt+e",
-            Self::Selection => "alt+s",
-            Self::View => "alt+v",
-            Self::Go => "alt+g",
-            Self::Help => "alt+h",
+            Self::Appearance => "alt+v",
         }
     }
 
@@ -70,10 +57,7 @@ impl MenuGroup {
         match self {
             Self::File => "文件(&F)",
             Self::Edit => "编辑(&E)",
-            Self::Selection => "选择(&S)",
-            Self::View => "查看(&V)",
-            Self::Go => "转到(&G)",
-            Self::Help => "帮助(&H)",
+            Self::Appearance => "外观(&V)",
         }
     }
 
@@ -99,33 +83,18 @@ impl MenuGroup {
                 "texzi.edit.cut",
                 "texzi.edit.copy",
                 "texzi.edit.paste",
+                "texzi.edit.selectAll",
                 "",
                 "texzi.find.open",
                 "texzi.find.replaceOpen",
             ],
-            Self::Selection => &[
-                "texzi.edit.selectAll",
-                "texzi.multicursor.addNext",
-                "texzi.multicursor.selectAllOccurrences",
-                "texzi.multicursor.clear",
-            ],
-            Self::View => &[
+            Self::Appearance => &[
                 "texzi.sidebar.toggle",
-                "texzi.find.inFolder",
-                "texzi.group.splitRight",
-                "texzi.group.splitDown",
-                "texzi.view.toggleZen",
                 "texzi.editor.toggleWrap",
                 "",
                 "texzi.appearance.light",
                 "texzi.appearance.dark",
             ],
-            Self::Go => &[
-                "texzi.navigation.gotoLine",
-                "texzi.tab.next",
-                "texzi.tab.previous",
-            ],
-            Self::Help => &["texzi.help.guide", "texzi.help.about"],
         }
     }
 }
@@ -354,11 +323,10 @@ mod tests {
     #[test]
     fn every_native_menu_entry_resolves_and_its_accelerator_parses() {
         let commands = commands();
-        for group in MenuGroup::ALL {
-            for id in group.commands() {
-                if id.is_empty() {
-                    continue;
-                }
+        for (group, expected_count) in MenuGroup::ALL.into_iter().zip([6, 8, 4]) {
+            let items = group.commands().iter().filter(|id| !id.is_empty());
+            assert_eq!(items.clone().count(), expected_count, "{}", group.label());
+            for id in items {
                 let command = commands
                     .iter()
                     .find(|c| c.id == *id)
@@ -401,16 +369,28 @@ mod tests {
                 .contains(&"texzi.find.replaceOpen")
         );
         assert!(SHELL_SHORTCUTS.contains(&("mod+h", "texzi.find.replaceOpen")));
-        assert!(
-            MenuGroup::ALL
-                .into_iter()
-                .all(|group| !group.commands().contains(&"texzi.file.saveAll"))
-        );
+        for id in ["texzi.file.saveAll", "texzi.view.toggleZen", "texzi.help.guide"] {
+            assert!(commands.iter().any(|command| command.id == id));
+            assert!(
+                MenuGroup::ALL
+                    .into_iter()
+                    .all(|group| !group.commands().contains(&id))
+            );
+        }
         let strokes = application_shortcuts();
-        assert!(
-            ["alt+f", "alt+e", "alt+s", "alt+v", "alt+g", "alt+h"]
-                .iter()
-                .all(|key| strokes.iter().any(|stroke| stroke.as_ref() == *key))
-        );
+        for (key, expected) in [
+            ("alt+f", true),
+            ("alt+e", true),
+            ("alt+v", true),
+            ("alt+s", false),
+            ("alt+g", false),
+            ("alt+h", false),
+        ] {
+            assert_eq!(
+                strokes.iter().any(|stroke| stroke.as_ref() == key),
+                expected,
+                "{key}"
+            );
+        }
     }
 }

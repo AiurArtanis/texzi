@@ -84,9 +84,7 @@ struct Document {
 }
 impl Document {
     fn displayed_rich(&self) -> bool {
-        self.pending_mode
-            .get()
-            .map_or_else(|| self.gate.rich_mode.get(), |target| !target)
+        self.gate.rich_mode.get()
     }
 
     fn is_markdown(&self) -> bool {
@@ -1374,7 +1372,7 @@ impl Shell {
             "texzi.find.next"=>self.find(false),"texzi.find.previous"=>self.find(true),"texzi.find.close"=>self.close_panel(),
             "texzi.find.replaceOne"|"texzi.find.replaceAll"=>if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}match doc.source.replace_literal(&self.query.get(),&self.replacement.get(),id.ends_with("All")){Ok(n)=>{self.notice.set(format!("源码 · 已替换 {n} 处，可一次撤销"));self.restore_editor_focus();},Err(e)=>self.notice.set(e)}},
             "texzi.appearance.light"=>set_color_scheme(Appearance::Light),"texzi.appearance.dark"=>set_color_scheme(Appearance::Dark),
-            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存和另存文档。保存已有文件会核验版本和权限，并保留原文件备份。\n查看菜单提供侧栏、自动换行、分屏、Zen 模式和主题。Ctrl+1/2 可聚焦编辑组，编辑器右上可切换源码和富文本。"),
+            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存和另存文档。编辑菜单提供查找和替换，外观菜单提供侧栏、自动换行和主题。\nCtrl+P 搜索文件，Ctrl+Shift+P 搜索命令。可搜索分屏或 Zen，亦可按 Ctrl+K Z 进入 Zen，连按两次 Esc 退出。编辑器右上可切换源码和富文本。"),
             "texzi.help.about"=>self.explain("关于 texzi","texzi\n为日常文字、Markdown 与代码片段设计的 Windows 原生文本编辑器。"),
             _=>if let Some(command)=source_command(id){if let Err(e)=self.source_action(command){self.notice.set(e);}},
         }
@@ -1404,12 +1402,16 @@ impl Shell {
                         doc.trace_mode_view("before");
                     }
                     if target_rich {
-                        doc.gate.to_rich_in_background(still_open).await;
+                        doc.gate.to_rich_in_background(&still_open).await;
                     } else {
                         doc.gate.to_source();
                     }
                     if doc.gate.rich_mode.get() == target_rich {
                         wait_for_editor_frame(doc.body).await;
+                        if !still_open() {
+                            doc.pending_mode.set(None);
+                            return;
+                        }
                         let active = shell
                             .current()
                             .is_some_and(|current| Rc::ptr_eq(&current, &doc));
