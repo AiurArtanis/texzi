@@ -482,9 +482,13 @@ impl Shell {
         }
         let escape = s.clone();
         on_key("escape", move |_| escape.handle_escape());
+        let source_escape = {
+            let escape = s.clone();
+            computed(move || escape.zen_source_escape())
+        };
         let escape = s.clone();
         effect(move || {
-            if !escape.zen_source_escape() || escape.escape_blocked() {
+            if !source_escape.get() || escape.escape_blocked() {
                 return;
             }
             let escape = escape.clone();
@@ -498,7 +502,7 @@ impl Shell {
                     ..Default::default()
                 },
                 move |_| {
-                    if escape.zen_source_escape() {
+                    if source_escape.get() {
                         escape.handle_escape();
                     }
                 },
@@ -1277,7 +1281,10 @@ impl Shell {
         self.zen.get()
             && !self.chord.get()
             && self.panel.get().is_empty()
-            && self.current().is_some_and(|doc| !doc.gate.rich_mode.get())
+            // A newer binding would mask the Editor's selection collapse.
+            && self.current().is_some_and(|doc| {
+                !doc.gate.rich_mode.get() && doc.source.has_single_caret()
+            })
     }
 
     fn handle_escape(self: &Rc<Self>) {

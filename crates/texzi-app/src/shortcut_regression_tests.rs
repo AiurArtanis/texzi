@@ -31,6 +31,7 @@ struct Probe {
     answers: Cell<usize>,
     zen: Cell<bool>,
     zen_armed: Cell<bool>,
+    source: RefCell<Option<Rc<NativeView>>>,
 }
 
 #[component]
@@ -120,6 +121,7 @@ impl Probe {
             answers: Cell::new(0),
             zen: Cell::new(false),
             zen_armed: Cell::new(false),
+            source: RefCell::new(None),
         })
     }
 
@@ -167,12 +169,19 @@ fn ShortcutFixture() -> impl IntoElement {
 fn FocusedZenFixture() -> impl IntoElement {
     let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
     let shell = super::Shell::new();
+    let source = NativeView::fixture("first\nsecond");
+    shell.add(source.clone(), None);
+    let doc = shell.current().unwrap();
+    doc.gate.source_mounted();
+    provide_context(source.buffer());
+    *probe.source.borrow_mut() = Some(source);
     let observe = probe.clone();
     effect(move || {
         observe.zen.set(shell.zen.get());
         observe.zen_armed.set(shell.zen_exit.armed.get());
     });
-    input()
+    nsh_base::editor::editor()
+        .component_ref(&doc.reference)
         .auto_focus(true)
         .on_focus(move |_: &()| probe.focus_events.set(probe.focus_events.get() + 1))
 }
@@ -745,6 +754,35 @@ fn zen_double_escape_reaches_the_shell_with_a_focused_source_input() {
     assert!(!fixture.probe.zen.get());
     assert!(!fixture.probe.zen_armed.get());
     assert_eq!(fixture.matched("escape", false), KeyMatch::None);
+
+    let source = fixture.probe.source.borrow().as_ref().unwrap().clone();
+    let selections = || source.snapshot().unwrap().selections.ranges;
+    for (key, expected) in [
+        ("ctrl+a", vec![(0, 12)]),
+        ("ctrl+alt+down", vec![(0, 0), (6, 6)]),
+    ] {
+        assert!(fixture.press("ctrl+home", false).consumed());
+        assert!(fixture.press(key, false).consumed());
+        assert_eq!(selections(), expected);
+        let collapse = fixture.matched("escape", false);
+        assert!(matches!(collapse, KeyMatch::Fire(_)));
+        assert!(fixture.press("ctrl+k", false).consumed());
+        assert!(fixture.press("z", false).consumed());
+        assert_eq!(fixture.press("escape", false), collapse);
+        assert!(fixture.probe.zen.get());
+        assert!(!fixture.probe.zen_armed.get());
+        assert!(matches!(selections().as_slice(), [(a, h)] if a == h));
+        assert!(matches!(
+            fixture.press("escape", false),
+            KeyMatch::Notify(_)
+        ));
+        assert!(fixture.probe.zen_armed.get());
+        assert!(matches!(
+            fixture.press("escape", false),
+            KeyMatch::Notify(_)
+        ));
+        assert!(!fixture.probe.zen.get());
+    }
 
     assert!(fixture.press("ctrl+k", false).consumed());
     assert!(fixture.press("z", false).consumed());
