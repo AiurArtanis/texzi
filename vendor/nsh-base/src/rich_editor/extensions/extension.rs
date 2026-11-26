@@ -24,7 +24,7 @@ use nsh_core::{
 use serde_json::{Map, Value};
 
 use super::{
-    input_rules::{InputRule, input_rules as input_rules_plugin},
+    input_rules::{InputRule, with_split_insert},
     keymap::keymap as keymap_plugin,
     paste_rules::{PasteRule, paste_rules as paste_rules_plugin},
     starter::merge_keymaps,
@@ -681,10 +681,20 @@ impl ExtensionManager {
     /// spelled out (`Mod-Shift-b`) wins over another extension's binding
     /// of the shifted character (`Mod-B`).
     pub fn plugins(&self) -> Vec<Plugin> {
+        self.build_plugins(true)
+    }
+
+    /// An external history owner can preflight the input and conversion
+    /// together, then publish the two undo entries in its own document.
+    pub fn plugins_for_external_history(&self) -> Vec<Plugin> {
+        self.build_plugins(false)
+    }
+
+    fn build_plugins(&self, split_insert: bool) -> Vec<Plugin> {
         let mut plugins = Vec::new();
         let input = self.input_rules();
         if !input.is_empty() {
-            plugins.push(input_rules_plugin(input));
+            plugins.push(with_split_insert(input, split_insert));
         }
         let paste = self.paste_rules();
         if !paste.is_empty() {

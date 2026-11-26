@@ -111,7 +111,7 @@ impl RichOwner {
             ("Mod-y".into(), redo.clone()),
             ("Mod-Shift-z".into(), redo),
         ])];
-        plugins.extend(m.plugins());
+        plugins.extend(m.plugins_for_external_history());
         plugins.push(crate::code_highlight::plugin());
         let mut config = EditorStateConfig::new(m.schema().clone())
             .doc(p.doc.clone())

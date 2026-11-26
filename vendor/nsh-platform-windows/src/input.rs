@@ -1628,6 +1628,17 @@ fn put(surface: &Surface, p: Pointer) {
     surface.input.pointers.borrow_mut().push(p);
 }
 
+fn inside_menu_bar(view: &NshView) -> bool {
+    let mut current = Some(view.clone());
+    while let Some(view) = current {
+        if view.state().props.accessibility.role == nsh_core::AccessibilityRole::Menubar {
+            return true;
+        }
+        current = view.parent_view();
+    }
+    false
+}
+
 fn down(
     surface: &Rc<Surface>,
     key: Key,
@@ -1736,6 +1747,9 @@ fn down(
                 && let Some(field) = crate::text_input::focused(surface)
                 && crate::app_window::window_of(surface, &field)
                     == crate::app_window::window_of(surface, &hit.view)
+                // A menu bar's non-focusable triggers target the current
+                // field for native edit roles such as Undo and Select All.
+                && !inside_menu_bar(&hit.view)
             {
                 // A press on no stop (blank space) leaves the field of its
                 // window, as one on a stop does: the field is drawn here,

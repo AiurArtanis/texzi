@@ -17,6 +17,7 @@
 //!
 //! `docs/dev/rich-editor.md` has the design.
 
+mod block_heights;
 mod controller;
 mod geometry;
 mod keys;

@@ -261,6 +261,7 @@ struct Undoable {
 struct InputRules {
     key: PluginKey,
     rules: Vec<InputRule>,
+    split_insert: bool,
 }
 
 impl PluginSpec for InputRules {
@@ -290,7 +291,7 @@ impl PluginSpec for InputRules {
         text: &str,
         dispatch: &mut dyn FnMut(Transaction),
     ) -> bool {
-        run(self, state, from, to, text, true, dispatch)
+        run(self, state, from, to, text, self.split_insert, dispatch)
     }
 
     // Enter runs the rules too, with a line break as the typed text (as
@@ -505,10 +506,15 @@ static NEXT_INPUT_RULES: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 
 /// A plugin applying `rules` as text is typed.
 pub fn input_rules(rules: Vec<InputRule>) -> Plugin {
+    with_split_insert(rules, true)
+}
+
+pub(super) fn with_split_insert(rules: Vec<InputRule>, split_insert: bool) -> Plugin {
     let id = NEXT_INPUT_RULES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Arc::new(InputRules {
         key: PluginKey::new(&format!("inputRules${id}")),
         rules,
+        split_insert,
     })
 }
 

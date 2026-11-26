@@ -380,44 +380,15 @@ struct Window {
     below: f32,
 }
 
-/// Measured or estimated block heights, including the measured gap between neighbours.
-fn block_pitches<'a>(
-    geo: &'a super::geometry::Geometry,
-    items: &'a [BlockItem],
-) -> impl Fn(usize) -> f32 + 'a {
-    let n = items.len();
-    let frame = move |i: usize| {
-        geo.frames
-            .get(&items[i].id)
-            .filter(|(parent, _)| *parent == Some(DOC))
-            .map(|(_, b)| b)
-    };
-    // The gap between blocks (their margins, the box's gap), from
-    // neighbours measured in one layout.
-    let (mut sum, mut count, mut gaps, mut gap_count) = (0.0f32, 0usize, 0.0f32, 0usize);
-    for i in 0..n {
-        if let Some(b) = frame(i) {
-            sum += b.size.height.0;
-            count += 1;
-            if let Some(next) = (i + 1 < n).then(|| frame(i + 1)).flatten() {
-                let gap = next.origin.y.0 - (b.origin.y.0 + b.size.height.0);
-                if (0.0..200.0).contains(&gap) {
-                    gaps += gap;
-                    gap_count += 1;
-                }
-            }
-        }
-    }
-    let average = if count > 0 { sum / count as f32 } else { 24.0 };
-    let gap = if gap_count > 0 {
-        gaps / gap_count as f32
-    } else {
-        0.0
-    };
-    move |i: usize| frame(i).map_or(average, |b| b.size.height.0) + gap
+/// A selection at a shared block boundary belongs to the earlier block.
+fn block_at(tree: &super::controller::Tree, items: &[BlockItem], position: usize) -> usize {
+    items.partition_point(|it| {
+        tree.pos(it.id)
+            .is_some_and(|p| p + it.node.node_size() < position)
+    })
 }
 
-/// Bring one remote selection into the same block window used by ordinary scrolling.
+/// Bring a distant caret into the stored block window before reading its layout.
 pub(super) fn reveal_unmounted_block(rv: &Rv, position: usize) -> bool {
     let y = {
         let tree = rv.tree.borrow();
@@ -427,16 +398,15 @@ pub(super) fn reveal_unmounted_block(rv: &Rv, position: usize) -> bool {
         if items.len() <= WINDOWED_BLOCKS {
             return false;
         }
-        let at = items.partition_point(|it| {
-            tree.pos(it.id)
-                .is_some_and(|start| start + it.node.node_size() < position)
-        });
+        let at = block_at(&tree, items, position);
         if at == items.len() {
             return false;
         }
-        let geo = rv.geo.borrow();
-        let pitch = block_pitches(&geo, items);
-        (0..at).map(pitch).sum::<f32>()
+        let window = doc_window(rv, items);
+        if (window.start..window.end).contains(&at) {
+            return false;
+        }
+        rv.block_heights.borrow().prefix(at) as f32
     };
     rv.set_viewport_scroll(y - rv.viewport.get_untracked().height.0 * 0.5);
     true
@@ -456,25 +426,15 @@ fn doc_window(rv: &Rv, items: &[BlockItem]) -> Window {
             below: 0.0,
         };
     }
-    let geo = rv.geo.borrow();
-    let pitch = block_pitches(&geo, items);
+    let heights = rv.block_heights.borrow();
     let viewport = rv.viewport.get().height.0;
     let viewport = if viewport > 0.0 { viewport } else { 1000.0 };
-    let top = rv.scroll_y.get().0 - viewport * OVERSCAN;
-    let bottom = rv.scroll_y.get().0 + viewport * (1.0 + OVERSCAN);
-    let (mut y, mut start, mut end) = (0.0f32, n, n);
-    for i in 0..n {
-        let h = pitch(i);
-        if start == n && y + h >= top {
-            start = i;
-        }
-        if y > bottom {
-            end = i;
-            break;
-        }
-        y += h;
-    }
-    let mut start = start.min(n.saturating_sub(1)) / WINDOW_STEP * WINDOW_STEP;
+    let y = rv.scroll_y.get().0;
+    let top = y - viewport * OVERSCAN;
+    let bottom = y + viewport * (1.0 + OVERSCAN);
+    let start = heights.preceding(f64::from(top), false).min(n - 1);
+    let end = (heights.preceding(f64::from(bottom), true) + 1).min(n);
+    let mut start = start / WINDOW_STEP * WINDOW_STEP;
     let mut end = end.div_ceil(WINDOW_STEP) * WINDOW_STEP;
     // The selection's blocks stay mounted: the caret, the keys and the
     // input method need their text. A selection far from the viewport
@@ -483,21 +443,15 @@ fn doc_window(rv: &Rv, items: &[BlockItem]) -> Window {
     let selection = rv.st.borrow().selection().clone();
     let tree = rv.tree.borrow();
     for pos in [selection.from(), selection.to()] {
-        let at = items.iter().position(|it| {
-            tree.pos(it.id)
-                .is_some_and(|p| p <= pos && pos <= p + it.node.node_size())
-        });
-        if let Some(i) = at
-            && i + WINDOW_STEP * 4 >= start
-            && i <= end + WINDOW_STEP * 4
-        {
+        let i = block_at(&tree, items, pos);
+        if i < n && i + WINDOW_STEP * 4 >= start && i <= end + WINDOW_STEP * 4 {
             start = start.min(i / WINDOW_STEP * WINDOW_STEP);
             end = end.max((i + 1).div_ceil(WINDOW_STEP) * WINDOW_STEP);
         }
     }
     let end = end.min(n);
-    let above = (0..start).map(&pitch).sum();
-    let below = (end..n).map(pitch).sum();
+    let above = heights.prefix(start) as f32;
+    let below = (heights.prefix(n) - heights.prefix(end)) as f32;
     Window {
         start,
         end,
@@ -512,7 +466,7 @@ fn doc_blocks(rv: Rv) -> Vec<AnyElement> {
     let window_rv = rv.clone();
     let window = computed(move || {
         window_rv.doc_rev.get();
-        window_rv.layout_rev.get();
+        window_rv.block_heights_rev.get();
         window_rv.sel_rev.get();
         let tree = window_rv.tree.borrow();
         let items = tree
@@ -2047,6 +2001,32 @@ impl Rv {
             .filter(|t| !t.is_empty())
     }
 
+    /// Refresh the index when document membership changes. Stored frame IDs
+    /// are the same stable keys used by the upstream renderer.
+    pub(crate) fn sync_block_heights(
+        &self,
+        tree: &super::controller::Tree,
+        geo: &super::geometry::Geometry,
+    ) {
+        let items = tree
+            .children
+            .get(&DOC)
+            .filter(|v| v.len() > WINDOWED_BLOCKS)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        self.block_heights
+            .borrow_mut()
+            .sync(items.iter().map(|it| it.id), |id| {
+                geo.frames
+                    .get(&id)
+                    .filter(|(parent, _)| *parent == Some(DOC))
+                    .map(|(_, b)| super::block_heights::Frame {
+                        top: b.origin.y.0,
+                        height: b.size.height.0,
+                    })
+            });
+    }
+
     /// Block (or slot) `id`'s frame in box `parent` (`None`: the content
     /// box).
     pub(crate) fn set_frame(&self, id: u64, parent: Option<u64>, frame: Bounds<Points>) {
@@ -2056,6 +2036,17 @@ impl Rv {
         }
         geo.frames.insert(id, (parent, frame));
         drop(geo);
+        let pitch_changed = parent == Some(DOC)
+            && self.block_heights.borrow_mut().measure(
+                id,
+                super::block_heights::Frame {
+                    top: frame.origin.y.0,
+                    height: frame.size.height.0,
+                },
+            );
+        if pitch_changed {
+            self.block_heights_rev.update(|r| *r += 1);
+        }
         self.table_moved(id, parent);
         self.layout_rev.update(|r| *r += 1);
     }

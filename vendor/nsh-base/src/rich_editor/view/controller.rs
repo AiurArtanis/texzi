@@ -202,6 +202,8 @@ pub(crate) struct Rv {
     pub(crate) deco_rev: Signal<u64>,
     /// A block's frame or a text's lines changed.
     pub(crate) layout_rev: Signal<u64>,
+    pub(crate) block_heights: Rc<RefCell<super::block_heights::BlockHeights>>,
+    pub(crate) block_heights_rev: Signal<u64>,
     /// The session has a state the view has not taken yet.
     notified: Signal<u64>,
     pub(crate) focused: Signal<bool>,
@@ -289,6 +291,8 @@ impl Rv {
             sel_rev: signal(0),
             deco_rev: signal(0),
             layout_rev: signal(0),
+            block_heights: Rc::default(),
+            block_heights_rev: signal(0),
             notified: signal(0),
             focused: signal(false),
             blink: signal(true),
@@ -591,6 +595,7 @@ impl Rv {
             geo.texts.insert(id, entry);
         }
         geo.atoms = atoms;
+        self.sync_block_heights(&tree, &geo);
     }
 
     pub(crate) fn block_pos(&self, id: u64) -> Option<usize> {
@@ -1404,7 +1409,6 @@ impl Rv {
         let affinity = sel.affinity();
         if (vertical || m.unit == Unit::LineEdge)
             && sel.as_text().is_some()
-            && self.geo.borrow().caret_rect(head, affinity).is_none()
             && super::render::reveal_unmounted_block(self, head)
         {
             // The scroll may have removed the current caret's view. Resume
@@ -2984,8 +2988,12 @@ impl Rv {
             self.scroll_pending.set(false);
             return;
         }
+        // A previously visited block can still have cached geometry after
+        // unmounting. Materialize the destination before trusting its rectangle.
+        if super::render::reveal_unmounted_block(self, state.selection().head()) {
+            return;
+        }
         let Some(caret) = self.node_selection_box().or_else(|| self.caret_rect()) else {
-            super::render::reveal_unmounted_block(self, state.selection().head());
             return;
         };
         self.scroll_pending.set(false);
