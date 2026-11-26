@@ -28,6 +28,8 @@ struct Mounted {
     scrolls: HashSet<NodeId>,
     parents: HashMap<NodeId, NodeId>,
     rows: HashMap<NodeId, usize>,
+    frames: HashMap<NodeId, Bounds<Points>>,
+    content: HashMap<NodeId, Size<Points>>,
     offsets: Vec<(NodeId, u32, u64, f32)>,
 }
 
@@ -47,6 +49,12 @@ impl Mounted {
                         MountItem::Insert { parent, child, .. } => {
                             self.parents.insert(child, parent);
                         }
+                        MountItem::Frame { id, frame } => {
+                            self.frames.insert(id, frame);
+                        }
+                        MountItem::ScrollContent { id, size } => {
+                            self.content.insert(id, size);
+                        }
                         MountItem::ViewProps { id, props }
                             if props.test_id.as_deref() == Some("texzi.rich.thumb-target") =>
                         {
@@ -54,7 +62,10 @@ impl Mounted {
                         }
                         MountItem::Text { id, text, .. } => {
                             if let Some(n) = text.text.strip_prefix("row-") {
-                                self.rows.insert(id, n.parse().unwrap());
+                                self.rows.insert(
+                                    id,
+                                    n.split_ascii_whitespace().next().unwrap().parse().unwrap(),
+                                );
                             }
                         }
                         MountItem::Delete { id } => {
@@ -108,6 +119,83 @@ impl Mounted {
     fn contains(&self, row: usize) -> bool {
         self.rows.values().any(|&n| n == row)
     }
+
+    fn row_top(&self, mut id: NodeId, scroller: NodeId) -> f32 {
+        let mut y = 0.0;
+        while id != scroller {
+            y += self.frames.get(&id).map_or(0.0, |frame| frame.origin.y.0);
+            id = self.parents[&id];
+        }
+        y
+    }
+}
+
+#[component]
+fn MixedThumbFixture() -> impl IntoElement {
+    let blocks = (1..=4097)
+        .map(|n| {
+            let extra = if n <= 64 {
+                " wrapped text".repeat(80)
+            } else {
+                String::new()
+            };
+            json!({"type":"paragraph","content":[{"type":"text","text":format!("row-{n}{extra}")}]})
+        })
+        .collect::<Vec<_>>();
+    nsh_base::rich_editor::view::rich_editor()
+        .content(json!({"type":"doc","content":blocks}))
+        .classes(crate::app::rich_classes())
+        .size_full()
+}
+
+#[test]
+fn a_short_final_block_keeps_the_clamped_viewport_covered_after_heights_change() {
+    let mut core = Core::new(ApproxTextEngine, Size::new(px(800.0), px(600.0)));
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<MixedThumbFixture>(|| ()));
+    let mut mounted = Mounted::default();
+    mounted.flush(&mut core);
+    let outer = mounted.parents[&mounted.receiver.unwrap()];
+    mounted.scroll = Some(outer);
+    mounted.event(&mut core, "thumbBegin", json!([7]));
+    mounted.event(&mut core, "thumbTarget", json!([7, 1.0]));
+    mounted.flush(&mut core);
+    for task in core.take_main_thread_tasks() {
+        task.run();
+    }
+    mounted.flush(&mut core);
+    let requested = mounted.offsets.last().unwrap().3;
+    let height = mounted.frames[&outer].size.height.0;
+    let bottom = mounted.content[&outer].height.0;
+    let top = bottom - height;
+    let mut visible: Vec<_> = mounted
+        .rows
+        .iter()
+        .filter_map(|(&id, &n)| {
+            let y = mounted.row_top(id, outer);
+            (y >= top && y < bottom).then_some((n, y))
+        })
+        .collect();
+    visible.sort_by_key(|&(row, _)| row);
+    eprintln!(
+        "clamped thumb requested={requested} max={top} viewport={height} visible={visible:?}"
+    );
+    assert!(
+        requested > top + height,
+        "the measured short blocks must shrink the estimated content"
+    );
+    assert!(
+        visible.iter().any(|&(_, y)| y < top + height * 0.25),
+        "top quarter of the clamped page is empty"
+    );
+    assert!(
+        visible.iter().any(|&(_, y)| y > top + height * 0.75),
+        "bottom quarter of the clamped page is empty"
+    );
+    assert!(visible.windows(2).all(|rows| rows[0].0 + 1 == rows[1].0));
+    assert!(mounted.contains(4097));
 }
 
 #[test]

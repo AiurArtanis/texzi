@@ -468,6 +468,11 @@ fn doc_window(rv: &Rv, items: &[BlockItem], y: f32) -> Window {
     let heights = rv.block_heights.borrow();
     let viewport = rv.viewport.get().height.0;
     let viewport = if viewport > 0.0 { viewport } else { 1000.0 };
+    // Measuring the destination can shrink the estimated document while
+    // an older absolute offset is in flight. Windows clamps that offset
+    // to its last viewport, so prepare all the rows of that page.
+    let max = (heights.prefix(n) as f32 - viewport).max(0.0);
+    let y = y.clamp(0.0, max);
     let top = y - viewport * OVERSCAN;
     let bottom = y + viewport * (1.0 + OVERSCAN);
     let start = heights.preceding(f64::from(top), false).min(n - 1);
