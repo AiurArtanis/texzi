@@ -15,7 +15,7 @@ pub(super) struct FileState {
 
 struct DiskContents {
     bytes: Arc<[u8]>,
-    token: doc::StateToken,
+    token: Option<doc::StateToken>,
 }
 
 #[cfg(test)]
@@ -47,6 +47,34 @@ pub(crate) enum SaveError {
 impl NativeView {
     pub(crate) fn has_disk_baseline(&self) -> bool {
         self.owner.files.borrow().disk.is_some()
+    }
+
+    pub(crate) fn recovery_format(&self) -> (Format, Option<Arc<[u8]>>) {
+        let state = self.owner.files.borrow();
+        (
+            state.format,
+            state.disk.as_ref().map(|disk| disk.bytes.clone()),
+        )
+    }
+
+    pub(crate) fn recover_file(
+        raw: &str,
+        format: Format,
+        eol: doc::Eol,
+        original: Option<Arc<[u8]>>,
+    ) -> Result<Rc<Self>, String> {
+        let mut store = doc::Store::new(doc::HistoryBudget::default());
+        let view = store.open_recovered(raw, format, eol).map_err(err)?;
+        let disk = original.map(|bytes| DiskContents { bytes, token: None });
+        Self::from_store(
+            store,
+            view,
+            FileState {
+                format,
+                disk,
+                ..FileState::default()
+            },
+        )
     }
 
     pub(crate) fn disk_len(&self) -> u64 {
@@ -92,7 +120,7 @@ impl NativeView {
             format,
             disk: Some(DiskContents {
                 bytes,
-                token: snapshot.token,
+                token: Some(snapshot.token),
             }),
             ..FileState::default()
         };
@@ -165,7 +193,7 @@ impl NativeView {
             let format = if use_utf8 { UTF8 } else { files.format };
             let original = files.disk.as_ref();
             let unchanged = original
-                .filter(|disk| disk.token == snapshot.token && format == files.format)
+                .filter(|disk| disk.token == Some(snapshot.token) && format == files.format)
                 .map(|disk| disk.bytes.clone());
             let expected = if replace {
                 Some(
@@ -230,7 +258,7 @@ impl NativeView {
                 (current.revision != snapshot.revision).then_some(current.revision);
             files.disk = Some(DiskContents {
                 bytes,
-                token: snapshot.token,
+                token: Some(snapshot.token),
             });
         }
         self.notify();

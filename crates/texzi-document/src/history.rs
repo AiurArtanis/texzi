@@ -505,7 +505,7 @@ impl Store {
         if profile.version != 1 {
             return Err(Error::InvalidProfile);
         }
-        self.open_import(raw, profile, backed_by_disk, false)
+        self.open_import(raw, profile, backed_by_disk, false, None)
     }
     pub fn open_decoded(
         &mut self,
@@ -521,6 +521,28 @@ impl Store {
         format: crate::files::Format,
         default_eol: Eol,
     ) -> Result<Snapshot, Error> {
+        self.open_decoded_import(text, format, default_eol, None)
+    }
+
+    /// Imports an unsaved session body. Its initial content remains dirty
+    /// even if subsequent edits undo back to this recovered state.
+    pub fn open_recovered(
+        &mut self,
+        text: &str,
+        format: crate::files::Format,
+        default_eol: Eol,
+    ) -> Result<Snapshot, Error> {
+        let baseline = self.allocate_token()?;
+        self.open_decoded_import(text, format, default_eol, Some(baseline))
+    }
+
+    fn open_decoded_import(
+        &mut self,
+        text: &str,
+        format: crate::files::Format,
+        default_eol: Eol,
+        baseline: Option<StateToken>,
+    ) -> Result<Snapshot, Error> {
         self.open_import(
             text,
             Profile {
@@ -531,6 +553,7 @@ impl Store {
             },
             false,
             true,
+            baseline,
         )
     }
     fn open_import(
@@ -539,6 +562,7 @@ impl Store {
         profile: Profile,
         backed_by_disk: bool,
         decoded: bool,
+        baseline: Option<StateToken>,
     ) -> Result<Snapshot, Error> {
         if !profile.valid() {
             return Err(Error::InvalidProfile);
@@ -578,7 +602,7 @@ impl Store {
                 views: HashMap::new(),
                 merge: None,
                 last_fence: FenceReason::Explicit,
-                baseline: token,
+                baseline: baseline.unwrap_or(token),
                 backed: backed_by_disk,
                 undo: VecDeque::new(),
                 redo: Vec::new(),

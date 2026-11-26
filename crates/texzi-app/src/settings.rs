@@ -4,10 +4,12 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
+    rc::Rc,
     sync::{
         OnceLock,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 pub const THEME: &str = "appearance.theme";
@@ -24,6 +26,7 @@ pub const MARKDOWN_VIEW: &str = "markdown.defaultView";
 pub const TAB_CLOSE: &str = "workbench.tabCloseButton";
 pub const AUTO_SAVE: &str = "files.autoSave";
 pub const MINIMAP: &str = "editor.minimap";
+pub const RESTORE: &str = "session.restoreOnStartup";
 pub const MARKDOWN_SOURCE_ONLY_BYTES: u64 = 50_000_000;
 
 pub const ENABLED: &[&str] = &[
@@ -41,6 +44,7 @@ pub const ENABLED: &[&str] = &[
     TAB_CLOSE,
     AUTO_SAVE,
     MINIMAP,
+    RESTORE,
 ];
 
 pub fn definition(id: &str) -> &'static Value {
@@ -307,9 +311,28 @@ pub struct Settings {
 
 #[derive(Clone, PartialEq)]
 pub struct PendingWrite {
-    pub id: String,
+    id: String,
     root: Option<PathBuf>,
     value: Option<Value>,
+}
+
+impl PendingWrite {
+    pub fn label(&self) -> String {
+        let setting = definition(&self.id);
+        let name = setting["name"].as_str().unwrap();
+        let value = self.value.as_ref().map_or_else(
+            || "重置".into(),
+            |value| {
+                setting["options"]
+                    .as_array()
+                    .and_then(|options| options.iter().find(|option| &option["value"] == value))
+                    .and_then(|option| option["label"].as_str())
+                    .or_else(|| value.as_str())
+                    .map_or_else(|| value.to_string(), str::to_owned)
+            },
+        );
+        format!("重试保存 {name} · {value}")
+    }
 }
 
 impl Settings {
@@ -339,14 +362,41 @@ impl Settings {
         if let Some(path) = &self.path {
             match read(path) {
                 Ok(data) => {
-                    self.data.set(data);
-                    if self.pending.get_untracked().is_empty() {
+                    if self.data.get_untracked() != data {
+                        self.data.set(data);
+                    }
+                    if self.pending.get_untracked().is_empty()
+                        && self
+                            .error
+                            .get_untracked()
+                            .is_some_and(|message| message.starts_with("无法读取设置"))
+                    {
                         self.error.set(None);
                     }
                 }
-                Err(error) => self.error.set(Some(format!("无法读取设置：{error}"))),
+                Err(error) => {
+                    let message = format!("无法读取设置：{error}");
+                    if self.error.get_untracked().as_deref() != Some(message.as_str()) {
+                        self.error.set(Some(message));
+                    }
+                }
             }
         }
+    }
+
+    pub fn watch(settings: &Rc<Self>, owner: Owner) {
+        if settings.path.is_none() {
+            return;
+        }
+        let weak = Rc::downgrade(settings);
+        owner.run(|| {
+            set_timeout(Duration::from_secs(1), move || {
+                if let Some(settings) = weak.upgrade() {
+                    settings.refresh();
+                    Self::watch(&settings, owner);
+                }
+            })
+        });
     }
 
     pub fn effective(&self, id: &str, root: Option<&Path>) -> (Value, &'static str) {

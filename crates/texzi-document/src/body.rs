@@ -139,6 +139,9 @@ impl Body {
     pub fn source(&self) -> &Rope {
         &self.text
     }
+    pub fn default_eol(&self) -> Eol {
+        self.profile.default_eol
+    }
     pub fn logical_line_count(&self) -> usize {
         self.eols.len_chars() + 1
     }

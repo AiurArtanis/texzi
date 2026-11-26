@@ -36,6 +36,8 @@ use std::{
 mod auto_save;
 #[path = "minimap.rs"]
 mod minimap;
+#[path = "session_recovery.rs"]
+mod session_recovery;
 #[path = "settings_view.rs"]
 mod settings_view;
 
@@ -83,12 +85,17 @@ struct Document {
     controls: RichControlSet,
     wrap: Signal<Option<bool>>,
     tab_size: Signal<Option<u32>>,
+    retained_scroll: Signal<Option<(f32, f32)>>,
     auto_save: Rc<auto_save::State>,
     pending_mode: Signal<Option<bool>>,
     progress: ElementRef,
     body: ElementRef,
 }
 impl Document {
+    fn editable_body_ready(&self) -> bool {
+        self.path.get().is_none() || self.source.has_disk_baseline()
+    }
+
     fn displayed_rich(&self) -> bool {
         self.gate.rich_mode.get()
     }
@@ -305,6 +312,7 @@ struct Shell {
     settings: Rc<settings::Settings>,
     settings_view: Rc<settings_view::SettingsView>,
     settings_tab: Signal<SettingsTab>,
+    session: RefCell<Option<Rc<session_recovery::Session>>>,
     next: Cell<u64>,
     closed: RefCell<Vec<Rc<Document>>>,
     root: Signal<Option<PathBuf>>,
@@ -425,6 +433,9 @@ impl Shell {
     }
 
     fn activate_primary(&self, id: u64) {
+        if let Some(previous) = self.primary().filter(|previous| previous.id != id) {
+            session_recovery::keep_scroll(&previous);
+        }
         self.active.set(id);
         self.second_active.set(false);
         self.show_documents();
@@ -504,6 +515,7 @@ impl Shell {
             settings: Rc::new(settings::Settings::new()),
             settings_view: Rc::new(settings_view::SettingsView::new(CHORDS)),
             settings_tab: signal(SettingsTab::Closed),
+            session: RefCell::new(None),
             next: Cell::new(1),
             closed: RefCell::new(vec![]),
             root: signal(None),
@@ -550,6 +562,7 @@ impl Shell {
                 untracked(|| preferences.refresh());
             }
         });
+        settings::Settings::watch(&s.settings, s.owner);
         let preferences = s.settings.clone();
         let theme =
             computed(
@@ -586,6 +599,9 @@ impl Shell {
         let mut attributes = WindowAttributes::default();
         attributes.close_on_press = Some(false);
         s.window.set(attributes);
+        if let Err(error) = session_recovery::start(&s) {
+            s.notice.set(format!("无法启用会话恢复 · {error}"));
+        }
         let close = s.clone();
         s.window.on_close_press(move |_| close.close_window());
         let menus = s.clone();
@@ -724,13 +740,22 @@ impl Shell {
         });
     }
     fn add(&self, source: Rc<NativeView>, path: Option<PathBuf>) {
+        self.add_with_mode(source, path, None);
+    }
+    fn add_with_mode(
+        &self,
+        source: Rc<NativeView>,
+        path: Option<PathBuf>,
+        restored_mode: Option<bool>,
+    ) {
         let id = self.next.get();
         self.next.set(id + 1);
         let rich = self.owner.run(|| source.sibling().expect("rich view"));
         let gate = self.owner.run(|| ModeGate::new(source.clone(), rich));
         if path.as_deref().is_some_and(is_markdown)
             && source.disk_len() <= settings::MARKDOWN_SOURCE_ONLY_BYTES
-            && self.preference(settings::MARKDOWN_VIEW) == "wysiwyg"
+            && restored_mode
+                .unwrap_or_else(|| self.preference(settings::MARKDOWN_VIEW) == "wysiwyg")
         {
             self.owner.run(|| gate.to_rich());
         }
@@ -752,6 +777,7 @@ impl Shell {
                 controls,
                 wrap,
                 tab_size: self.owner.run(|| signal(None)),
+                retained_scroll: self.owner.run(|| signal(None)),
                 auto_save: self.owner.run(|| Rc::new(auto_save::State::new())),
                 pending_mode: self.owner.run(|| signal(None)),
                 progress: self.owner.run(element_ref),
@@ -929,10 +955,13 @@ impl Shell {
             self.restore_editor_focus();
             return Ok(());
         }
-        let source = self.owner.run(|| NativeView::open_file(&path))?;
+        let source = self.load_recovery_target(&path)?;
         self.remember(&path);
         self.add(source, Some(path));
         Ok(())
+    }
+    fn load_recovery_target(&self, path: &Path) -> Result<Rc<NativeView>, String> {
+        self.owner.run(|| NativeView::open_file(path))
     }
     fn open_folder(self: &Rc<Self>, path: &Path) {
         match path.canonicalize() {
@@ -1022,7 +1051,9 @@ impl Shell {
         let targets = if all {
             self.docs.with(|docs| {
                 docs.iter()
-                    .filter(|doc| doc.source.is_dirty().unwrap_or(true))
+                    .filter(|doc| {
+                        doc.editable_body_ready() && doc.source.is_dirty().unwrap_or(true)
+                    })
                     .cloned()
                     .collect::<Vec<_>>()
             })
@@ -1101,6 +1132,7 @@ impl Shell {
                         self.remember(path);
                         doc.path.set(Some(path.clone()));
                         doc.auto_save.after_explicit_save();
+                        session_recovery::saved(self, &doc);
                         saved += 1;
                         self.show_saved(&doc);
                         break;
@@ -1184,7 +1216,7 @@ impl Shell {
                 .collect::<Vec<_>>()
         });
         if dirty.is_empty() {
-            self.window.close();
+            self.finish_close(false);
             return;
         }
         let s = self.clone();
@@ -1207,12 +1239,22 @@ impl Shell {
             },
             move |result| {
                 if result.is_ok_and(|r| r.action.as_deref() == Some("discard")) {
-                    s.window.close();
+                    s.finish_close(true);
                 } else {
                     s.restore_editor_focus();
                 }
             },
         );
+    }
+    fn finish_close(self: &Rc<Self>, discard_dirty: bool) {
+        match session_recovery::finish(self, discard_dirty) {
+            Ok(()) => self.window.close(),
+            Err(error) if discard_dirty => self.explain("无法更新恢复记录", &error.to_string()),
+            Err(error) => {
+                log::warn!("关闭时未能写入会话记录：{error}");
+                self.window.close();
+            }
+        }
     }
     fn close_tab(self: &Rc<Self>, id: u64) {
         if self.modal.get() {
@@ -1259,13 +1301,17 @@ impl Shell {
                 },
                 move |result| {
                     if result.is_ok_and(|r| r.action.as_deref() == Some("discard")) {
-                        s.remove(id);
+                        match session_recovery::remove_discarded(&s, id) {
+                            Ok(()) => s.remove(id),
+                            Err(error) => s.explain("无法更新恢复记录", &error.to_string()),
+                        }
                     }
                     s.restore_editor_focus();
                 },
             );
         } else {
             self.remove(id);
+            session_recovery::checkpoint(self, true);
         }
     }
     fn remove(&self, id: u64) {
@@ -1404,6 +1450,7 @@ impl Shell {
             controls,
             wrap,
             tab_size: doc.tab_size,
+            retained_scroll: signal(None),
             auto_save: doc.auto_save.clone(),
             pending_mode: signal(None),
             progress: element_ref(),
@@ -1596,7 +1643,7 @@ impl Shell {
             "texzi.file.saveAll" => self.save(true,false),
             "texzi.folder.close"=>{self.root.set(None);self.notice.set("已关闭文件夹，已打开标签保持不变".into());},
             "texzi.window.close"=>self.close_window(),"texzi.tab.close"=>if self.settings_active(){self.dismiss_settings(true);}else if self.second_active.get(){self.split.set(None);self.second_active.set(false);}else{self.close_tab(self.active.get());},
-            "texzi.window.new"=>match std::env::current_exe().and_then(|exe|std::process::Command::new(exe).spawn()){Ok(_)=>self.notice.set("已启动新的 texzi 窗口".into()),Err(e)=>self.explain("新建窗口失败",&e.to_string())},
+            "texzi.window.new"=>match session_recovery::spawn_blank_window(){Ok(())=>self.notice.set("已启动新的 texzi 窗口".into()),Err(e)=>self.explain("新建窗口失败",&e.to_string())},
             "texzi.group.splitRight"|"texzi.group.splitDown"=>self.split_editor(id.ends_with("Down")),
             "texzi.group.joinAll"=>{self.split.set(None);self.second_active.set(false);self.notice.set("已合并为单组；同一文档内容与历史保持不变".into());},
             "texzi.tab.reopenClosed"=>{let doc=self.closed.borrow_mut().pop();if let Some(doc)=doc{let id=doc.id;self.docs.update(|ds|ds.push(doc));self.activate_primary(id);self.restore_editor_focus();}else{self.notice.set("没有已关闭标签".into());}},
@@ -2161,12 +2208,15 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let font_shell = s.clone();
     let map_shell = s.clone();
     let map_source = doc.source.clone();
+    let map_document = doc.clone();
     let lines_shell = s.clone();
     let body = doc.body;
     let source_focus = s.second_active;
     let rich_focus = s.second_active;
     let source_auto_save = doc.auto_save.clone();
     let rich_auto_save = doc.auto_save.clone();
+    let rich_restore = doc.clone();
+    let source_restore = doc.clone();
     let settings_tab = s.settings_tab;
     let block_controls = doc.controls.blocks.clone();
     let resource_controls = doc.controls.resources.clone();
@@ -2191,6 +2241,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
         .min_h(px(0.0))
         .child(
             when(rich_mode, move || {
+                restore_editor_scroll(rich_restore.clone(), true);
                 let session = rich.session();
                 effect(move || crate::rich_images::install(&session, image_document_path.get()));
                 let shell = controls_shell.clone();
@@ -2256,6 +2307,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
             })
             .otherwise(move || {
                 source.source_mounted();
+                restore_editor_scroll(source_restore.clone(), false);
                 let tab_shell = tab_shell.clone();
                 let tab_doc = tab_doc.clone();
                 let size_shell = size_shell.clone();
@@ -2268,11 +2320,16 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 let wrap_doc = wrap_doc.clone();
                 let map_shell = map_shell.clone();
                 let map_source = map_source.clone();
-                let map_enabled = computed(move || map_shell.preference(settings::MINIMAP) == true);
+                let map_document = map_document.clone();
+                let map_enabled = computed(move || {
+                    map_document.editable_body_ready()
+                        && map_shell.preference(settings::MINIMAP) == true
+                });
                 let viewport = signal((0, 0));
                 let editor = nsh_base::editor::editor()
                     .element_ref(&body)
                     .component_ref(&reference)
+                    .anchor_wrap_reflow(true)
                     .viewport_feedback(move || map_enabled.get())
                     .on_viewport_change(move |range: &nsh_base::editor::EditorRange| {
                         viewport.set((range.start.line, range.end.line));
@@ -2394,6 +2451,18 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
             },
             move || mode_button(s.clone(), doc.clone(), second),
         ))
+}
+
+fn restore_editor_scroll(doc: Rc<Document>, rich: bool) {
+    if doc.retained_scroll.get_untracked().is_none() {
+        return;
+    }
+    spawn(async move {
+        wait_for_editor_frame(doc.body).await;
+        if doc.displayed_rich() == rich {
+            session_recovery::apply_scroll(&doc, rich);
+        }
+    });
 }
 
 fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {

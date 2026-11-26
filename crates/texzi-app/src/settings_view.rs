@@ -24,6 +24,7 @@ const COMMON: &[&str] = &[
     settings::LINE_NUMBERS,
     settings::MARKDOWN_VIEW,
     settings::AUTO_SAVE,
+    settings::RESTORE,
 ];
 
 struct Binding {
@@ -461,10 +462,7 @@ pub(super) fn content(
                         .children(pending.into_iter().map(|entry| {
                             let settings = retry_settings.clone();
                             let state = retry_scope.clone();
-                            let label = format!(
-                                "重试保存 {}",
-                                settings::definition(&entry.id)["name"].as_str().unwrap()
-                            );
+                            let label = entry.label();
                             nsh_base::button()
                                 .child(text(label))
                                 .on_press(move |_: &()| {

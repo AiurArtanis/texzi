@@ -70,3 +70,10 @@ editor retains its existing rendering language and plain-text fallback.
 layout or text changes. Texzi opts in while the source minimap is visible.
 The event does not allocate another document snapshot or introduce a
 scroll listener when feedback is disabled.
+
+When Texzi's source editor reflows wrapped rows, it retains the first
+visible source position and its vertical offset. The source minimap can
+change the available width while retaining this position.
+
+`RichEditorApi::set_scroll_top` restores a saved vertical position through
+the existing visible-row scroll path when a session view mounts.

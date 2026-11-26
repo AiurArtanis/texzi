@@ -98,6 +98,9 @@ pub struct EditorProps {
     /// Emit the logical range when the editor viewport changes.
     #[prop(default)]
     pub viewport_feedback: Prop<bool>,
+    /// Keep the same source position at the top when wrapping is recalculated.
+    #[prop(default)]
+    pub anchor_wrap_reflow: Prop<bool>,
     /// The gutter's line numbers (default true).
     #[prop(default = true)]
     pub line_numbers: Prop<bool>,

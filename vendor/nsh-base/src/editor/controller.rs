@@ -376,12 +376,31 @@ impl Ed {
         effect(move || {
             let wrap = ed.props.soft_wrap.get();
             let width = ed.text_width.get();
-            let mut st = ed.st.borrow_mut();
-            let st = &mut *st;
-            let wrap_width = (wrap && width.0 > 0.0).then_some(width);
-            st.display.set_wrap_width(wrap_width);
-            st.display.rebuild(&st.buffer);
+            let offset = {
+                let mut st = ed.st.borrow_mut();
+                let st = &mut *st;
+                let y = ed.scroll_y.get_untracked();
+                let top = ed.rows_top.get_untracked();
+                let anchor = if ed.props.anchor_wrap_reflow.get_untracked() && y > top {
+                    let height = st.line_height().0.max(1.0);
+                    let row =
+                        (((y - top).0 / height).floor() as usize).min(st.display.row_count() - 1);
+                    Some((
+                        st.display.row(row).range.start,
+                        ((y - top).0 - row as f32 * height).clamp(0.0, height),
+                    ))
+                } else {
+                    None
+                };
+                let wrap_width = (wrap && width.0 > 0.0).then_some(width);
+                st.display.set_wrap_width(wrap_width);
+                st.display.rebuild(&st.buffer);
+                anchor.map(|(byte, intra_row)| st.caret_point(byte).y + top + px(intra_row))
+            };
             ed.bump_text();
+            if let Some(offset) = offset {
+                ed.set_scroll_offset(Point::new(ed.scroll_x.get_untracked(), offset));
+            }
         });
         let ed = self.clone();
         effect(move || {
