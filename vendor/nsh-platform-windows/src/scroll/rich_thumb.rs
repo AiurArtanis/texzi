@@ -42,37 +42,20 @@ fn event(surface: &Surface, receiver: NodeId, name: &str, data: Value) {
     );
 }
 
-pub(super) fn trace() -> bool {
-    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *TRACE.get_or_init(|| {
-        std::env::var_os("TEXZI_TRACE_RICH_THUMB").as_deref() == Some(std::ffi::OsStr::new("1"))
-    })
-}
-
-#[track_caller]
 fn cancel_if(surface: &Surface, matches: impl FnOnce(Grab) -> bool) {
     let owner = &surface.input.rich_thumb;
     if let Some(grab) = owner.get()
         && matches(grab)
     {
-        if trace() {
-            eprintln!(
-                "THUMB_DIAG {:?} native-cancel caller={} grab={grab:?}",
-                std::time::Instant::now(),
-                std::panic::Location::caller()
-            );
-        }
         owner.set(None);
         event(surface, grab.receiver, "thumbCancel", json!([grab.gesture]));
     }
 }
 
-#[track_caller]
 pub(crate) fn cancel_window(surface: &Surface, hwnd: HWND) {
     cancel_if(surface, |grab| grab.window == hwnd);
 }
 
-#[track_caller]
 pub(crate) fn supersede_input(surface: &Surface) {
     if surface.input.rich_thumb.get().is_some() {
         cancel_window(
@@ -82,7 +65,6 @@ pub(crate) fn supersede_input(surface: &Surface) {
     }
 }
 
-#[track_caller]
 pub(crate) fn supersede_view(surface: &Surface, view: &NshView) {
     cancel_if(surface, |grab| grab.view == view.id());
 }
@@ -135,18 +117,6 @@ impl VirtualThumb {
     }
 
     pub(crate) fn move_to(&mut self, surface: &Surface, y: f32) {
-        let target = (self.start + (y - self.origin) / self.travel).clamp(0.0, 1.0);
-        if trace() && target >= 0.79 {
-            eprintln!(
-                "THUMB_DIAG {:?} native-intent receiver={} gesture={} y={y} origin={} travel={} fraction={target} owner={:?}",
-                std::time::Instant::now(),
-                self.receiver,
-                self.gesture,
-                self.origin,
-                self.travel,
-                surface.input.rich_thumb.get()
-            );
-        }
         if !surface
             .input
             .rich_thumb
@@ -155,6 +125,7 @@ impl VirtualThumb {
         {
             return;
         }
+        let target = (self.start + (y - self.origin) / self.travel).clamp(0.0, 1.0);
         if target != self.last {
             self.last = target;
             event(
@@ -168,16 +139,6 @@ impl VirtualThumb {
 
     /// A normal release can still have a final mount in flight.
     pub(crate) fn finish(&self, surface: &Surface, cancelled: bool) {
-        if trace() {
-            eprintln!(
-                "THUMB_DIAG {:?} native-end receiver={} gesture={} last={} cancelled={cancelled} owner={:?}",
-                std::time::Instant::now(),
-                self.receiver,
-                self.gesture,
-                self.last,
-                surface.input.rich_thumb.get()
-            );
-        }
         if cancelled {
             cancel_if(surface, |grab| {
                 grab.receiver == self.receiver && grab.gesture == self.gesture

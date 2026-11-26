@@ -288,9 +288,9 @@ pub(crate) fn content(surface: &Rc<Surface>, view: &NshView, size: Size<Points>)
     shared::content(&Host::new(surface, view), size);
 }
 
-/// `ScrollBy`.
+/// Core uses `ScrollBy` to keep content anchored as rows are measured. It
+/// adjusts the current offset without replacing a pending indicator target.
 pub(crate) fn scroll_by(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32) {
-    rich_thumb::supersede_view(surface, view);
     shared::scroll_by(&Host::new(surface, view), point(Points(dx), Points(dy)));
 }
 
@@ -333,18 +333,6 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
 
 /// `scrollTo` and `scrollToEnd`.
 pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) {
-    if surface.input.rich_thumb.get().is_some()
-        && rich_thumb::trace()
-        && let Command::ScrollTo { x, y, animated } = command
-    {
-        eprintln!(
-            "THUMB_DIAG {:?} ordinary-scroll node={} x={} y={} animated={animated}",
-            std::time::Instant::now(),
-            view.id(),
-            x.0,
-            y.0
-        );
-    }
     rich_thumb::supersede_view(surface, view);
     shared::command(&Host::new(surface, view), command);
 }
@@ -781,14 +769,27 @@ mod tests {
         };
         let pos = || view.state().scroll.as_ref().unwrap().y.0;
         let first = grab(17);
+        apply(3, 17, 1, 0.5);
+        super::scroll_by(&surface, &view, 0.0, 0.03125);
+        assert_eq!(pos(), 4800.03125, "layout compensation moves the viewport");
+        apply(3, 17, 2, 0.81031865);
+        assert_eq!(pos(), 9600.0 * 0.81031865, "the drag still owns the view");
         first.finish(&surface, false);
-        apply(3, 17, 1, 1.2);
+        super::scroll_by(&surface, &view, 0.0, -0.25);
+        assert_eq!(pos(), 9600.0 * 0.81031865 - 0.25);
+        apply(3, 17, 3, 0.89833075);
+        assert_eq!(
+            pos(),
+            9600.0 * 0.89833075,
+            "the last target reaches release"
+        );
+        apply(3, 17, 4, 1.2);
         assert_eq!(pos(), 9600.0, "the released target is clamped and applied");
-        apply(3, 17, 1, 0.12);
+        apply(3, 17, 4, 0.12);
         assert_eq!(pos(), 9600.0, "duplicate ticket");
         let second = grab(18);
         first.finish(&surface, true);
-        apply(3, 17, 2, 0.08);
+        apply(3, 17, 5, 0.08);
         assert_eq!(
             pos(),
             9600.0,
@@ -843,8 +844,8 @@ mod tests {
         let scroll = state.scroll.as_ref().unwrap();
         assert_eq!(scroll.y.0, 150.0);
         assert_eq!(
-            scroll.applied, 1,
-            "only the actual Core scroll counts as issued"
+            scroll.applied, 3,
+            "two Core layout corrections and one explicit scroll count as issued"
         );
     }
 
