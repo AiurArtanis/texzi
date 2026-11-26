@@ -698,6 +698,16 @@ impl ModeGate {
     pub(crate) fn rich_cursor_status(&self) -> Option<String> {
         self.rich.cursor_status()
     }
+    pub(crate) fn recovery_selection(&self) -> Option<ExternalSelections> {
+        if self.rich_mode.get() {
+            &self.rich
+        } else {
+            &self.source
+        }
+        .snapshot()
+        .ok()
+        .map(|snapshot| snapshot.selections)
+    }
     pub fn busy(&self) -> bool {
         self.source.is_composing() || self.rich.is_composing()
     }

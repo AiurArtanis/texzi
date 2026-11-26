@@ -509,6 +509,7 @@ impl Store {
             Body::import_utf8(raw, profile),
             raw.is_empty(),
             backed_by_disk,
+            None,
         )
     }
     pub fn open_decoded(
@@ -516,7 +517,34 @@ impl Store {
         text: &str,
         format: crate::files::Format,
     ) -> Result<Snapshot, Error> {
-        self.open_decoded_cancellable(Arc::from(text), format, || false)
+        self.open_decoded_with_eol(text, format, Profile::default().default_eol)
+    }
+
+    pub fn open_decoded_with_eol(
+        &mut self,
+        text: &str,
+        format: crate::files::Format,
+        default_eol: Eol,
+    ) -> Result<Snapshot, Error> {
+        let empty = text.is_empty();
+        let body = Self::decoded_body(Arc::from(text), format, default_eol, usize::MAX, &|| false)?;
+        self.open_import(body, empty, false, None)
+    }
+
+    /// Imports an unsaved session body. Its initial content remains dirty
+    /// even if subsequent edits undo back to this recovered state.
+    pub fn open_recovered_cancellable(
+        &mut self,
+        text: Arc<str>,
+        format: crate::files::Format,
+        default_eol: Eol,
+        max_lines: usize,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Snapshot, Error> {
+        let empty = text.is_empty();
+        let body = Self::decoded_body(text, format, default_eol, max_lines, &cancelled)?;
+        let baseline = self.allocate_token()?;
+        self.open_import(body, empty, false, Some(baseline))
     }
     pub fn open_decoded_cancellable(
         &mut self,
@@ -535,26 +563,44 @@ impl Store {
         max_lines: usize,
         cancelled: impl Fn() -> bool,
     ) -> Result<Snapshot, Error> {
+        let empty = text.is_empty();
+        let body = Self::decoded_body(
+            text,
+            format,
+            Profile::default().default_eol,
+            max_lines,
+            &cancelled,
+        )?;
+        self.open_import(body, empty, false, None)
+    }
+    fn decoded_body(
+        text: Arc<str>,
+        format: crate::files::Format,
+        default_eol: Eol,
+        max_lines: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Body, Error> {
         let profile = Profile {
             version: 2,
             file_format: Some(format),
+            default_eol,
             ..Profile::default()
         };
         if !profile.valid() {
             return Err(Error::InvalidProfile);
         }
-        let empty = text.is_empty();
-        let body = Body::import_cancellable(text, profile, max_lines, &cancelled)?;
+        let body = Body::import_cancellable(text, profile, max_lines, cancelled)?;
         if cancelled() {
             return Err(Error::Cancelled);
         }
-        self.open_import(body, empty, false)
+        Ok(body)
     }
     fn open_import(
         &mut self,
         body: Body,
         empty: bool,
         backed_by_disk: bool,
+        baseline: Option<StateToken>,
     ) -> Result<Snapshot, Error> {
         let id = NEXT_DOC
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| x.checked_add(1))
@@ -587,7 +633,7 @@ impl Store {
                 views: HashMap::new(),
                 merge: None,
                 last_fence: FenceReason::Explicit,
-                baseline: token,
+                baseline: baseline.unwrap_or(token),
                 backed: backed_by_disk,
                 undo: VecDeque::new(),
                 redo: Vec::new(),

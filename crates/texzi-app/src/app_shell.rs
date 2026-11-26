@@ -2,6 +2,7 @@
 mod large_file;
 use crate::editor_owner::SaveError;
 use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
+use crate::settings;
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
 use large_file::{LARGE_BYTES, LargeFile};
 use nsh_base::{
@@ -32,6 +33,15 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+#[path = "auto_save.rs"]
+mod auto_save;
+#[path = "minimap.rs"]
+mod minimap;
+#[path = "session_recovery.rs"]
+mod session_recovery;
+#[path = "settings_view.rs"]
+mod settings_view;
 
 pub(super) const TITLE_BAR_HEIGHT: f32 = 44.0;
 const TITLE_ICON_WIDTH: f32 = 44.0;
@@ -67,10 +77,6 @@ fn display_path(path: &Path) -> String {
     }
 }
 
-fn editor_tab_width(markdown: bool) -> u32 {
-    if markdown { 2 } else { 4 }
-}
-
 struct Document {
     id: u64,
     path: Signal<Option<PathBuf>>,
@@ -80,12 +86,35 @@ struct Document {
     reference: ComponentRef<Editor>,
     rich_reference: ComponentRef<nsh_base::rich_editor::view::RichEditor>,
     controls: RichControlSet,
-    wrap: Signal<bool>,
+    wrap: Signal<Option<bool>>,
+    tab_size: Signal<Option<u32>>,
+    retained_scroll: Signal<Option<(bool, f32, f32)>>,
+    auto_save: Rc<auto_save::State>,
     pending_mode: Signal<Option<bool>>,
     progress: ElementRef,
     body: ElementRef,
 }
 impl Document {
+    fn editable_body_ready(&self) -> bool {
+        self.large.is_none()
+    }
+
+    fn needs_close_confirmation(&self) -> bool {
+        self.large.as_ref().map_or_else(
+            || self.source.is_dirty().unwrap_or(true),
+            |large| large.restored_draft.get().is_some(),
+        )
+    }
+
+    fn source_wrap_limited(&self) -> bool {
+        self.source.track();
+        self.source.disk_len() > large_file::SOURCE_ONLY_BYTES
+            || self
+                .source
+                .current_body()
+                .is_some_and(|body| body.len_bytes() as u64 > large_file::SOURCE_ONLY_BYTES)
+    }
+
     fn displayed_rich(&self) -> bool {
         self.gate.rich_mode.get()
     }
@@ -287,11 +316,23 @@ impl PartialEq for Document {
         self.id == other.id && Rc::ptr_eq(&self.source, &other.source)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsTab {
+    Closed,
+    Inactive,
+    Active,
+}
+
 struct Shell {
     owner: Owner,
     window: WindowRef,
     docs: Signal<Vec<Rc<Document>>>,
     active: Signal<u64>,
+    settings: Rc<settings::Settings>,
+    settings_view: Rc<settings_view::SettingsView>,
+    settings_tab: Signal<SettingsTab>,
+    session: RefCell<Option<Rc<session_recovery::Session>>>,
+    recovery_split: RefCell<Option<(u64, session_recovery::Split)>>,
     next: Cell<u64>,
     closed: RefCell<Vec<ClosedTab>>,
     imports: large_file::ImportQueue,
@@ -310,6 +351,7 @@ struct Shell {
     chord_generation: Cell<u64>,
     source_ref: Cell<Option<ComponentRef<Editor>>>,
     modal: Rc<Cell<bool>>,
+    auto_saving: Signal<Option<u64>>,
     split: Signal<Option<Rc<Document>>>,
     split_down: Signal<bool>,
     second_active: Signal<bool>,
@@ -372,18 +414,178 @@ impl Shell {
             .with(|ds| ds.iter().find(|d| d.id == self.active.get()).cloned())
     }
     fn current(&self) -> Option<Rc<Document>> {
+        if self.settings_active() {
+            return None;
+        }
         if self.second_active.get() {
             self.split.get().or_else(|| self.primary())
         } else {
             self.primary()
         }
     }
+
+    fn settings_active(&self) -> bool {
+        self.settings_tab.get() == SettingsTab::Active
+    }
+
+    fn show_settings(self: &Rc<Self>) {
+        if self.modal.get() || self.current().is_some_and(|doc| doc.gate.busy()) {
+            return;
+        }
+        self.zen_exit.reset();
+        self.cancel_quick(false);
+        self.panel.set(String::new());
+        self.leave_editor_document(None);
+        self.settings_tab.set(SettingsTab::Active);
+        self.restore_editor_focus();
+    }
+
+    fn dismiss_settings(self: &Rc<Self>, close: bool) {
+        let active = self.settings_active();
+        self.settings_tab.set(if close {
+            SettingsTab::Closed
+        } else {
+            SettingsTab::Inactive
+        });
+        if active {
+            self.restore_editor_focus();
+        }
+    }
+
+    fn show_documents(&self) {
+        if self.settings_active() {
+            self.settings_tab.set(SettingsTab::Inactive);
+        }
+    }
+
+    fn activate_primary(&self, id: u64) {
+        self.leave_editor_document(Some(id));
+        if let Some(previous) = self.primary().filter(|previous| previous.id != id) {
+            session_recovery::keep_scroll(&previous);
+        }
+        self.active.set(id);
+        self.second_active.set(false);
+        self.show_documents();
+    }
+
+    fn leave_editor_document(&self, next: Option<u64>) {
+        if let Some(previous) = self.current().filter(|doc| Some(doc.id) != next) {
+            previous.auto_save.leave_document();
+        }
+    }
+
+    fn body_blurred(&self, doc: &Document, second: bool, rich: bool) {
+        let same_document_switch = self.current().is_some_and(|current| {
+            current.id == doc.id
+                && (self.second_active.get() != second || current.displayed_rich() != rich)
+        });
+        doc.auto_save
+            .blur_editor(second, rich, same_document_switch);
+    }
+
+    fn body_focused(&self, doc: &Rc<Document>, second: bool, rich: bool) {
+        let shown = if second {
+            self.split.get()
+        } else {
+            self.primary()
+        };
+        if !self.settings_active()
+            && shown.is_some_and(|shown| Rc::ptr_eq(&shown, doc))
+            && doc.displayed_rich() == rich
+        {
+            self.leave_editor_document(Some(doc.id));
+            self.second_active.set(second);
+            doc.auto_save.focus_editor(second, rich);
+        }
+    }
+
+    fn leave_second_group(&self) {
+        self.leave_editor_document(self.primary().map(|doc| doc.id));
+        self.split.set(None);
+        self.recovery_split.borrow_mut().take();
+        self.second_active.set(false);
+    }
+
+    fn step_document_tab(self: &Rc<Self>, forward: bool) {
+        if self.settings_active() {
+            let target = self
+                .docs
+                .with(|docs| (if forward { docs.first() } else { docs.last() }).map(|doc| doc.id));
+            if let Some(target) = target {
+                self.activate_primary(target);
+            }
+        } else if self.second_active.get() {
+            self.notice
+                .set("当前编辑组只有一个标签，已保持当前组".into());
+        } else {
+            let target = self.docs.with(|docs| {
+                let at = docs.iter().position(|doc| doc.id == self.active.get())?;
+                let next = if forward { at + 1 } else { at + docs.len() - 1 };
+                Some(docs[next % docs.len()].id)
+            });
+            if let Some(target) = target {
+                self.activate_primary(target);
+            }
+        }
+        self.restore_editor_focus();
+    }
+
+    fn preference(&self, id: &str) -> serde_json::Value {
+        self.settings.effective(id, self.root.get().as_deref()).0
+    }
+
+    fn source_wrap(&self, doc: &Document) -> bool {
+        !doc.source_wrap_limited() && self.source_wrap_preference(doc)
+    }
+
+    fn source_wrap_preference(&self, doc: &Document) -> bool {
+        doc.wrap.get().unwrap_or_else(|| {
+            let id = if doc.is_markdown() {
+                settings::WRAP_MARKDOWN
+            } else if doc.path.with(|path| {
+                path.as_deref().is_some_and(|path| {
+                    nsh_base::editor::known_language(&path.to_string_lossy()).is_some()
+                })
+            }) {
+                settings::WRAP_CODE
+            } else {
+                settings::WRAP_TEXT
+            };
+            self.preference(id) == "on"
+        })
+    }
+
+    fn source_font_size(&self) -> f32 {
+        self.preference(settings::FONT_SIZE).as_u64().unwrap() as f32
+    }
+
+    fn tab_size(&self, doc: &Document) -> u32 {
+        doc.tab_size
+            .get()
+            .unwrap_or_else(|| self.preference(settings::TAB_SIZE).as_u64().unwrap() as u32)
+    }
+
+    fn set_theme(&self, theme: &str) {
+        if !self
+            .settings
+            .apply(settings::THEME, None, Some(theme.into()))
+        {
+            self.notice
+                .set(self.settings.error.get().unwrap_or_default());
+        }
+    }
+
     fn new() -> Rc<Self> {
         let s = Rc::new(Self {
             owner: Owner::current(),
             window: current_window(),
             docs: signal(vec![]),
             active: signal(0),
+            settings: Rc::new(settings::Settings::new()),
+            settings_view: Rc::new(settings_view::SettingsView::new(CHORDS)),
+            settings_tab: signal(SettingsTab::Closed),
+            session: RefCell::new(None),
+            recovery_split: RefCell::new(None),
             next: Cell::new(1),
             closed: RefCell::new(vec![]),
             imports: Default::default(),
@@ -402,6 +604,7 @@ impl Shell {
             chord_generation: Cell::new(0),
             source_ref: Cell::new(None),
             modal: Rc::new(Cell::new(false)),
+            auto_saving: signal(None),
             split: signal(None),
             split_down: signal(false),
             second_active: signal(false),
@@ -417,6 +620,31 @@ impl Shell {
             quick_scanning: signal(false),
             quick_cancel: RefCell::new(None),
         });
+        let preferences = s.clone();
+        let window_focused = computed(move || {
+            preferences
+                .window
+                .state()
+                .is_some_and(|state| state.focused)
+        });
+        let preferences = s.settings.clone();
+        effect(move || {
+            if window_focused.get() {
+                untracked(|| preferences.refresh());
+            }
+        });
+        settings::Settings::watch(&s.settings, s.owner);
+        let preferences = s.settings.clone();
+        let theme =
+            computed(
+                move || match preferences.effective(settings::THEME, None).0.as_str() {
+                    Some("light") => Appearance::Light,
+                    Some("dark") => Appearance::Dark,
+                    _ => Appearance::System,
+                },
+            );
+        effect(move || set_color_scheme(theme.get()));
+        auto_save::install(&s);
         // Notify observers must precede actual Shell bindings: NSH chooses
         // one newest match, so later registration could shadow a real command.
         let reset = s.zen_exit.clone();
@@ -442,6 +670,9 @@ impl Shell {
         let mut attributes = WindowAttributes::default();
         attributes.close_on_press = Some(false);
         s.window.set(attributes);
+        if let Err(error) = session_recovery::start(&s) {
+            s.notice.set(format!("无法启用会话恢复 · {error}"));
+        }
         let close = s.clone();
         s.window.on_close_press(move |_| close.close_window());
         let menus = s.clone();
@@ -522,7 +753,11 @@ impl Shell {
         s
     }
     fn add_blank(&self) {
-        self.add(self.owner.run(NativeView::new_file), None);
+        let encoding = self.preference(settings::DEFAULT_ENCODING);
+        let eol = self.preference(settings::DEFAULT_EOL);
+        let (format, eol) =
+            settings::new_document_format(encoding.as_str().unwrap(), eol.as_str().unwrap());
+        self.add(self.owner.run(|| NativeView::new_file(format, eol)), None);
     }
     fn title_room(&self) -> f32 {
         let width = self
@@ -576,10 +811,31 @@ impl Shell {
         });
     }
     fn add(&self, source: Rc<NativeView>, path: Option<PathBuf>) {
+        self.add_with_mode(source, path, None);
+    }
+    fn add_with_mode(
+        &self,
+        source: Rc<NativeView>,
+        path: Option<PathBuf>,
+        restored_mode: Option<bool>,
+    ) -> Rc<Document> {
         let id = self.next.get();
         self.next.set(id + 1);
-        let doc = self.make_document(id, source, path, None, true);
-        self.show_new(doc);
+        let start_rich =
+            self.initial_markdown_rich(path.as_deref(), source.disk_len(), restored_mode);
+        let doc = self.make_document(id, source, path, None, start_rich);
+        self.show_new(doc.clone());
+        doc
+    }
+    fn initial_markdown_rich(
+        &self,
+        path: Option<&Path>,
+        bytes: u64,
+        restored: Option<bool>,
+    ) -> bool {
+        path.is_some_and(is_markdown)
+            && bytes <= large_file::SOURCE_ONLY_BYTES
+            && restored.unwrap_or_else(|| self.preference(settings::MARKDOWN_VIEW) == "wysiwyg")
     }
     fn make_document(
         &self,
@@ -591,7 +847,7 @@ impl Shell {
     ) -> Rc<Document> {
         let rich = self.owner.run(|| source.sibling().expect("rich view"));
         let gate = self.owner.run(|| ModeGate::new(source.clone(), rich));
-        if start_rich && path.as_deref().is_some_and(is_markdown) {
+        if start_rich {
             self.owner.run(|| gate.to_rich());
         }
         let reference = self.owner.run(component_ref::<Editor>);
@@ -599,7 +855,7 @@ impl Shell {
             .owner
             .run(component_ref::<nsh_base::rich_editor::view::RichEditor>);
         let controls = self.owner.run(|| RichControlSet::new(&gate, &source));
-        let wrap = self.owner.run(|| signal(false));
+        let wrap = self.owner.run(|| signal(None));
         let path = self.owner.run(|| signal(path));
         Rc::new(Document {
             id,
@@ -611,6 +867,9 @@ impl Shell {
             rich_reference,
             controls,
             wrap,
+            tab_size: self.owner.run(|| signal(None)),
+            retained_scroll: self.owner.run(|| signal(None)),
+            auto_save: self.owner.run(|| Rc::new(auto_save::State::new())),
             pending_mode: self.owner.run(|| signal(None)),
             progress: self.owner.run(element_ref),
             body: self.owner.run(element_ref),
@@ -619,16 +878,23 @@ impl Shell {
     fn show_new(&self, doc: Rc<Document>) {
         let id = doc.id;
         self.docs.update(|ds| ds.push(doc));
-        self.active.set(id);
-        self.second_active.set(false);
+        self.activate_primary(id);
         self.panel.set(String::new());
         self.notice.set(String::new());
     }
     fn blocked(&self, id: &str) -> Option<String> {
-        if self.current().is_some_and(|doc| doc.large.is_some())
+        if self.settings_active() && document_action(id) {
+            return Some("请先切回文档".into());
+        }
+        if self.current().is_some_and(|doc| !doc.editable_body_ready())
             && large_file::requires_editable(id)
         {
             return Some("此标签尚未载入完整编辑模型，分页内容仅供查看和复制。".into());
+        }
+        if id == "texzi.editor.toggleWrap"
+            && self.current().is_some_and(|doc| doc.source_wrap_limited())
+        {
+            return Some("大文档已暂时关闭自动换行，设置保持原值。".into());
         }
         if self.current().is_some_and(|d| d.gate.busy()) {
             return Some("请先完成或取消中文组合".into());
@@ -778,6 +1044,14 @@ impl Shell {
     }
 
     fn open_canonical_file(self: &Rc<Self>, path: PathBuf) -> Result<(), String> {
+        self.open_canonical_with_view(path, None).map(|_| ())
+    }
+
+    fn open_canonical_with_view(
+        self: &Rc<Self>,
+        path: PathBuf,
+        restored_view: Option<session_recovery::EditorView>,
+    ) -> Result<Rc<Document>, String> {
         if let Some(doc) = self.docs.with(|ds| {
             ds.iter()
                 .find(|d| {
@@ -789,16 +1063,14 @@ impl Shell {
                 .cloned()
         }) {
             self.remember(&path);
-            self.active.set(doc.id);
-            self.second_active.set(false);
+            self.activate_primary(doc.id);
             self.restore_editor_focus();
-            return Ok(());
+            return Ok(doc);
         }
         let file =
             texzi_document::files::paged::FileSource::open(&path).map_err(|e| e.to_string())?;
         if file.len >= LARGE_BYTES {
-            self.open_large(path, Arc::new(file), None);
-            return Ok(());
+            return Ok(self.open_large(path, Arc::new(file), None, restored_view, None));
         }
         let prepared = match crate::editor_owner::PreparedFile::from_source(
             &file,
@@ -808,15 +1080,30 @@ impl Shell {
         ) {
             Ok(prepared) => prepared,
             Err(crate::editor_owner::PrepareError::LineLimit(encoding)) => {
-                self.open_large(path, Arc::new(file), Some(encoding));
-                return Ok(());
+                return Ok(self.open_large(
+                    path,
+                    Arc::new(file),
+                    Some(encoding),
+                    restored_view,
+                    None,
+                ));
             }
             Err(e) => return Err(e.to_string()),
         };
         let source = self.owner.run(|| prepared.attach())?;
+        if let Some(view) = &restored_view {
+            view.restore_source(&source);
+        }
         self.remember(&path);
-        self.add(source, Some(path));
-        Ok(())
+        let doc = self.add_with_mode(
+            source,
+            Some(path),
+            restored_view.as_ref().map(|view| view.rich),
+        );
+        if let Some(view) = restored_view {
+            view.restore_view(&doc);
+        }
+        Ok(doc)
     }
     fn open_folder(self: &Rc<Self>, path: &Path) {
         match path.canonicalize() {
@@ -906,12 +1193,17 @@ impl Shell {
         let targets = if all {
             self.docs.with(|docs| {
                 docs.iter()
-                    .filter(|doc| doc.large.is_none() && doc.source.is_dirty().unwrap_or(true))
+                    .filter(|doc| {
+                        doc.editable_body_ready() && doc.source.is_dirty().unwrap_or(true)
+                    })
                     .cloned()
                     .collect::<Vec<_>>()
             })
         } else {
-            self.current().into_iter().collect()
+            self.current()
+                .into_iter()
+                .filter(|doc| doc.editable_body_ready())
+                .collect()
         };
         if targets.is_empty() {
             self.notice.set("没有待保存的文档".into());
@@ -928,6 +1220,9 @@ impl Shell {
         let shell = self.clone();
         self.modal.set(true);
         spawn(async move {
+            while shell.auto_saving.get().is_some() {
+                let _ = next_frame().await;
+            }
             let result = shell.save_documents(targets, save_as).await;
             shell.modal.set(false);
             if let Err(error) = result {
@@ -984,6 +1279,8 @@ impl Shell {
                     Ok(()) => {
                         self.remember(path);
                         doc.path.set(Some(path.clone()));
+                        doc.auto_save.after_explicit_save();
+                        session_recovery::saved(self, &doc);
                         saved += 1;
                         self.show_saved(&doc);
                         break;
@@ -1056,14 +1353,18 @@ impl Shell {
         if self.modal.get() {
             return;
         }
+        if self.auto_saving.get().is_some() {
+            self.notice.set("自动保存完成后可关闭窗口".into());
+            return;
+        }
         let dirty = self.docs.with(|ds| {
             ds.iter()
-                .filter(|d| d.source.is_dirty().unwrap_or(true))
+                .filter(|d| d.needs_close_confirmation())
                 .map(|d| d.name())
                 .collect::<Vec<_>>()
         });
         if dirty.is_empty() {
-            self.window.close();
+            self.finish_close(false);
             return;
         }
         let s = self.clone();
@@ -1086,15 +1387,29 @@ impl Shell {
             },
             move |result| {
                 if result.is_ok_and(|r| r.action.as_deref() == Some("discard")) {
-                    s.window.close();
+                    s.finish_close(true);
                 } else {
                     s.restore_editor_focus();
                 }
             },
         );
     }
+    fn finish_close(self: &Rc<Self>, discard_dirty: bool) {
+        match session_recovery::finish(self, discard_dirty) {
+            Ok(()) => self.window.close(),
+            Err(error) if discard_dirty => self.explain("无法更新恢复记录", &error.to_string()),
+            Err(error) => {
+                log::warn!("关闭时未能写入会话记录：{error}");
+                self.window.close();
+            }
+        }
+    }
     fn close_tab(self: &Rc<Self>, id: u64) {
         if self.modal.get() {
+            return;
+        }
+        if self.auto_saving.get() == Some(id) {
+            self.notice.set("自动保存完成后可关闭此标签".into());
             return;
         }
         let Some(doc) = self.docs.with(|ds| ds.iter().find(|d| d.id == id).cloned()) else {
@@ -1115,7 +1430,7 @@ impl Shell {
             self.active.set(id);
             return;
         }
-        if doc.source.is_dirty().unwrap_or(true) {
+        if doc.needs_close_confirmation() {
             let s = self.clone();
             await_shell_modal(
                 &self.owner,
@@ -1134,16 +1449,28 @@ impl Shell {
                 },
                 move |result| {
                     if result.is_ok_and(|r| r.action.as_deref() == Some("discard")) {
-                        s.remove(id);
+                        match session_recovery::remove_discarded(&s, id) {
+                            Ok(()) => s.remove(id),
+                            Err(error) => s.explain("无法更新恢复记录", &error.to_string()),
+                        }
                     }
                     s.restore_editor_focus();
                 },
             );
         } else {
             self.remove(id);
+            session_recovery::checkpoint(self, true);
         }
     }
     fn remove(&self, id: u64) {
+        if self
+            .recovery_split
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, split)| split.id == id)
+        {
+            self.recovery_split.borrow_mut().take();
+        }
         if self.split.with(|d| d.as_ref().is_some_and(|d| d.id == id)) {
             self.split.set(None);
             self.second_active.set(false);
@@ -1264,18 +1591,30 @@ impl Shell {
                 return;
             }
         }
+        if self.mount_split(&doc, down).is_some() {
+            self.recovery_split.borrow_mut().take();
+            self.second_active.set(true);
+            self.notice
+                .set("同一文档已拆分为两个独立视图，共享正文与撤销历史".into());
+        }
+    }
+
+    fn mount_split(self: &Rc<Self>, doc: &Rc<Document>, down: bool) -> Option<Rc<Document>> {
+        if !doc.editable_body_ready() || self.split.get().is_some() {
+            return None;
+        }
         let source = match doc.source.sibling_source() {
             Ok(v) => v,
             Err(e) => {
                 self.explain("无法拆分", &e);
-                return;
+                return None;
             }
         };
         let rich = match source.sibling() {
             Ok(v) => v,
             Err(e) => {
                 self.explain("无法拆分", &e);
-                return;
+                return None;
             }
         };
         let gate = ModeGate::new(source.clone(), rich);
@@ -1283,7 +1622,7 @@ impl Shell {
         let rich_reference = component_ref::<nsh_base::rich_editor::view::RichEditor>();
         let controls = RichControlSet::new(&gate, &source);
         let wrap = signal(doc.wrap.get());
-        self.split.set(Some(Rc::new(Document {
+        let second = Rc::new(Document {
             id: doc.id,
             path: doc.path,
             source,
@@ -1293,14 +1632,16 @@ impl Shell {
             rich_reference,
             controls,
             wrap,
+            tab_size: doc.tab_size,
+            retained_scroll: signal(None),
+            auto_save: doc.auto_save.clone(),
             pending_mode: signal(None),
             progress: element_ref(),
             body: element_ref(),
-        })));
+        });
+        self.split.set(Some(second.clone()));
         self.split_down.set(down);
-        self.second_active.set(true);
-        self.notice
-            .set("同一文档已拆分为两个独立视图，共享正文与撤销历史".into());
+        Some(second)
     }
     fn focus_group(&self, index: u8) {
         self.zen_exit.reset();
@@ -1313,6 +1654,13 @@ impl Shell {
             self.notice.set("编辑组 2 不存在，未创建新文档".into());
             return;
         }
+        let next = if index == 2 {
+            self.split.get()
+        } else {
+            self.primary()
+        };
+        self.leave_editor_document(next.map(|doc| doc.id));
+        self.show_documents();
         self.second_active.set(index == 2);
         if let Some(doc) = self.current() {
             if doc.gate.rich_mode.get() {
@@ -1327,13 +1675,20 @@ impl Shell {
             }
         }
     }
+    fn focus_active_page(&self) {
+        if self.settings_active() {
+            self.settings_view.search.focus();
+        } else {
+            self.focus_group(if self.second_active.get() { 2 } else { 1 });
+        }
+    }
     fn restore_editor_focus(self: &Rc<Self>) {
-        self.focus_group(if self.second_active.get() { 2 } else { 1 });
+        self.focus_active_page();
         let s = self.clone();
         self.owner.run(|| {
             spawn(async move {
                 let _ = next_frame().await;
-                s.focus_group(if s.second_active.get() { 2 } else { 1 });
+                s.focus_active_page();
             })
         });
     }
@@ -1450,6 +1805,9 @@ impl Shell {
         if self.modal.get() {
             return;
         }
+        if self.settings_active() && document_action(id) {
+            return;
+        }
         if self.current().is_some_and(|d| d.gate.busy()) {
             self.notice.set("请先完成或取消中文组合".into());
             return;
@@ -1472,13 +1830,13 @@ impl Shell {
             "texzi.file.saveAs" => self.save(false,true),
             "texzi.file.saveAll" => self.save(true,false),
             "texzi.folder.close"=>{self.root.set(None);self.notice.set("已关闭文件夹，已打开标签保持不变".into());},
-            "texzi.window.close"=>self.close_window(),"texzi.tab.close"=>if self.second_active.get(){self.split.set(None);self.second_active.set(false);}else{self.close_tab(self.active.get());},
-            "texzi.window.new"=>match std::env::current_exe().and_then(|exe|std::process::Command::new(exe).spawn()){Ok(_)=>self.notice.set("已启动新的 texzi 窗口".into()),Err(e)=>self.explain("新建窗口失败",&e.to_string())},
+            "texzi.window.close"=>self.close_window(),"texzi.tab.close"=>if self.settings_active(){self.dismiss_settings(true);}else if self.second_active.get(){self.leave_second_group();}else{self.close_tab(self.active.get());},
+            "texzi.window.new"=>match session_recovery::spawn_blank_window(){Ok(())=>self.notice.set("已启动新的 texzi 窗口".into()),Err(e)=>self.explain("新建窗口失败",&e.to_string())},
             "texzi.group.splitRight"|"texzi.group.splitDown"=>self.split_editor(id.ends_with("Down")),
-            "texzi.group.joinAll"=>{self.split.set(None);self.second_active.set(false);self.notice.set("已合并为单组；同一文档内容与历史保持不变".into());},
-            "texzi.tab.reopenClosed"=>{let doc=self.closed.borrow_mut().pop();match doc{Some(ClosedTab::Document(doc))=>{let id=doc.id;self.docs.update(|ds|ds.push(doc));self.second_active.set(false);self.active.set(id);self.restore_editor_focus();},Some(ClosedTab::File(path))=>self.open(&path),None=>self.notice.set("没有已关闭标签".into())}},
-            "texzi.tab.next"|"texzi.tab.previous"=>{if self.second_active.get(){self.notice.set("当前编辑组只有一个标签，已保持当前组".into());}else{self.docs.with(|ds|{if let Some(at)=ds.iter().position(|d|d.id==self.active.get()){self.active.set(ds[if id.ends_with("next"){(at+1)%ds.len()}else{(at+ds.len()-1)%ds.len()}].id);}});}self.restore_editor_focus();},
-            "texzi.sidebar.toggle"=>self.sidebar.update(|v|*v=!*v),"texzi.editor.toggleWrap"=>if let Some(doc)=self.current(){doc.wrap.update(|v|*v=!*v);self.notice.set(if doc.wrap.get(){"当前源码视图：自动换行已开启"}else{"当前源码视图：自动换行已关闭"}.into());},
+            "texzi.group.joinAll"=>{self.leave_second_group();self.notice.set("已合并为单组；同一文档内容与历史保持不变".into());},
+            "texzi.tab.reopenClosed"=>{let doc=self.closed.borrow_mut().pop();match doc{Some(ClosedTab::Document(doc))=>{let id=doc.id;self.docs.update(|ds|ds.push(doc));self.activate_primary(id);self.restore_editor_focus();},Some(ClosedTab::File(path))=>self.open(&path),None=>self.notice.set("没有已关闭标签".into())}},
+            "texzi.tab.next"|"texzi.tab.previous" => self.step_document_tab(id.ends_with("next")),
+            "texzi.sidebar.toggle"=>self.sidebar.update(|v|*v=!*v),"texzi.editor.toggleWrap"=>if let Some(doc)=self.current(){let wrap=!self.source_wrap(&doc);doc.wrap.set(Some(wrap));self.notice.set(if wrap{"当前源码视图：自动换行已开启"}else{"当前源码视图：自动换行已关闭"}.into());},
             "texzi.view.toggleZen"|"texzi.view.exitZen"=>{if id.ends_with("exitZen"){self.zen.set(false);}else{self.zen.update(|v|*v=!*v);}if self.notice.get()=="再按一次 Esc 退出 Zen"{self.notice.set(String::new());}},
             "texzi.view.toggleFullScreen"=>self.window.set_mode(if self.window.state().is_some_and(|s|s.mode==WindowMode::FullScreen){WindowMode::Normal}else{WindowMode::FullScreen}),
             "texzi.commandPalette.open"|"texzi.navigation.quickOpen"=>{self.palette_query.set(String::new());let files=id.ends_with("quickOpen");let already=self.panel.get()=="files";if files{self.quick_files.set(vec![]);self.quick_notice.set("正在准备文件候选".into());}self.panel.set(if files{"files"}else{"commands"}.into());if files&&already{self.start_quick(self.root.get());}},
@@ -1488,13 +1846,22 @@ impl Shell {
             "texzi.find.open"|"texzi.find.replaceOpen"=>{let replace=id.ends_with("replaceOpen");if replace{if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}}}self.panel.set(if replace{"replace"}else{"find"}.into());let scope=if self.current().is_some_and(|d|d.gate.rich_mode.get()){"正文"}else{"源码"};self.notice.set(format!("查找范围：{scope} · 普通文字 · 区分大小写"));},
             "texzi.find.next"=>self.find(false),"texzi.find.previous"=>self.find(true),"texzi.find.close"=>self.close_panel(),
             "texzi.find.replaceOne"|"texzi.find.replaceAll"=>if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}match doc.source.replace_literal(&self.query.get(),&self.replacement.get(),id.ends_with("All")){Ok(n)=>{self.notice.set(format!("源码 · 已替换 {n} 处，可一次撤销"));self.restore_editor_focus();},Err(e)=>self.notice.set(e)}},
-            "texzi.appearance.light"=>set_color_scheme(Appearance::Light),"texzi.appearance.dark"=>set_color_scheme(Appearance::Dark),
+            "texzi.appearance.light"=>self.set_theme("light"),"texzi.appearance.dark"=>self.set_theme("dark"),
             "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存和另存文档。编辑菜单提供查找和替换，外观菜单提供侧栏、自动换行和主题。\nCtrl+P 搜索文件，Ctrl+Shift+P 搜索命令。可搜索分屏或 Zen，亦可按 Ctrl+K Z 进入 Zen，连按两次 Esc 退出。编辑器右上可切换源码和富文本。"),
             "texzi.help.about"=>self.explain("关于 texzi","texzi\n为日常文字、Markdown 与代码片段设计的 Windows 原生文本编辑器。"),
             _=>if let Some(command)=source_command(id){if let Err(e)=self.source_action(command){self.notice.set(e);}},
         }
     }
     fn request_mode(self: &Rc<Self>, doc: Rc<Document>, target_rich: bool) {
+        self.request_mode_with_position(doc, target_rich, false);
+    }
+
+    fn request_mode_with_position(
+        self: &Rc<Self>,
+        doc: Rc<Document>,
+        target_rich: bool,
+        restore_position: bool,
+    ) {
         if target_rich && doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES {
             self.notice
                 .set("此大文件使用源码模式，已关闭语法高亮".into());
@@ -1539,7 +1906,11 @@ impl Shell {
                             .is_some_and(|current| Rc::ptr_eq(&current, &doc));
                         if target_rich {
                             if let Some(api) = doc.rich_reference.api::<RichEditorApi>() {
-                                api.reveal_primary_caret(viewport_top);
+                                if restore_position {
+                                    session_recovery::apply_scroll(&doc, true);
+                                } else {
+                                    api.reveal_primary_caret(viewport_top);
+                                }
                                 if active {
                                     api.focus();
                                 }
@@ -1589,6 +1960,51 @@ impl Shell {
                     items,
                     point(bounds.page.x, bounds.page.y + bounds.frame.size.height),
                 );
+            });
+        });
+    }
+
+    fn show_tab_size_menu(self: &Rc<Self>, doc: Rc<Document>, anchor: ElementRef) {
+        let shell = self.clone();
+        self.owner.run(|| {
+            spawn(async move {
+                let Some(bounds) = anchor.measure().await else {
+                    return;
+                };
+                if !shell
+                    .current()
+                    .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                    || doc.gate.busy()
+                {
+                    return;
+                }
+                let selected = doc.tab_size.get();
+                let entries = std::iter::once(None)
+                    .chain((1..=8).map(Some))
+                    .map(|width| {
+                        let label = width
+                            .map_or_else(|| "继承设置".to_owned(), |width| format!("{width} 列"));
+                        let label = if width == selected {
+                            format!("✓ {label}")
+                        } else {
+                            label
+                        };
+                        let doc = doc.clone();
+                        let shell = shell.clone();
+                        MenuItem::new(label).on_select(move || {
+                            if shell
+                                .current()
+                                .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                                && !doc.gate.busy()
+                            {
+                                doc.tab_size.set(width);
+                                shell.restore_editor_focus();
+                            }
+                        })
+                    })
+                    .collect();
+                shell.zen_exit.reset();
+                let _ = popup_menu_at(entries, point(bounds.page.x, bounds.page.y));
             });
         });
     }
@@ -1692,6 +2108,29 @@ fn line_column(value: &str) -> Result<(usize, usize), String> {
         _ => Err("请输入从 1 开始的行或行:列，例如 12 或 12:8".into()),
     }
 }
+fn document_action(id: &str) -> bool {
+    source_command(id).is_some()
+        || crate::rich_commands::handles(id)
+        || matches!(
+            id,
+            "texzi.file.save"
+                | "texzi.file.saveAs"
+                | "texzi.find.open"
+                | "texzi.find.replaceOpen"
+                | "texzi.find.next"
+                | "texzi.find.previous"
+                | "texzi.find.replaceOne"
+                | "texzi.find.replaceAll"
+                | "texzi.editor.toggleWrap"
+                | "texzi.navigation.gotoLine"
+                | "texzi.markdown.toggleSource"
+                | "texzi.view.toggleZen"
+                | "texzi.group.splitRight"
+                | "texzi.group.splitDown"
+                | "texzi.group.joinAll"
+        )
+}
+
 fn source_command(id: &str) -> Option<EditorCommand> {
     use EditorCommand::*;
     Some(match id {
@@ -1966,10 +2405,27 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let rich_mode = doc.gate.rich_mode;
     let rich = doc.gate.clone();
     let source = doc.gate.clone();
-    let wrap = doc.wrap;
+    let wrap_doc = doc.clone();
+    let wrap_shell = s.clone();
+    let tab_shell = s.clone();
+    let tab_doc = doc.clone();
+    let size_shell = s.clone();
+    let height_shell = s.clone();
+    let font_shell = s.clone();
+    let map_shell = s.clone();
+    let map_source = doc.source.clone();
+    let map_document = doc.clone();
+    let lines_shell = s.clone();
     let body = doc.body;
     let source_focus = s.second_active;
     let rich_focus = s.second_active;
+    let rich_focus_shell = s.clone();
+    let rich_focus_doc = doc.clone();
+    let source_focus_shell = s.clone();
+    let source_focus_doc = doc.clone();
+    let rich_restore = doc.clone();
+    let source_restore = doc.clone();
+    let settings_tab = s.settings_tab;
     let block_controls = doc.controls.blocks.clone();
     let resource_controls = doc.controls.resources.clone();
     let table_controls = doc.controls.table.clone();
@@ -1994,10 +2450,15 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
         .min_h(px(0.0))
         .child(
             when(rich_mode, move || {
+                restore_editor_scroll(rich_restore.clone(), true);
                 let session = rich.session();
                 effect(move || crate::rich_images::install(&session, image_document_path.get()));
                 let shell = controls_shell.clone();
                 let escape = shell.clone();
+                let focus_shell = rich_focus_shell.clone();
+                let focus_doc = rich_focus_doc.clone();
+                let blur_shell = focus_shell.clone();
+                let blur_doc = focus_doc.clone();
                 let focus: Rc<dyn Fn()> =
                     Rc::new(move || shell.focus_group(if second { 2 } else { 1 }));
                 let raw_focus = focus.clone();
@@ -2038,8 +2499,14 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             .editor(rich.session())
                             .application_shortcuts(crate::native_menu::application_shortcuts())
                             .classes(crate::app::rich_classes())
-                            .auto_focus(move || rich_focus.get() == second)
-                            .on_focus(move |_: &()| rich_focus.set(second))
+                            .auto_focus(move || {
+                                settings_tab.get() != SettingsTab::Active
+                                    && rich_focus.get() == second
+                            })
+                            .on_focus(move |_: &()| {
+                                focus_shell.body_focused(&focus_doc, second, true)
+                            })
+                            .on_blur(move |_: &()| blur_shell.body_blurred(&blur_doc, second, true))
                             .on_unhandled_escape(move |_: &()| {
                                 escape.handle_rich_escape(document, second)
                             })
@@ -2050,11 +2517,42 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
             })
             .otherwise(move || {
                 source.source_mounted();
-                nsh_base::editor::editor()
+                restore_editor_scroll(source_restore.clone(), false);
+                let tab_shell = tab_shell.clone();
+                let tab_doc = tab_doc.clone();
+                let size_shell = size_shell.clone();
+                let height_shell = height_shell.clone();
+                let font_shell = font_shell.clone();
+                let focus_shell = source_focus_shell.clone();
+                let focus_doc = source_focus_doc.clone();
+                let blur_shell = focus_shell.clone();
+                let blur_doc = focus_doc.clone();
+                let lines_shell = lines_shell.clone();
+                let wrap_shell = wrap_shell.clone();
+                let wrap_doc = wrap_doc.clone();
+                let wrap_limit_doc = wrap_doc.clone();
+                let wrap_limited = computed(move || wrap_limit_doc.source_wrap_limited());
+                let map_shell = map_shell.clone();
+                let map_source = map_source.clone();
+                let map_document = map_document.clone();
+                let map_enabled = computed(move || {
+                    map_document.editable_body_ready()
+                        && map_shell.preference(settings::MINIMAP) == true
+                });
+                let viewport = signal((0, 0));
+                let editor = nsh_base::editor::editor()
                     .element_ref(&body)
                     .component_ref(&reference)
-                    .auto_focus(move || source_focus.get() == second)
-                    .on_focus(move |_: &()| source_focus.set(second))
+                    .anchor_wrap_reflow(true)
+                    .viewport_feedback(move || map_enabled.get())
+                    .on_viewport_change(move |range: &nsh_base::editor::EditorRange| {
+                        viewport.set((range.start.line, range.end.line));
+                    })
+                    .auto_focus(move || {
+                        settings_tab.get() != SettingsTab::Active && source_focus.get() == second
+                    })
+                    .on_focus(move |_: &()| focus_shell.body_focused(&focus_doc, second, false))
+                    .on_blur(move |_: &()| blur_shell.body_blurred(&blur_doc, second, false))
                     .language(move || {
                         Some(SharedString::from(if markdown() {
                             "markdown"
@@ -2062,17 +2560,36 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             "plaintext"
                         }))
                     })
-                    .tab_size(move || Some(editor_tab_width(markdown())))
+                    .tab_size(move || Some(tab_shell.tab_size(&tab_doc)))
                     .hard_tabs(false)
-                    .soft_wrap(move || wrap.get())
+                    .soft_wrap(move || {
+                        !wrap_limited.get() && wrap_shell.source_wrap_preference(&wrap_doc)
+                    })
                     .highlighting(!large_source)
-                    .font_size(px(16.0))
-                    .line_height(px(24.0))
+                    .font_family(move || {
+                        let font = font_shell.preference(settings::FONT_FAMILY);
+                        Some(SharedString::from(settings::source_font_stack(
+                            font.as_str().unwrap(),
+                        )))
+                    })
+                    .font_size(move || px(size_shell.source_font_size()))
+                    .line_height(move || px(height_shell.source_font_size() * 1.5))
+                    .line_numbers(move || lines_shell.preference(settings::LINE_NUMBERS) == true)
                     .w_full()
                     .flex_1()
                     .max_w(relative(1.0))
                     .min_w(px(0.0))
+                    .min_h(px(0.0));
+                view()
+                    .flex_row()
+                    .size_full()
                     .min_h(px(0.0))
+                    .min_w(px(0.0))
+                    .child(editor)
+                    .child(when(
+                        move || map_enabled.get(),
+                        move || minimap::render(map_source.clone(), viewport),
+                    ))
             }),
         )
         .child(
@@ -2148,6 +2665,22 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
             },
             move || mode_button(s.clone(), doc.clone(), second),
         ))
+}
+
+fn restore_editor_scroll(doc: Rc<Document>, rich: bool) {
+    if !doc
+        .retained_scroll
+        .get_untracked()
+        .is_some_and(|(mode, _, _)| mode == rich)
+    {
+        return;
+    }
+    spawn(async move {
+        wait_for_editor_frame(doc.body).await;
+        if doc.displayed_rich() == rich {
+            session_recovery::apply_scroll(&doc, rich);
+        }
+    });
 }
 
 fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
@@ -2341,6 +2874,8 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
 fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
     let files = s.clone();
     let search = s.clone();
+    let settings = s.clone();
+    let settings_selected = s.settings_tab;
     view()
         .w(px(44.0))
         .flex_shrink_0()
@@ -2353,11 +2888,14 @@ fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
             "资源管理器",
             {
                 let s = s.clone();
-                move || s.sidebar.get() && s.panel.get() != "folder"
+                move || !s.settings_active() && s.sidebar.get() && s.panel.get() != "folder"
             },
             move || {
                 if files.panel.get() == "folder" {
                     files.close_panel();
+                    files.sidebar.set(true);
+                } else if files.settings_active() {
+                    files.dismiss_settings(false);
                     files.sidebar.set(true);
                 } else {
                     files.run("texzi.sidebar.toggle");
@@ -2369,6 +2907,13 @@ fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
             "在文件夹中搜索",
             move || s.panel.get() == "folder",
             move || search.run("texzi.find.inFolder"),
+        ))
+        .child(view().flex_1().min_h(px(0.0)))
+        .child(activity_icon(
+            SETTINGS_ICON,
+            "设置",
+            move || settings_selected.get() == SettingsTab::Active,
+            move || settings.show_settings(),
         ))
 }
 
@@ -2412,6 +2957,7 @@ const FOLDER_ICON: &str = "M3 6h7l2 3h9v10H3z";
 const SPLIT_ICON: &str = "M3 5h18v14H3zM12 5v14";
 const FILES_ICON: &str = "M7 5V3h8l4 4v12h-2M15 3v5h4M5 7h10v14H5z";
 const SEARCH_ICON: &str = "M15.5 15.5L21 21M17.5 10.5a7 7 0 1 1-14 0 7 7 0 0 1 14 0";
+const SETTINGS_ICON: &str = "M10 3h4l.5 2.5 2 .9 2.2-1.3 2.2 2.2-1.3 2.2.9 2L23 12l-2.5.5-.9 2 1.3 2.2-2.2 2.2-2.2-1.3-2 .9L14 21h-4l-.5-2.5-2-.9-2.2 1.3-2.2-2.2 1.3-2.2-.9-2L1 12l2.5-.5.9-2-1.3-2.2 2.2-2.2 2.2 1.3 2-.9L10 3zM15 12a3 3 0 1 1-6 0 3 3 0 1 1 6 0";
 const CLOSE_ICON: &str = "M6 6l12 12M18 6L6 18";
 const FORMAT_ICON: &str = "M3 18l5-12 5 12M5 14h6M16 8h5M16 12h5M16 16h5";
 const SOURCE_ICON: &str = "M4 6l6 5-6 5M12 17h8";
@@ -2493,9 +3039,34 @@ fn file_sidebar(s: Rc<Shell>) -> impl IntoElement {
         )
 }
 
+const TAB_CLOSE_GROUP: &str = "workbench-tab";
+
+fn tab_close_button(
+    shell: Rc<Shell>,
+    label: &'static str,
+    active: impl Fn() -> bool + 'static,
+    close: impl Fn() + 'static,
+) -> impl IntoElement {
+    let active_shell = shell.clone();
+    icon_button(CLOSE_ICON, label, 24.0, 14.0)
+        .style_when(
+            move || active_shell.preference(settings::TAB_CLOSE) == "active" && !active(),
+            |style| style.invisible(),
+        )
+        .style_when(
+            move || shell.preference(settings::TAB_CLOSE) == "hover",
+            |style| style.opacity(0.0),
+        )
+        .group_hover_named(TAB_CLOSE_GROUP, |style| style.opacity(1.0))
+        .group_focus_within_named(TAB_CLOSE_GROUP, |style| style.opacity(1.0))
+        .on_press(move |_: &()| close())
+}
+
 fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
     let docs = s.docs;
     let active = s.active;
+    let settings_tab = s.settings_tab;
+    let preferences_tab = s.clone();
     let new_tab = s.clone();
     let split = s.split;
     let split_tab = s.clone();
@@ -2524,6 +3095,7 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                         let label = doc.clone();
                         view()
                             .relative()
+                            .group_named(TAB_CLOSE_GROUP)
                             .h(px(38.0))
                             .min_w(px(104.0))
                             .max_w(px(220.0))
@@ -2531,7 +3103,7 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                             .flex_row()
                             .items_center()
                             .bg(move || {
-                                if active.get() == id {
+                                if active.get() == id && settings_tab.get() != SettingsTab::Active {
                                     background()
                                 } else {
                                     frame()
@@ -2549,7 +3121,10 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                                     .items_center()
                                     .gap(px(6.0))
                                     .app_class("hover:bg-accent focus-visible:bg-accent")
-                                    .selected(move || active.get() == id)
+                                    .selected(move || {
+                                        active.get() == id
+                                            && settings_tab.get() != SettingsTab::Active
+                                    })
                                     .child(
                                         text(move || label.name())
                                             .min_w(px(0.0))
@@ -2559,7 +3134,7 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                                     .child(when(
                                         move || {
                                             doc.source.track();
-                                            doc.source.is_dirty().unwrap_or(true)
+                                            doc.needs_close_confirmation()
                                         },
                                         || {
                                             view()
@@ -2571,16 +3146,25 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                                         },
                                     ))
                                     .on_press(move |_: &()| {
-                                        tab.active.set(id);
-                                        tab.second_active.set(false);
+                                        let from_settings = tab.settings_active();
+                                        tab.activate_primary(id);
+                                        if from_settings {
+                                            tab.restore_editor_focus();
+                                        }
                                     }),
                             )
-                            .child(
-                                icon_button(CLOSE_ICON, "关闭此标签", 24.0, 14.0)
-                                    .on_press(move |_: &()| close.close_tab(id)),
-                            )
+                            .child(tab_close_button(
+                                close.clone(),
+                                "关闭此标签",
+                                move || {
+                                    active.get() == id && settings_tab.get() != SettingsTab::Active
+                                },
+                                move || close.close_tab(id),
+                            ))
                             .child(when(
-                                move || active.get() == id,
+                                move || {
+                                    active.get() == id && settings_tab.get() != SettingsTab::Active
+                                },
                                 || {
                                     view()
                                         .absolute()
@@ -2594,6 +3178,57 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                     },
                 ))),
         )
+        .child(when(
+            move || settings_tab.get() != SettingsTab::Closed,
+            move || {
+                let open = preferences_tab.clone();
+                let close = preferences_tab.clone();
+                view()
+                    .relative()
+                    .group_named(TAB_CLOSE_GROUP)
+                    .h(px(38.0))
+                    .flex_row()
+                    .items_center()
+                    .pr(px(6.0))
+                    .border_r(px(1.0))
+                    .border_color(divider)
+                    .bg(move || {
+                        if settings_tab.get() == SettingsTab::Active {
+                            background()
+                        } else {
+                            frame()
+                        }
+                    })
+                    .child(
+                        nsh_base::button()
+                            .h_full()
+                            .px(px(10.0))
+                            .app_class("hover:bg-accent focus-visible:bg-accent")
+                            .accessibility_label("设置标签")
+                            .selected(move || settings_tab.get() == SettingsTab::Active)
+                            .on_press(move |_: &()| open.show_settings())
+                            .child(text("设置")),
+                    )
+                    .child(tab_close_button(
+                        close.clone(),
+                        "关闭设置标签",
+                        move || settings_tab.get() == SettingsTab::Active,
+                        move || close.dismiss_settings(true),
+                    ))
+                    .child(when(
+                        move || settings_tab.get() == SettingsTab::Active,
+                        || {
+                            view()
+                                .absolute()
+                                .bottom(px(0.0))
+                                .left(px(0.0))
+                                .right(px(0.0))
+                                .h(px(2.0))
+                                .bg(indicator)
+                        },
+                    ))
+            },
+        ))
         .child(
             icon_button(ADD_ICON, "新建标签", 32.0, 16.0)
                 .ml(px(4.0))
@@ -2616,6 +3251,20 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let side = s.clone();
     let activity = s.clone();
     let content = s.clone();
+    let preferences_side = s.clone();
+    let preferences_page = s.clone();
+    let settings_tab = s.settings_tab;
+    let narrow = signal(false);
+    let editor_width = signal(None::<Points>);
+    let layout = s.clone();
+    effect(move || {
+        narrow.set(
+            layout
+                .window
+                .state()
+                .is_some_and(|state| state.content_bounds.size.width.0 < 876.0),
+        );
+    });
     let panels = s.clone();
     let quick = s.clone();
     let status_shell = s.clone();
@@ -2676,16 +3325,66 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                 .child(when(
                     {
                         let s = side.clone();
-                        move || s.sidebar.get() && !zen.get()
+                        move || s.sidebar.get() && !zen.get() && !s.settings_active()
                     },
                     move || file_sidebar(side.clone()),
+                ))
+                .child(when(
+                    move || !zen.get() && settings_tab.get() == SettingsTab::Active,
+                    move || settings_view::sidebar(preferences_side.settings_view.clone()),
                 ))
                 .child(
                     view()
                         .flex_1()
                         .min_w(px(0.0))
                         .child(when(move || !zen.get(), move || tab_bar(tabs.clone())))
-                        .child(dynamic(move || groups(content.clone())))
+                        .child(
+                            view()
+                                .relative()
+                                .flex_1()
+                                .min_h(px(0.0))
+                                .child(
+                                    view()
+                                        .size_full()
+                                        .w(move || {
+                                            if settings_tab.get() == SettingsTab::Active {
+                                                editor_width
+                                                    .get()
+                                                    .map(Length::from)
+                                                    .unwrap_or_else(|| relative(1.0).into())
+                                            } else {
+                                                relative(1.0).into()
+                                            }
+                                        })
+                                        .on_layout(move |bounds: &Bounds<Points>| {
+                                            if settings_tab.get_untracked() != SettingsTab::Active {
+                                                editor_width.set(Some(bounds.size.width));
+                                            }
+                                        })
+                                        .style_when(
+                                            move || settings_tab.get() == SettingsTab::Active,
+                                            |style| style.invisible(),
+                                        )
+                                        .child(dynamic(move || groups(content.clone()))),
+                                )
+                                .child(when(
+                                    move || settings_tab.get() == SettingsTab::Active,
+                                    move || {
+                                        view()
+                                            .absolute()
+                                            .top(px(0.0))
+                                            .left(px(0.0))
+                                            .right(px(0.0))
+                                            .bottom(px(0.0))
+                                            .child(settings_view::content(
+                                                preferences_page.settings.clone(),
+                                                preferences_page.settings_view.clone(),
+                                                preferences_page.root,
+                                                narrow,
+                                            ))
+                                    },
+                                )),
+                        )
                         .child(dynamic(move || {
                             (!is_quick_panel(&panels.panel.get()))
                                 .then(|| panel(panels.clone()))
@@ -2748,7 +3447,7 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 let message = notice.get();
                 let dirty = document.current().is_some_and(|doc| {
                     doc.source.track();
-                    doc.source.is_dirty().unwrap_or(true)
+                    doc.needs_close_confirmation()
                 });
                 if dirty {
                     if message.is_empty() || message.starts_with("已保存") {
@@ -2796,11 +3495,25 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 fields = fields.child(text(position).number_of_lines(1));
             }
             if !rich {
+                let anchor = element_ref();
+                let activate = shell.clone();
+                let label_shell = shell.clone();
+                let label_doc = doc.clone();
                 if doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES {
                     fields = fields.child(text("大文件 · 无高亮").number_of_lines(1));
                 }
+                if doc.source_wrap_limited() {
+                    fields = fields.child(text("已暂停自动换行").number_of_lines(1));
+                }
                 fields = fields.child(
-                    text(format!("空格：{}", editor_tab_width(markdown))).number_of_lines(1),
+                    nsh_base::button()
+                        .element_ref(&anchor)
+                        .accessibility_label("当前文档缩进宽度")
+                        .child(
+                            text(move || format!("空格：{}", label_shell.tab_size(&label_doc)))
+                                .number_of_lines(1),
+                        )
+                        .on_press(move |_: &()| activate.show_tab_size_menu(doc.clone(), anchor)),
                 );
             }
             Some(
@@ -3066,8 +3779,7 @@ fn quick_panel(s: Rc<Shell>, files: bool) -> impl IntoElement {
                     run.cancel_quick(false);
                     run.panel.set(String::new());
                     if let Some(id) = id.strip_prefix("file:").and_then(|s| s.parse::<u64>().ok()) {
-                        run.active.set(id);
-                        run.second_active.set(false);
+                        run.activate_primary(id);
                         run.restore_editor_focus();
                     } else if let Some(path) = id
                         .strip_prefix("quick:")

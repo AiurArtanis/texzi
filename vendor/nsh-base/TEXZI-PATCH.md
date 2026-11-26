@@ -59,3 +59,22 @@ the following command.
 ```powershell
 cargo test -p texzi-app --release --locked --target x86_64-pc-windows-msvc zen_ -- --test-threads=1
 ```
+
+### Settings source language classification
+
+`editor::known_language` exposes the editor's existing language resolution for
+paths and aliases. Texzi uses it to apply the code word-wrap preference. The
+editor retains its existing rendering language and plain-text fallback.
+
+`Editor` optionally reports the logical range of its viewport as scroll,
+layout or text changes. Texzi opts in while the source minimap is visible.
+The event does not allocate another document snapshot or introduce a
+scroll listener when feedback is disabled.
+
+When Texzi's source editor reflows wrapped rows, it retains the first
+visible source position and its vertical offset. The source minimap and
+indent width can change the layout while retaining this position. Font
+changes prefer to anchor a visible caret and otherwise use the top row.
+
+`RichEditorApi::set_scroll_top` restores a saved vertical position through
+the existing visible-row scroll path when a session view mounts.

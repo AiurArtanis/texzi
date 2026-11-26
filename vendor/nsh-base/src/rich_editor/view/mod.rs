@@ -264,6 +264,13 @@ impl RichEditorApi {
         self.rv.scroll_y.get_untracked().0
     }
 
+    /// Restores a saved vertical position in the current rich layout.
+    pub fn set_scroll_top(&self, top: f32) {
+        if top.is_finite() {
+            self.rv.move_visible_row_scroll(top);
+        }
+    }
+
     /// Replaces the document with `doc` (ProseMirror's JSON), as a change
     /// undo takes back; an error (a rejection in TSX) when `doc` is not a
     /// document of the editor's schema.

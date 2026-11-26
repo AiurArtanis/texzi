@@ -18,7 +18,7 @@ pub(super) struct FileState {
 
 struct DiskContents {
     bytes: Arc<[u8]>,
-    token: doc::StateToken,
+    token: Option<doc::StateToken>,
 }
 
 #[cfg(test)]
@@ -48,6 +48,29 @@ pub(crate) enum SaveError {
 }
 
 impl NativeView {
+    pub(crate) fn has_disk_baseline(&self) -> bool {
+        self.owner.files.borrow().disk.is_some()
+    }
+
+    pub(crate) fn recovery_format(&self) -> (Format, Option<Arc<[u8]>>) {
+        let state = self.owner.files.borrow();
+        (
+            state.format,
+            state.disk.as_ref().map(|disk| disk.bytes.clone()),
+        )
+    }
+
+    pub(crate) fn recover_file(
+        raw: Arc<str>,
+        format: Format,
+        eol: doc::Eol,
+        original: Option<Arc<[u8]>>,
+    ) -> Result<Rc<Self>, String> {
+        PreparedFile::from_recovery(raw, format, eol, original, &AtomicBool::new(false))
+            .map_err(|error| error.to_string())?
+            .attach()
+    }
+
     pub(crate) fn disk_len(&self) -> u64 {
         self.owner
             .files
@@ -56,10 +79,21 @@ impl NativeView {
             .as_ref()
             .map_or(0, |file| file.bytes.len() as u64)
     }
-    pub fn new_file() -> Rc<Self> {
+
+    pub fn new_file(format: Format, default_eol: doc::Eol) -> Rc<Self> {
         let mut store = doc::Store::new(doc::HistoryBudget::default());
-        let snapshot = store.open_decoded("", UTF8).expect("empty UTF-8 file");
-        Self::from_store(store, snapshot, FileState::default()).expect("empty source view")
+        let snapshot = store
+            .open_decoded_with_eol("", format, default_eol)
+            .expect("empty file with a supported format");
+        let files = FileState {
+            format,
+            ..FileState::default()
+        };
+        Self::from_store(store, snapshot, files).expect("empty source view")
+    }
+
+    pub(crate) fn reader_placeholder() -> Rc<Self> {
+        Self::new_file(UTF8, doc::Eol::CrLf)
     }
 
     #[cfg(test)]
@@ -74,7 +108,8 @@ pub(crate) struct PreparedFile {
     files: FileState,
 }
 
-const MAX_EDIT_LINES: usize = 2_000_000;
+pub(crate) const MAX_EDIT_LINES: usize = 2_000_000;
+pub(crate) const MAX_EDIT_BYTES: u64 = 256 * 1024 * 1024;
 
 pub(crate) fn line_limit_message() -> String {
     format!("文件超过完整编辑上限（{MAX_EDIT_LINES} 行），可继续只读分页查看。")
@@ -83,6 +118,7 @@ pub(crate) fn line_limit_message() -> String {
 #[derive(Debug)]
 pub(crate) enum PrepareError {
     LineLimit(Encoding),
+    RecoveryLimit(String),
     Other(String),
 }
 
@@ -96,12 +132,57 @@ impl std::fmt::Display for PrepareError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::LineLimit(_) => f.write_str(&line_limit_message()),
-            Self::Other(message) => f.write_str(message),
+            Self::RecoveryLimit(message) | Self::Other(message) => f.write_str(message),
         }
     }
 }
 
 impl PreparedFile {
+    pub(crate) fn check_recovery_size(bytes: usize) -> Result<(), String> {
+        if bytes as u64 > MAX_EDIT_BYTES {
+            Err(format!(
+                "草稿超过完整编辑上限（{} MiB）",
+                MAX_EDIT_BYTES / (1024 * 1024)
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn from_recovery(
+        raw: Arc<str>,
+        format: Format,
+        eol: doc::Eol,
+        original: Option<Arc<[u8]>>,
+        cancel: &AtomicBool,
+    ) -> Result<Self, PrepareError> {
+        Self::check_recovery_size(raw.len()).map_err(PrepareError::RecoveryLimit)?;
+        let mut store = doc::Store::new(doc::HistoryBudget::default());
+        let snapshot = store
+            .open_recovered_cancellable(raw, format, eol, MAX_EDIT_LINES, || {
+                cancel.load(Ordering::Relaxed)
+            })
+            .map_err(|error| match error {
+                doc::Error::LineLimit => PrepareError::RecoveryLimit(format!(
+                    "草稿超过完整编辑上限（{MAX_EDIT_LINES} 行）"
+                )),
+                error => PrepareError::Other(err(error)),
+            })?;
+        let disk = original.map(|bytes| DiskContents { bytes, token: None });
+        Ok(Self {
+            store,
+            snapshot,
+            files: FileState {
+                format,
+                disk,
+                ..FileState::default()
+            },
+        })
+    }
+
+    pub(crate) fn detach_baseline(&mut self) {
+        self.files.disk = None;
+    }
     #[cfg(test)]
     pub(crate) fn read(path: &Path, limit: u64, cancel: &AtomicBool) -> Result<Self, String> {
         let source = doc::files::paged::FileSource::open(path).map_err(|e| e.to_string())?;
@@ -159,7 +240,7 @@ impl PreparedFile {
             format,
             disk: Some(DiskContents {
                 bytes,
-                token: snapshot.token,
+                token: Some(snapshot.token),
             }),
             ..FileState::default()
         };
@@ -243,7 +324,7 @@ impl NativeView {
             let format = if use_utf8 { UTF8 } else { files.format };
             let original = files.disk.as_ref();
             let unchanged = original
-                .filter(|disk| disk.token == snapshot.token && format == files.format)
+                .filter(|disk| disk.token == Some(snapshot.token) && format == files.format)
                 .map(|disk| disk.bytes.clone());
             let expected = if replace {
                 Some(
@@ -308,7 +389,7 @@ impl NativeView {
                 (current.revision != snapshot.revision).then_some(current.revision);
             files.disk = Some(DiskContents {
                 bytes,
-                token: snapshot.token,
+                token: Some(snapshot.token),
             });
         }
         self.notify();
@@ -364,6 +445,33 @@ mod tests {
         )
         .unwrap();
     }
+
+    #[test]
+    fn new_file_uses_selected_encoding_and_eol_without_changing_existing_formats() {
+        with_file("new-file-format", |dir, worker| {
+            let format = Format {
+                encoding: Encoding::Utf16Le,
+                bom: true,
+            };
+            let target = dir.join("new.txt");
+            let doc = NativeView::new_file(format, doc::Eol::Lf);
+            append(&doc, "A\nB");
+            worker
+                .block_on(doc.save_file(target.clone(), false, false))
+                .unwrap();
+            assert_eq!(fs::read(target).unwrap(), b"\xff\xfeA\x00\n\x00B\x00");
+
+            let existing = dir.join("existing.txt");
+            let original = b"a\r\nb\n";
+            fs::write(&existing, original).unwrap();
+            let doc = NativeView::open_file(&existing).unwrap();
+            worker
+                .block_on(doc.save_file(existing.clone(), true, false))
+                .unwrap();
+            assert_eq!(fs::read(existing).unwrap(), original);
+        });
+    }
+
     #[test]
     fn dense_file_stays_out_of_the_editor_with_its_detected_encoding() {
         with_file("many-lines", |dir, _| {

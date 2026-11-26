@@ -7,7 +7,7 @@ use texzi_document as doc;
 mod commands;
 mod files;
 pub(crate) use files::SaveError;
-pub(crate) use files::{PrepareError, PreparedFile, line_limit_message};
+pub(crate) use files::{MAX_EDIT_BYTES, PrepareError, PreparedFile, line_limit_message};
 
 pub struct Owner {
     store: RefCell<doc::Store>,
@@ -59,6 +59,12 @@ impl NativeView {
     }
     pub fn buffer(self: &Rc<Self>) -> ExternalBuffer {
         ExternalBuffer(self.clone())
+    }
+    pub(crate) fn current_body(&self) -> Option<std::sync::Arc<doc::Body>> {
+        self.track();
+        let store = self.owner.store.borrow();
+        let view = store.view(self.view).ok()?;
+        Some(store.snapshot(view.doc).ok()?.body)
     }
     pub fn is_composing(&self) -> bool {
         self.composing.get()

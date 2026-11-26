@@ -18,6 +18,8 @@ type Hook = Box<dyn FnOnce(&Snapshot) + Send>;
 struct Probe {
     pause: RefCell<Option<Hook>>,
     states: RefCell<Vec<EditorState>>,
+    auto_save: Option<(PathBuf, &'static str)>,
+    next_file: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -38,6 +40,20 @@ thread_local! {
 fn SaveOverlapFixture() -> impl IntoElement {
     let probe = PROBE.with(|slot| slot.borrow_mut().take().unwrap());
     let shell = Shell::new();
+    if let Some((path, mode)) = &probe.auto_save {
+        shell.open_canonical_file(path.clone()).unwrap();
+        assert!(
+            shell
+                .settings
+                .apply(settings::AUTO_SAVE, None, Some((*mode).into()))
+        );
+    }
+    if let Some(path) = probe.next_file.clone() {
+        let next = shell.clone();
+        on_key("f6", move |_| {
+            next.open_canonical_file(path.clone()).unwrap()
+        });
+    }
     if let Some(pause) = probe.pause.borrow_mut().take() {
         shell
             .current()
@@ -229,6 +245,8 @@ fn selector_cancel_save_all_partial_then_save_as_new_target() {
     let probe = Rc::new(Probe {
         pause: RefCell::new(None),
         states: RefCell::new(Vec::new()),
+        auto_save: None,
+        next_file: None,
     });
     let (_runtime, mut core, mut harness) = open_shell(&probe);
     let answer = |core: &mut Core<ApproxTextEngine>, id, paths| {
@@ -312,6 +330,8 @@ fn source_input_during_real_menu_save_keeps_newer_revision_dirty() {
             resume_rx.recv_timeout(Duration::from_secs(15)).unwrap();
         }))),
         states: RefCell::new(Vec::new()),
+        auto_save: None,
+        next_file: None,
     });
     let (_runtime, mut core, mut harness) = open_shell(&probe);
     harness.change_input(&mut core, "N");
@@ -385,4 +405,196 @@ fn source_input_during_real_menu_save_keeps_newer_revision_dirty() {
     );
     drop(core);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn named_auto_save_uses_the_configured_trigger_and_protects_external_changes() {
+    for mode in ["afterDelay", "onFocusChange"] {
+        let root =
+            std::env::temp_dir().join(format!("texzi-auto-save-{}-{mode}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("named.txt");
+        std::fs::write(&path, "original").unwrap();
+        let probe = Rc::new(Probe {
+            pause: RefCell::new(None),
+            states: RefCell::new(Vec::new()),
+            auto_save: Some((path.clone(), mode)),
+            next_file: None,
+        });
+        let (_runtime, mut core, mut harness) = open_shell(&probe);
+        harness.change_input(&mut core, "!");
+        let local = harness.sample(&mut core, &probe).bytes;
+        assert_eq!(local, b"!original");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+        let blur = |core: &mut Core<ApproxTextEngine>, harness: &mut Harness| {
+            if mode == "onFocusChange" {
+                core.component_event(
+                    harness.source_input.unwrap(),
+                    EventKind::Blur,
+                    &EventPayload::None,
+                );
+                harness.drain(core);
+            }
+        };
+        blur(&mut core, &mut harness);
+        let saved = harness
+            .wait_for_notice(&mut core, &probe, "已保存 named.txt")
+            .pop()
+            .unwrap();
+        assert!(!saved.dirty);
+        assert_eq!(std::fs::read(&path).unwrap(), local);
+
+        std::fs::write(&path, "external").unwrap();
+        core.component_event(
+            harness.source_input.unwrap(),
+            EventKind::Focus,
+            &EventPayload::None,
+        );
+        harness.change_input(&mut core, "?");
+        blur(&mut core, &mut harness);
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            harness.drain(&mut core);
+            let actual = harness.sample(&mut core, &probe);
+            if actual.notice.starts_with("已暂停 named.txt 的自动保存") {
+                assert!(actual.dirty);
+                break;
+            }
+            assert!(Instant::now() < deadline, "{}", actual.notice);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+}
+
+#[test]
+fn leaving_a_document_by_keyboard_saves_when_the_editor_is_unmounted() {
+    let directory =
+        std::env::temp_dir().join(format!("texzi-autosave-tab-blur-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let first = directory.join("other.txt");
+    let second = directory.join("named.txt");
+    std::fs::write(&first, "other").unwrap();
+    std::fs::write(&second, "before").unwrap();
+    let probe = Rc::new(Probe {
+        pause: RefCell::new(None),
+        states: RefCell::new(Vec::new()),
+        auto_save: Some((first.clone(), "onFocusChange")),
+        next_file: Some(second.clone()),
+    });
+    let (_runtime, mut core, mut harness) = open_shell(&probe);
+    harness.key(&mut core, "f6");
+    assert!(core.component_event(
+        harness.source_input.unwrap(),
+        EventKind::Focus,
+        &EventPayload::None
+    ));
+    harness.change_input(&mut core, "!");
+    assert_eq!(harness.sample(&mut core, &probe).bytes, b"!before");
+    assert_eq!(std::fs::read(&second).unwrap(), b"before");
+
+    // The real tab-navigation route replaces the mounted editor. No native Blur is injected.
+    harness.key(&mut core, "ctrl+pageup");
+    let saved = harness
+        .wait_for_notice(&mut core, &probe, "已保存 named.txt")
+        .pop()
+        .unwrap();
+    assert!(!saved.dirty);
+    assert_eq!(std::fs::read(&second).unwrap(), b"!before");
+    assert_eq!(std::fs::read(&first).unwrap(), b"other");
+    std::fs::remove_file(first).unwrap();
+    std::fs::remove_file(second).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn delayed_auto_save_survives_other_tabs_and_an_edit_during_publication() {
+    let root = std::env::temp_dir().join(format!("texzi-auto-save-overlap-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let first = root.join("first.txt");
+    let second = root.join("second.txt");
+    std::fs::write(&first, "A").unwrap();
+    std::fs::write(&second, "B").unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let probe = Rc::new(Probe {
+        pause: RefCell::new(Some(Box::new(move |capture: &Snapshot| {
+            started_tx.send(capture.body.to_utf8()).unwrap();
+            resume_rx.recv_timeout(Duration::from_secs(12)).unwrap();
+        }))),
+        states: RefCell::new(Vec::new()),
+        auto_save: Some((first.clone(), "afterDelay")),
+        next_file: Some(second.clone()),
+    });
+    let (_runtime, mut core, mut harness) = open_shell(&probe);
+    harness.change_input(&mut core, "1");
+    let first_revision = harness.sample(&mut core, &probe).bytes;
+    assert_eq!(first_revision, b"1A");
+    harness.key(&mut core, "f6");
+    core.component_event(
+        harness.source_input.unwrap(),
+        EventKind::Focus,
+        &EventPayload::None,
+    );
+    harness.change_input(&mut core, "2");
+    let second_revision = harness.sample(&mut core, &probe).bytes;
+    assert_eq!(second_revision, b"2B");
+    let deadline = Instant::now() + Duration::from_secs(9);
+    loop {
+        harness.drain(&mut core);
+        if let Ok(bytes) = started_rx.try_recv() {
+            assert_eq!(bytes, first_revision);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the second edit must not cancel A's timer"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness.key(&mut core, "ctrl+pageup");
+    core.component_event(
+        harness.source_input.unwrap(),
+        EventKind::Focus,
+        &EventPayload::None,
+    );
+    harness.change_input(&mut core, "3");
+    let new_first_revision = harness
+        .samples(&mut core, &probe)
+        .into_iter()
+        .find(|state| state.path.as_ref() == Some(&first))
+        .unwrap()
+        .bytes;
+    assert_ne!(first_revision, new_first_revision);
+    assert_eq!(std::fs::read(&first).unwrap(), b"A");
+    resume_tx.send(()).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(9);
+    loop {
+        harness.drain(&mut core);
+        let states = harness.samples(&mut core, &probe);
+        let a = states
+            .iter()
+            .find(|state| state.path.as_ref() == Some(&first))
+            .unwrap();
+        let b = states
+            .iter()
+            .find(|state| state.path.as_ref() == Some(&second))
+            .unwrap();
+        if !a.dirty && !b.dirty {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pending automatic saves must complete and catch up"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(std::fs::read(&first).unwrap(), new_first_revision);
+    assert_eq!(std::fs::read(&second).unwrap(), second_revision);
+    std::fs::remove_file(first).unwrap();
+    std::fs::remove_file(second).unwrap();
+    std::fs::remove_dir(root).unwrap();
 }

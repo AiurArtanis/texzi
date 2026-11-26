@@ -35,6 +35,8 @@ mod cross_view_history_tests;
 mod native_menu;
 #[cfg(windows)]
 mod quick_open;
+#[cfg(windows)]
+mod settings;
 #[cfg(all(test, windows))]
 mod syntax_matrix_tests;
 #[cfg(windows)]

@@ -85,3 +85,10 @@ the existing native scroll path.
 While a virtual rich editor is attached to a surface, the mounter suspends
 NSH content culling there. The editor bounds both row windows itself. The
 mounter restores the ordinary policy when the last such editor detaches.
+
+## Settings font preview
+
+`installed_font_family` resolves the primary installed family in the source
+editor's stack at regular weight. It shares the DirectWrite platform family
+parsing, aliases and lookup with ordinary text rendering. Texzi uses it to
+show the active family, while DirectWrite retains per-glyph fallback.

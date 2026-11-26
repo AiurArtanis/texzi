@@ -71,6 +71,7 @@ mod window;
 mod window_close;
 mod window_state;
 
+pub use crate::surface::node_presentation;
 pub use nsh_core::{
     file_type,
     platform::{Appearance, Locale},
@@ -79,7 +80,6 @@ pub use nsh_engine::{
     App, Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy, Limits, Root,
 };
 pub use windows;
-pub use crate::surface::node_presentation;
 
 #[cfg(feature = "dev")]
 pub use crate::app::set_root;
@@ -90,5 +90,5 @@ pub use crate::{
     },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent, Wheel},
-    text::DWriteTextEngine,
+    text::{DWriteTextEngine, installed_font_family},
 };

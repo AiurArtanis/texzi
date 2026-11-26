@@ -4,7 +4,7 @@
 use super::{CHORDS, SHELL_SHORTCUTS, bind_chord_continuations, bind_shell_shortcuts};
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
 use nsh_base::{
-    editor::ExternalDocument,
+    editor::{ExternalDocument, ExternalEditKind, ExternalSelections},
     rich_editor::{
         state::{EditorState, GapCursor, KeyEvent, PluginSpec, Transaction},
         view::EditorSession,
@@ -48,6 +48,196 @@ struct Probe {
 #[component]
 fn SavePickerFixture() -> impl IntoElement {
     super::view_shell()
+}
+
+#[component]
+fn SettingsRoutingFixture() -> impl IntoElement {
+    let shell = super::Shell::new();
+    let original = NativeView::fixture("abc");
+    let original_path = std::path::PathBuf::from(r"C:\texzi-test\existing.txt");
+    shell.add(original.clone(), Some(original_path.clone()));
+    let original_id = shell.active.get();
+    let before = original.snapshot().unwrap();
+    original
+        .edit(
+            before.revision,
+            before.view_epoch,
+            vec![(3..3, "!".into())],
+            ExternalSelections {
+                ranges: vec![(1, 3)],
+                primary: 0,
+            },
+            ExternalEditKind::Typing,
+        )
+        .unwrap();
+    let after = original.snapshot().unwrap();
+    shell.split_editor(false);
+    shell.show_settings();
+    shell.run("texzi.group.joinAll");
+    shell.run("texzi.find.open");
+    assert!(shell.split.get().is_some());
+    assert!(shell.second_active.get());
+    assert!(shell.panel.get().is_empty());
+    shell.dismiss_settings(true);
+    assert!(shell.second_active.get());
+    shell.show_settings();
+    shell.open_canonical_file(original_path).unwrap();
+    assert!(!shell.settings_active());
+    assert_eq!(shell.current().unwrap().id, original_id);
+    assert!(original.is_dirty().unwrap());
+    let returned = original.snapshot().unwrap();
+    assert_eq!(returned.revision, after.revision);
+    assert_eq!(returned.selections, after.selections);
+    shell.show_settings();
+    shell.focus_group(2);
+    assert!(!shell.settings_active());
+    assert!(shell.second_active.get());
+    shell.show_settings();
+    shell.run("texzi.tab.previous");
+    assert_eq!(shell.current().unwrap().id, original_id);
+    shell.close_tab(1);
+    shell.show_settings();
+    shell.run("texzi.tab.reopenClosed");
+    assert_eq!(shell.current().unwrap().id, 1);
+    assert!(
+        shell
+            .settings
+            .apply(super::settings::MARKDOWN_VIEW, None, Some("source".into()))
+    );
+    shell.add(
+        NativeView::fixture("# Source"),
+        Some(r"C:\texzi-test\source.md".into()),
+    );
+    let source = shell.current().unwrap();
+    assert!(!source.displayed_rich());
+    let mid_sized_markdown = std::path::Path::new("notes.md");
+    assert!(!shell.initial_markdown_rich(Some(mid_sized_markdown), super::LARGE_BYTES, None));
+    assert!(shell.initial_markdown_rich(Some(mid_sized_markdown), super::LARGE_BYTES, Some(true)));
+    assert!(!shell.initial_markdown_rich(
+        Some(mid_sized_markdown),
+        super::large_file::SOURCE_ONLY_BYTES + 1,
+        Some(true)
+    ));
+    assert!(
+        shell
+            .settings
+            .apply(super::settings::MARKDOWN_VIEW, None, Some("wysiwyg".into()))
+    );
+    assert!(!source.displayed_rich());
+    assert!(!shell.initial_markdown_rich(
+        Some(mid_sized_markdown),
+        super::LARGE_BYTES,
+        Some(false)
+    ));
+    shell.add(
+        NativeView::fixture("# Rich"),
+        Some(r"C:\texzi-test\rich.md".into()),
+    );
+    assert!(shell.current().unwrap().displayed_rich());
+
+    shell.add(
+        NativeView::fixture("let n = 4;"),
+        Some(r"C:\texzi-test\example.rs".into()),
+    );
+    let code = shell.current().unwrap();
+    assert!(!shell.source_wrap(&code));
+    assert!(shell.source_wrap(&source));
+    assert!(
+        shell
+            .settings
+            .apply(super::settings::WRAP_CODE, None, Some("on".into()))
+    );
+    assert!(shell.source_wrap(&code));
+    code.wrap.set(Some(false));
+    assert!(!shell.source_wrap(&code));
+    assert_eq!(shell.tab_size(&code), 4);
+    code.tab_size.set(Some(8));
+    assert_eq!(shell.tab_size(&code), 8);
+    assert_eq!(shell.tab_size(&source), 4);
+    code.tab_size.set(None);
+    assert_eq!(shell.tab_size(&code), 4);
+    super::render_shell(shell)
+}
+
+#[test]
+fn document_navigation_leaves_settings_without_mutating_retained_editors() {
+    let mut core = Core::new(
+        ApproxTextEngine,
+        Size {
+            width: px(800.0),
+            height: px(600.0),
+        },
+    );
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<SettingsRoutingFixture>(|| ()));
+    for _ in 0..4 {
+        core.run_component_tasks();
+        core.commit();
+    }
+}
+
+#[test]
+fn activity_settings_opens_one_closable_tab_at_the_bottom() {
+    let mut core = Core::new(
+        ApproxTextEngine,
+        Size {
+            width: px(800.0),
+            height: px(600.0),
+        },
+    );
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<SavePickerFixture>(|| ()));
+    let controls = |core: &mut Core<ApproxTextEngine>| {
+        let mut found = Vec::new();
+        for _ in 0..4 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    if let MountItem::ViewProps { id, props } = item
+                        && let Some(label) = props.accessibility.label.clone()
+                    {
+                        found.push((id, label));
+                    }
+                }
+            }
+        }
+        found
+    };
+    let initial = controls(&mut core);
+    let gear = initial
+        .iter()
+        .find(|(_, label)| label.as_ref() == "设置")
+        .unwrap()
+        .0;
+    let frame = core.measure(gear).unwrap();
+    assert!(frame.page.x.0 < 44.0 && frame.page.y.0 > 500.0);
+    assert!(core.component_event(gear, EventKind::Press, &EventPayload::None));
+    let opened = controls(&mut core);
+    let label = opened
+        .iter()
+        .filter(|(_, label)| label.as_ref() == "设置标签")
+        .collect::<Vec<_>>();
+    assert_eq!(label.len(), 1);
+    let tab = label[0].0;
+    let close = opened
+        .iter()
+        .find(|(_, label)| label.as_ref() == "关闭设置标签")
+        .unwrap()
+        .0;
+    assert!(core.component_event(gear, EventKind::Press, &EventPayload::None));
+    assert!(
+        controls(&mut core)
+            .iter()
+            .all(|(_, label)| label.as_ref() != "设置标签")
+    );
+    assert!(core.measure(tab).is_some());
+    assert!(core.component_event(close, EventKind::Press, &EventPayload::None));
+    controls(&mut core);
+    assert!(core.measure(tab).is_none());
 }
 
 #[test]

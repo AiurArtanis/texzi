@@ -1,5 +1,5 @@
 use super::*;
-use crate::editor_owner::{PrepareError, line_limit_message};
+use crate::editor_owner::{MAX_EDIT_BYTES, PrepareError, line_limit_message};
 use std::collections::VecDeque;
 use texzi_document::files::{
     Encoding,
@@ -11,7 +11,6 @@ pub(super) const LARGE_BYTES: u64 = 20 * MIB;
 const HUGE_BYTES: u64 = 200 * MIB;
 // Editing owns decoded text, provenance, a Rope and a save-conflict baseline.
 // Only one such import runs at a time. Files above this bound stay seekable.
-const MAX_EDIT_BYTES: u64 = 256 * MIB;
 pub(super) const SOURCE_ONLY_BYTES: u64 = 50_000_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -48,6 +47,9 @@ pub(super) struct LargeFile {
     pending_seek: Signal<Option<Position>>,
     path: PathBuf,
     len: u64,
+    initial_rich: bool,
+    pub(super) restored_view: Option<session_recovery::EditorView>,
+    pub(super) restored_draft: Signal<Option<session_recovery::Draft>>,
     reader: RefCell<Option<Arc<PagedFile>>>,
     page: Signal<Option<Rc<Page>>>,
     message: Signal<String>,
@@ -58,7 +60,13 @@ pub(super) struct LargeFile {
 }
 
 impl LargeFile {
-    fn new(path: PathBuf, source: Arc<FileSource>) -> Rc<Self> {
+    pub(super) fn new(
+        path: PathBuf,
+        source: Arc<FileSource>,
+        initial_rich: bool,
+        restored_view: Option<session_recovery::EditorView>,
+        restored_draft: Option<session_recovery::Draft>,
+    ) -> Rc<Self> {
         let len = source.len;
         Rc::new(Self {
             source,
@@ -67,6 +75,9 @@ impl LargeFile {
             pending_seek: signal(None),
             path,
             len,
+            initial_rich,
+            restored_view,
+            restored_draft: signal(restored_draft),
             reader: Default::default(),
             page: signal(None),
             message: signal(if len >= HUGE_BYTES {
@@ -82,6 +93,14 @@ impl LargeFile {
     }
 
     pub(super) fn status(&self) -> String {
+        if self.restored_draft.get().is_some()
+            && matches!(
+                self.import_state.get(),
+                ImportState::Idle | ImportState::Cancelled
+            )
+        {
+            return "待恢复草稿 · 原文件预览只读".into();
+        }
         match self.import_state.get() {
             ImportState::Loading => "正在加载完整文档 · 预览只读".into(),
             ImportState::Cancelling => "正在取消完整加载 · 预览只读".into(),
@@ -92,6 +111,18 @@ impl LargeFile {
                 self.len as f64 / MIB as f64
             ),
         }
+    }
+
+    pub(super) fn recovery_view(&self) -> session_recovery::EditorView {
+        session_recovery::EditorView::for_pending(self.initial_rich, self.restored_view.as_ref())
+    }
+
+    pub(super) fn finish_recovery_limit(&self, shell: &Rc<Shell>, doc: &Document, reason: &str) {
+        session_recovery::retain_limited_draft(shell, doc, reason);
+        self.message.set(session_recovery::retained_draft_message(
+            shell,
+            &format!("草稿未能载入（{reason}）"),
+        ));
     }
 
     fn cancel_import(&self) {
@@ -310,19 +341,32 @@ impl Shell {
         path: PathBuf,
         source: Arc<FileSource>,
         limited_encoding: Option<Encoding>,
-    ) {
+        restored_view: Option<session_recovery::EditorView>,
+        restored_draft: Option<session_recovery::Draft>,
+    ) -> Rc<Document> {
         let size = source.len;
         self.remember(&path);
         let id = self.next.get();
         self.next.set(id + 1);
+        let initial_rich = self.initial_markdown_rich(
+            Some(&path),
+            size,
+            restored_view.as_ref().map(|view| view.rich),
+        );
         let (doc, large) = self.owner.run(|| {
-            let large = LargeFile::new(path.clone(), source);
+            let large = LargeFile::new(
+                path.clone(),
+                source,
+                initial_rich,
+                restored_view,
+                restored_draft,
+            );
             if let Some(encoding) = limited_encoding {
                 large.mark_line_limit(self.owner, encoding);
             }
             let doc = self.make_document(
                 id,
-                NativeView::new_file(),
+                NativeView::reader_placeholder(),
                 Some(path),
                 Some(large.clone()),
                 false,
@@ -332,8 +376,9 @@ impl Shell {
         self.show_new(doc.clone());
         if size < HUGE_BYTES {
             large.load(self.owner, Position::Boundary(0), None);
-            self.queue_import(doc, large);
+            self.queue_import(doc.clone(), large);
         }
+        doc
     }
 
     fn queue_import(self: &Rc<Self>, doc: Rc<Document>, large: Rc<LargeFile>) {
@@ -427,7 +472,11 @@ impl Shell {
                 let cancel = job.cancel.clone();
                 let source = job.large.source.clone();
                 let encoding = job.large.choice.get();
+                let draft = job.large.restored_draft.get_untracked();
                 let result = blocking(move || {
+                    if let Some(draft) = draft {
+                        return draft.prepare(&source, &path, MAX_EDIT_BYTES, &cancel);
+                    }
                     source.verify_path(&path).map_err(|e| e.to_string())?;
                     crate::editor_owner::PreparedFile::from_source(
                         &source,
@@ -435,6 +484,7 @@ impl Shell {
                         &cancel,
                         encoding,
                     )
+                    .map(|prepared| (prepared, true))
                 })
                 .await;
                 if job.cancel.load(Ordering::Relaxed) {
@@ -450,24 +500,39 @@ impl Shell {
                     match result
                         .map_err(|e| PrepareError::Other(e.to_string()))
                         .and_then(|r| r)
-                        .and_then(|r| {
-                            job.large
-                                .source
-                                .verify_path(&job.large.path)
-                                .map(|_| r)
-                                .map_err(|e| PrepareError::Other(e.to_string()))
+                        .and_then(|(mut data, mut named)| {
+                            if named
+                                && let Err(error) = job.large.source.verify_path(&job.large.path)
+                            {
+                                if job.large.restored_draft.get_untracked().is_none() {
+                                    return Err(PrepareError::Other(error.to_string()));
+                                }
+                                data.detach_baseline();
+                                named = false;
+                            }
+                            Ok((data, named))
                         })
-                        .and_then(|data| {
+                        .and_then(|(data, named)| {
                             shell
                                 .owner
                                 .run(|| data.attach())
+                                .map(|source| (source, named))
                                 .map_err(PrepareError::Other)
                         }) {
-                        Ok(source) => {
-                            let path = job.large.path.clone();
-                            let markdown = is_markdown(&path);
-                            let doc =
-                                shell.make_document(job.doc.id, source, Some(path), None, false);
+                        Ok((source, named)) => {
+                            let path = named.then(|| job.large.path.clone());
+                            let start_rich = named && job.large.initial_rich;
+                            let restored = job.large.restored_view.as_ref();
+                            if let Some(view) = restored {
+                                view.restore_source(&source);
+                            }
+                            let doc = shell.make_document(job.doc.id, source, path, None, false);
+                            if let Some(view) = restored {
+                                view.restore_in_mode(&doc, start_rich);
+                            }
+                            if job.large.restored_draft.get_untracked().is_some() {
+                                doc.auto_save.ignore_restored(doc.source.dirty_revision());
+                            }
                             job.large.close();
                             shell.docs.update(|docs| {
                                 if let Some(slot) =
@@ -476,14 +541,21 @@ impl Shell {
                                     *slot = doc.clone();
                                 }
                             });
-                            if markdown && job.large.len <= SOURCE_ONLY_BYTES {
-                                shell.request_mode(doc.clone(), true);
+                            session_recovery::restore_waiting_split(&shell, &doc);
+                            if start_rich {
+                                shell.request_mode_with_position(
+                                    doc.clone(),
+                                    true,
+                                    restored.is_some_and(|view| view.rich && view.has_scroll()),
+                                );
                             }
                             if shell
                                 .current()
                                 .is_some_and(|current| Rc::ptr_eq(&current, &doc))
                             {
-                                shell.notice.set(if job.large.len > SOURCE_ONLY_BYTES {
+                                shell.notice.set(if !named {
+                                    "原文件无法重新关联 · 草稿已恢复到未命名标签".into()
+                                } else if job.large.len > SOURCE_ONLY_BYTES {
                                     "大文件已用源码打开 · 已关闭语法高亮".into()
                                 } else {
                                     "大文件加载完成 · 可编辑".into()
@@ -493,7 +565,30 @@ impl Shell {
                         Err(PrepareError::LineLimit(encoding)) => {
                             job.large.mark_line_limit(shell.owner, encoding)
                         }
-                        Err(error) => job.large.message.set(format!("完整编辑加载失败：{error}")),
+                        Err(PrepareError::RecoveryLimit(reason)) => {
+                            // A confirmation already showing for this draft must settle
+                            // before it stops belonging to the visible reader.
+                            while shell.modal.get() {
+                                let _ = next_frame().await;
+                            }
+                            if shell
+                                .docs
+                                .with(|docs| docs.iter().any(|doc| Rc::ptr_eq(doc, &job.doc)))
+                            {
+                                job.large.finish_recovery_limit(&shell, &job.doc, &reason);
+                            }
+                        }
+                        Err(error) => {
+                            let message = if job.large.restored_draft.get_untracked().is_some() {
+                                session_recovery::retained_draft_message(
+                                    &shell,
+                                    &format!("草稿未能载入（{error}）"),
+                                )
+                            } else {
+                                format!("完整编辑加载失败：{error}")
+                            };
+                            job.large.message.set(message);
+                        }
                     }
                 }
                 shell.imports.active.borrow_mut().take();
