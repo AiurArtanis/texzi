@@ -993,8 +993,9 @@ fn native_format_popup_breaks_the_zen_escape_sequence() {
     assert!(fixture.probe.zen.get());
     assert!(!fixture.probe.zen_armed.get());
 
-    // Win32 closes a cancelled menu without delivering the Escape to the editor.
-    assert!(fixture.core.component_event(
+    // Win32 sends only the close notification. Core settles the popup and
+    // returns false so that a JS observer could still see the notification.
+    assert!(!fixture.core.component_event(
         ROOT_ID,
         EventKind::Menu,
         &EventPayload::Map(vec![
