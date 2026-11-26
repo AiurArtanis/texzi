@@ -169,6 +169,18 @@ impl Ed {
             untracked(|| super::languages::resolve(name.as_deref().unwrap_or("")));
         let options = options_of(&props, language);
         let mut state = State::new(&text, language, options, font, measure);
+        if let Some(external) = use_context::<super::ExternalBuffer>() {
+            let snapshot = external
+                .0
+                .snapshot()
+                .expect("texzi initial document snapshot");
+            state.buffer.external = Some(external);
+            state.buffer.install_external(super::ExternalUpdate {
+                snapshot,
+                edits: None,
+            });
+            state.selections = state.buffer.take_external_selection().unwrap();
+        }
         state.set_language(language, syntax);
         state.reported = Some((state.buffer.version(), text));
         let sel_history = SelectionHistory::new(&state.selections);
@@ -208,6 +220,7 @@ impl Ed {
             completion: super::completion::Completion::new(),
             definition: super::definition::Definition::new(),
         };
+        ed.follow_external();
         ed.follow_props();
         ed.follow_hooks();
         ed.follow_completion();
@@ -217,6 +230,48 @@ impl Ed {
         ed
     }
 
+    fn follow_external(&self) {
+        let ext = self.st.borrow().buffer.external.clone();
+        if let Some(ext) = ext {
+            let ed = self.clone();
+            effect(move || {
+                ext.0.track();
+                let snapshot = match ext.0.snapshot() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("texzi refresh: {e}");
+                        return;
+                    }
+                };
+                let text_changed;
+                {
+                    let mut st = ed.st.borrow_mut();
+                    text_changed = st.buffer.version() != snapshot.revision;
+                    if !text_changed && st.buffer.external_epoch == snapshot.view_epoch {
+                        return;
+                    }
+                    if text_changed {
+                        let changes = st.buffer.install_external(super::ExternalUpdate {
+                            snapshot,
+                            edits: None,
+                        });
+                        st.changed(&changes);
+                        st.selections = st.buffer.take_external_selection().unwrap();
+                    } else {
+                        st.selections = snapshot.selections.internal();
+                        st.buffer.external_epoch = snapshot.view_epoch;
+                    }
+                }
+                ed.empty_sink();
+                if text_changed {
+                    ed.bump_text();
+                    ed.marks_rev.update(|r| *r += 1);
+                    ed.schedule_highlight();
+                }
+                ed.bump_selection();
+            });
+        }
+    }
     // Props.
 
     /// Effects carrying the props into the state, each read on its own so a
@@ -263,11 +318,12 @@ impl Ed {
             let relayout = options.tab_size != st.options.tab_size;
             st.options = options;
             if relayout {
-                let tab = st.options.tab_size;
-                st.display.set_tab_size(tab);
-                st.relayout();
+                let offset = ed.reflow_position(&mut st, false, |st| {
+                    st.display.set_tab_size(st.options.tab_size);
+                    st.relayout();
+                });
                 drop(st);
-                ed.bump_text();
+                ed.finish_reflow(offset);
             }
         });
         let ed = self.clone();
@@ -325,23 +381,25 @@ impl Ed {
             let mut st = ed.st.borrow_mut();
             st.display.set_cells(crate::terminal::is_terminal());
             if st.font != font {
-                st.display.set_measure(measurer(&font));
-                st.font = font;
-                st.relayout();
+                let offset = ed.reflow_position(&mut st, true, |st| {
+                    st.display.set_measure(measurer(&font));
+                    st.font = font;
+                    st.relayout();
+                });
                 drop(st);
-                ed.bump_text();
+                ed.finish_reflow(offset);
             }
         });
         let ed = self.clone();
         effect(move || {
             let wrap = ed.props.soft_wrap.get();
             let width = ed.text_width.get();
-            let mut st = ed.st.borrow_mut();
-            let st = &mut *st;
-            let wrap_width = (wrap && width.0 > 0.0).then_some(width);
-            st.display.set_wrap_width(wrap_width);
-            st.display.rebuild(&st.buffer);
-            ed.bump_text();
+            let offset = ed.reflow_position(&mut ed.st.borrow_mut(), false, |st| {
+                let wrap_width = (wrap && width.0 > 0.0).then_some(width);
+                st.display.set_wrap_width(wrap_width);
+                st.display.rebuild(&st.buffer);
+            });
+            ed.finish_reflow(offset);
         });
         let ed = self.clone();
         effect(move || {
@@ -540,6 +598,10 @@ impl Ed {
             }
         }
         self.restart_blink();
+        let ext = self.st.borrow().buffer.external.clone();
+        if let Some(ext) = ext {
+            ext.0.notify();
+        }
     }
 
     /// Runs a public command.
@@ -752,6 +814,11 @@ impl Ed {
             self.show_caret();
             self.restart_blink();
         }
+        // Also refresh after a version/epoch rejection. Never retry an old plan.
+        let ext = self.st.borrow().buffer.external.clone();
+        if let Some(ext) = ext {
+            ext.0.notify();
+        }
     }
 
     /// The sink's text changed to `text`: what was typed (or replaced by an
@@ -936,6 +1003,17 @@ impl Ed {
     /// shows at the caret and the text waits for the commit, which asks for
     /// no completions (the input method offers its own candidates).
     pub(crate) fn composition(&self, composing: bool, text: &str) {
+        if let Some(external) = self.st.borrow().buffer.external.clone() {
+            external.0.composition_changed(composing);
+        }
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!(
+                "TX04_IME_EDITOR_EVENT composing={} preedit_utf16={} cached_revision={}",
+                composing,
+                text.encode_utf16().count(),
+                self.st.borrow().buffer.version()
+            );
+        }
         let (started, held) = {
             let mut sink = self.sink.borrow_mut();
             let started = composing && !sink.composing;
@@ -947,7 +1025,9 @@ impl Ed {
             self.hide_inline_completion();
         }
         if let Some(held) = held {
+            self.st.borrow_mut().buffer.external_ime = true;
             self.without_completions(|| self.sink_edited(&held));
+            self.st.borrow_mut().buffer.external_ime = false;
         }
         {
             let mut st = self.st.borrow_mut();
@@ -1411,6 +1491,11 @@ impl Ed {
     // Reports.
 
     fn report_text(&self) {
+        // External-owner mode uses incremental document transactions, not full
+        // onChange strings on each keystroke.
+        if self.st.borrow().buffer.external.is_some() {
+            return;
+        }
         let text = {
             let mut st = self.st.borrow_mut();
             let version = st.buffer.version();
@@ -1425,6 +1510,32 @@ impl Ed {
     }
 
     pub(crate) fn report_selections(&self) {
+        {
+            let mut st = self.st.borrow_mut();
+            if let Some(ext) = st.buffer.external.clone() {
+                match ext.0.select(
+                    st.buffer.version(),
+                    st.buffer.external_epoch,
+                    super::ExternalSelections::from_internal(&st.selections),
+                ) {
+                    Ok(snapshot) => {
+                        st.buffer.external_epoch = snapshot.view_epoch;
+                        if super::ExternalSelections::from_internal(&st.selections)
+                            != snapshot.selections
+                        {
+                            st.selections = snapshot.selections.internal();
+                        }
+                    }
+                    Err(error) => {
+                        log::error!("texzi selection rejected: {error}");
+                        if let Ok(snapshot) = ext.0.snapshot() {
+                            st.buffer.external_epoch = snapshot.view_epoch;
+                            st.selections = snapshot.selections.internal();
+                        }
+                    }
+                }
+            }
+        }
         let selections = {
             let mut st = self.st.borrow_mut();
             let selections = st.editor_selections();
@@ -1514,6 +1625,47 @@ impl Ed {
         if let Some(target) = target_x {
             self.scroll_x.set(target);
             self.hscroll.scroll_to(Point::new(target, px(0.0)), false);
+        }
+    }
+
+    fn reflow_position(
+        &self,
+        state: &mut State,
+        keep_visible_caret: bool,
+        reflow: impl FnOnce(&mut State),
+    ) -> Option<Points> {
+        let top = self.rows_top.get_untracked();
+        let y = self.scroll_y.get_untracked();
+        let anchor = if self.props.anchor_wrap_reflow.get_untracked() && y > top {
+            let line_height = state.line_height().0.max(1.0);
+            let caret = keep_visible_caret
+                .then(|| {
+                    let byte = state.primary_head();
+                    (byte, state.caret_point(byte).y + top)
+                })
+                .filter(|(_, caret_top)| {
+                    *caret_top >= y
+                        && *caret_top + px(line_height) <= y + self.viewport.get_untracked().height
+                });
+            if let Some((byte, caret_top)) = caret {
+                Some((byte, y - caret_top))
+            } else {
+                let row = (((y - top).0 / line_height).floor() as usize)
+                    .min(state.display.row_count() - 1);
+                let delta = ((y - top).0 - row as f32 * line_height).clamp(0.0, line_height);
+                Some((state.display.row(row).range.start, px(delta)))
+            }
+        } else {
+            None
+        };
+        reflow(state);
+        anchor.map(|(byte, offset)| state.caret_point(byte).y + top + offset)
+    }
+
+    fn finish_reflow(&self, offset: Option<Points>) {
+        self.bump_text();
+        if let Some(offset) = offset {
+            self.set_scroll_offset(Point::new(self.scroll_x.get_untracked(), offset));
         }
     }
 

@@ -580,6 +580,24 @@ pub(crate) fn resolve_family(family: Option<&str>, weight: u16, italic: bool) ->
     }
 }
 
+/// Finds the primary installed family of a CSS family stack at regular weight.
+pub fn installed_font_family(stack: &str) -> Option<String> {
+    let ui = ui_family();
+    let mut collection = None;
+    // SAFETY: the factory is shared and the collection is a local out value.
+    unsafe { crate::gfx::dwrite().GetSystemFontCollection(&mut collection, false) }.ok()?;
+    let collection = collection?;
+    let names = family_names(stack, &ui);
+    let exists = |name: &str| find_font(&collection, name, 400, false).is_some();
+    names.iter().find(|name| exists(name)).cloned().or_else(|| {
+        names
+            .iter()
+            .filter_map(|name| alias(name))
+            .find(|name| exists(name))
+            .map(str::to_owned)
+    })
+}
+
 /// A `fontFamily` resolved to an installed (or registered) family.
 #[derive(Debug)]
 struct Face {

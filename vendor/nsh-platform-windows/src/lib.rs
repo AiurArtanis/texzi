@@ -75,6 +75,7 @@ mod window;
 mod window_close;
 mod window_state;
 
+pub use crate::surface::node_presentation;
 pub use nsh_core::{
     Cursor, file_type,
     platform::{Appearance, Locale},
@@ -97,5 +98,5 @@ pub use crate::{
         ComponentContext, ComponentFactory, Components, NativeComponent, Pointer, PointerKind,
         Wheel,
     },
-    text::DWriteTextEngine,
+    text::{DWriteTextEngine, installed_font_family},
 };

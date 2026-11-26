@@ -91,6 +91,10 @@ struct Step {
 
 /// The text of an editor, with its undo history.
 pub(crate) struct Buffer {
+    pub(crate) external: Option<super::ExternalBuffer>,
+    pub(crate) external_epoch: u64,
+    pub(crate) external_ime: bool,
+    external_selection: Option<Selections>,
     rope: Rope,
     version: u64,
     undo: VecDeque<Step>,
@@ -131,6 +135,10 @@ impl Buffer {
     /// while the buffer itself is edited (the rope is shared, not copied).
     pub(crate) fn snapshot(&self) -> Buffer {
         Buffer {
+            external: None,
+            external_epoch: 0,
+            external_ime: false,
+            external_selection: None,
             rope: self.rope.clone(),
             version: self.version,
             undo: VecDeque::new(),
@@ -145,6 +153,10 @@ impl Buffer {
 
     pub(crate) fn new(text: &str) -> Buffer {
         let mut buffer = Buffer {
+            external: None,
+            external_epoch: 0,
+            external_ime: false,
+            external_selection: None,
             rope: Rope::new(),
             version: 0,
             undo: VecDeque::new(),
@@ -330,6 +342,31 @@ impl Buffer {
         after: &Selections,
         kind: EditKind,
     ) -> Vec<Change> {
+        if let Some(ext) = self.external.clone() {
+            let kind = if self.external_ime {
+                super::ExternalEditKind::ImeCommit
+            } else {
+                match kind {
+                    EditKind::Typing => super::ExternalEditKind::Typing,
+                    EditKind::Deleting => super::ExternalEditKind::Deleting,
+                    EditKind::Other => super::ExternalEditKind::Other,
+                }
+            };
+            return match ext.0.edit(
+                self.version,
+                self.external_epoch,
+                edits,
+                super::ExternalSelections::from_internal(after),
+                kind,
+            ) {
+                Ok(update) => self.install_external(update),
+                Err(error) => {
+                    log::error!("texzi document edit rejected: {error}");
+                    self.external_selection = Some(before.clone());
+                    Vec::new()
+                }
+            };
+        }
         let len = self.len();
         let mut applied = Vec::with_capacity(edits.len());
         let mut changes = Vec::with_capacity(edits.len());
@@ -450,6 +487,9 @@ impl Buffer {
 
     /// Undoes the last step: the changes made and the selections to restore.
     pub(crate) fn undo(&mut self) -> Option<(Vec<Change>, Selections)> {
+        if self.external.is_some() {
+            return self.external_history(true);
+        }
         let step = self.undo.pop_back()?;
         let mut span = None;
         let mut changes = Vec::with_capacity(step.edits.len());
@@ -471,6 +511,9 @@ impl Buffer {
     /// Redoes the last step undone: the changes made and the selections to
     /// restore.
     pub(crate) fn redo(&mut self) -> Option<(Vec<Change>, Selections)> {
+        if self.external.is_some() {
+            return self.external_history(false);
+        }
         let step = self.redo.pop()?;
         let mut span = None;
         let mut changes = Vec::with_capacity(step.edits.len());
@@ -491,16 +534,23 @@ impl Buffer {
 
     /// Whether there is a step to undo.
     pub(crate) fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
+        self.external
+            .as_ref()
+            .map_or_else(|| !self.undo.is_empty(), |e| e.0.can_history().0)
     }
 
     /// Whether there is a step to redo.
     pub(crate) fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
+        self.external
+            .as_ref()
+            .map_or_else(|| !self.redo.is_empty(), |e| e.0.can_history().1)
     }
 
     /// The next edit starts a new undo step (a caret moved away, a pause).
     pub(crate) fn break_undo_group(&mut self) {
+        if let Some(e) = &self.external {
+            e.0.fence();
+        }
         self.open = false;
     }
 
@@ -509,6 +559,69 @@ impl Buffer {
     /// highlighter and the display map lay out again.
     pub(crate) fn last_line_span(&self) -> Option<LineSpan> {
         self.last_span
+    }
+
+    pub(crate) fn take_external_selection(&mut self) -> Option<Selections> {
+        self.external_selection.take()
+    }
+    pub(crate) fn install_external(&mut self, update: super::ExternalUpdate) -> Vec<Change> {
+        let mut changes = Vec::new();
+        let mut span = None;
+        if let Some(edits) = update.edits {
+            for (range, text) in edits {
+                let old = self.slice(range.clone());
+                self.replace(range.start, &old, &text, &mut span);
+                changes.push(Change {
+                    range,
+                    new_len: text.len(),
+                });
+            }
+        } else {
+            let old_len = self.len();
+            let old_count = self.line_count();
+            self.rope = update.snapshot.rope.clone();
+            self.other_breaks = if ropey_counts_other_breaks() {
+                self.rope
+                    .chars()
+                    .filter(|c| matches!(c, '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}'))
+                    .count()
+            } else {
+                0
+            };
+            self.line_starts = None;
+            self.sync_line_starts();
+            span = Some(LineSpan {
+                first: 0,
+                old_count,
+                new_count: self.line_count(),
+            });
+            changes.push(Change {
+                range: 0..old_len,
+                new_len: self.len(),
+            });
+        }
+        // Cache the owner's persistent root; it is never an independent source.
+        self.rope = update.snapshot.rope;
+        self.version = update.snapshot.revision;
+        self.external_epoch = update.snapshot.view_epoch;
+        self.external_selection = Some(update.snapshot.selections.internal());
+        self.last_span = span;
+        self.undo.clear();
+        self.redo.clear();
+        changes
+    }
+    fn external_history(&mut self, undo: bool) -> Option<(Vec<Change>, Selections)> {
+        let ext = self.external.clone()?;
+        match ext.0.history(self.version, self.external_epoch, undo) {
+            Ok(update) => {
+                let changes = self.install_external(update);
+                Some((changes, self.external_selection.take().unwrap()))
+            }
+            Err(error) => {
+                log::warn!("texzi document history rejected: {error}");
+                None
+            }
+        }
     }
 
     /// The text replaced by `text`, its line breaks normalized.

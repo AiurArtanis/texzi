@@ -1460,6 +1460,14 @@ fn composition(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoEl
             let head = st.primary_head();
             (text_, st.row_after(head), st.caret_point(head))
         };
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!(
+                "TX04_IME_RENDER preedit_utf16={} x={} y={}",
+                text_.encode_utf16().count(),
+                at.x.0,
+                at.y.0
+            );
+        }
         // The row it covers is the active line's.
         let active = props.active_line.get();
         Some(
@@ -1525,12 +1533,15 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
     let value = ed.sink_value;
     let content = ed.clone();
     let moved = ed.clone();
+    let width_ed = ed.clone();
     input()
         .element_ref(&ed.input)
         .absolute()
         .left(move || Length::from(at.get().x))
         .top(move || Length::from(at.get().y))
-        .w(px(1.0))
+        // A one-pixel multiline RichEdit wraps each preedit character and moves
+        // its native candidate caret down. Keep the hidden sink on this row.
+        .w(move || Length::from((width_ed.viewport.get().width - at.get().x).max(px(1.0))))
         .h(move || Length::from(lh()))
         // Presses at the caret are the rows' (a click there places it).
         .pointer_events(PointerEvents::None)
@@ -1556,12 +1567,27 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         .auto_capitalize(AutoCapitalize::None)
         .paste_behavior(PasteBehavior::Report)
         .value(move || value.get())
-        // The native field is only a keyboard sink; its semantic value is
-        // the document, including off-screen rows and external updates.
+        // The native field is a keyboard sink. Rendered rows have their own
+        // semantics. Bound the extra value published on an external edit,
+        // including when the caret is inside a single very long line.
         .accessibility_value(move || {
+            const MAX_BYTES: usize = 64 * 1024;
             content.text_rev.get();
+            let state = content.st.borrow();
+            let buffer = &state.buffer;
+            let text = if buffer.external.is_some() && buffer.len() > MAX_BYTES {
+                content.sel_rev.get();
+                let head = state.primary_head();
+                let line = buffer.line_of(head);
+                let start = buffer
+                    .line_start(line)
+                    .max(head.saturating_sub(MAX_BYTES / 2));
+                buffer.slice(start..buffer.line_end(line).min(start + MAX_BYTES))
+            } else {
+                buffer.text()
+            };
             Some(nsh_core::AccessibilityValue {
-                text: Some(content.text().into()),
+                text: Some(text.into()),
                 ..Default::default()
             })
         })

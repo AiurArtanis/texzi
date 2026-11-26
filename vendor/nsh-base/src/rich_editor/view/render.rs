@@ -380,22 +380,13 @@ struct Window {
     below: f32,
 }
 
-/// Where the top-level blocks are, from their last measured frames
-/// (estimated from the measured ones where never mounted): the window of
-/// those within [`OVERSCAN`] viewports of the visible part, and the
-/// selection's blocks, so the caret's geometry is always there.
-fn doc_window(rv: &Rv, items: &[BlockItem]) -> Window {
+/// Measured or estimated block heights, including the measured gap between neighbours.
+fn block_pitches<'a>(
+    geo: &'a super::geometry::Geometry,
+    items: &'a [BlockItem],
+) -> impl Fn(usize) -> f32 + 'a {
     let n = items.len();
-    if n <= WINDOWED_BLOCKS {
-        return Window {
-            start: 0,
-            end: n,
-            above: 0.0,
-            below: 0.0,
-        };
-    }
-    let geo = rv.geo.borrow();
-    let frame = |i: usize| {
+    let frame = move |i: usize| {
         geo.frames
             .get(&items[i].id)
             .filter(|(parent, _)| *parent == Some(DOC))
@@ -423,7 +414,50 @@ fn doc_window(rv: &Rv, items: &[BlockItem]) -> Window {
     } else {
         0.0
     };
-    let pitch = |i: usize| frame(i).map_or(average, |b| b.size.height.0) + gap;
+    move |i: usize| frame(i).map_or(average, |b| b.size.height.0) + gap
+}
+
+/// Bring one remote selection into the same block window used by ordinary scrolling.
+pub(super) fn reveal_unmounted_block(rv: &Rv, position: usize) -> bool {
+    let y = {
+        let tree = rv.tree.borrow();
+        let Some(items) = tree.children.get(&DOC) else {
+            return false;
+        };
+        if items.len() <= WINDOWED_BLOCKS {
+            return false;
+        }
+        let at = items.partition_point(|it| {
+            tree.pos(it.id)
+                .is_some_and(|start| start + it.node.node_size() < position)
+        });
+        if at == items.len() {
+            return false;
+        }
+        let geo = rv.geo.borrow();
+        let pitch = block_pitches(&geo, items);
+        (0..at).map(pitch).sum::<f32>()
+    };
+    rv.set_viewport_scroll(y - rv.viewport.get_untracked().height.0 * 0.5);
+    true
+}
+
+/// Where the top-level blocks are, from their last measured frames
+/// (estimated from the measured ones where never mounted): the window of
+/// those within [`OVERSCAN`] viewports of the visible part, and the
+/// selection's blocks, so the caret's geometry is always there.
+fn doc_window(rv: &Rv, items: &[BlockItem]) -> Window {
+    let n = items.len();
+    if n <= WINDOWED_BLOCKS {
+        return Window {
+            start: 0,
+            end: n,
+            above: 0.0,
+            below: 0.0,
+        };
+    }
+    let geo = rv.geo.borrow();
+    let pitch = block_pitches(&geo, items);
     let viewport = rv.viewport.get().height.0;
     let viewport = if viewport > 0.0 { viewport } else { 1000.0 };
     let top = rv.scroll_y.get().0 - viewport * OVERSCAN;
@@ -462,7 +496,7 @@ fn doc_window(rv: &Rv, items: &[BlockItem]) -> Window {
         }
     }
     let end = end.min(n);
-    let above = (0..start).map(pitch).sum();
+    let above = (0..start).map(&pitch).sum();
     let below = (end..n).map(pitch).sum();
     Window {
         start,
@@ -486,9 +520,7 @@ fn doc_blocks(rv: Rv) -> Vec<AnyElement> {
             .get(&DOC)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        let items = items.to_vec();
-        drop(tree);
-        doc_window(&window_rv, &items)
+        doc_window(&window_rv, items)
     });
     let list_rv = rv.clone();
     let list = computed(move || {
@@ -1932,6 +1964,10 @@ fn sink(rv: Rv) -> impl IntoElement {
             )
         })
     };
+    let sink_width = {
+        let rv = rv.clone();
+        computed(move || (rv.viewport.get().width - at.get().x).max(px(1.0)))
+    };
     let props = rv.props;
     let (change, composition, key, paste, focus, blur) = (
         rv.clone(),
@@ -1949,7 +1985,7 @@ fn sink(rv: Rv) -> impl IntoElement {
         .absolute()
         .left(move || Length::from(at.get().x))
         .top(move || Length::from(at.get().y))
-        .w(px(1.0))
+        .w(move || sink_width.get())
         .h(px(SINK_HEIGHT))
         .pointer_events(PointerEvents::None)
         .p_0()

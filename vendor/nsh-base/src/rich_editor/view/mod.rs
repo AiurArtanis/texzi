@@ -63,6 +63,13 @@ pub struct RichEditorProps {
     /// history), `"history"`, `"baseKeymap"`, `"markdown"` (Markdown
     /// shortcuts, paste and copy). Default `["starter"]`.
     pub plugins: Prop<Option<Vec<SharedString>>>,
+    /// Single keystrokes owned by the host application, in `nsh/keymap`
+    /// syntax (`"mod+o"`, for example). While focused, this view leaves
+    /// equivalent strokes unbound so the host's keymap or native menu can
+    /// handle them. The host must install those commands itself. Default
+    /// empty preserves the view's own bindings; invalid entries are ignored.
+    #[prop(default)]
+    pub application_shortcuts: Prop<Vec<SharedString>>,
     /// The document can be edited (default true); plugins can make it
     /// read-only too. A read-only editor still selects and copies.
     #[prop(default = true)]
@@ -233,6 +240,8 @@ pub enum RichEditorEvent {
     /// updated; a cancel can end composition without a document change.
     #[args(composing)]
     CompositionChange(bool),
+    /// A plain Escape at a text caret or gap cursor remained after the editor's own handlers.
+    UnhandledEscape,
 }
 
 /// The methods of a [`RichEditor`]'s ref.
@@ -265,6 +274,29 @@ impl RichEditorApi {
     /// The selection.
     pub fn selection(&self) -> RichEditorSelection {
         RichEditorSelection::of(&self.rv.session.state())
+    }
+
+    /// The visible primary caret's distance from the top of the viewport.
+    pub fn viewport_caret_top(&self) -> Option<f32> {
+        self.rv.viewport_caret_top()
+    }
+
+    /// Reveals the primary caret after its block is laid out, without
+    /// dispatching an edit or replacing the selection.
+    pub fn reveal_primary_caret(&self, viewport_top: Option<f32>) {
+        self.rv.reveal_primary_caret(viewport_top);
+    }
+
+    /// How far the rich document is scrolled vertically.
+    pub fn scroll_top(&self) -> f32 {
+        self.rv.scroll_y.get_untracked().0
+    }
+
+    /// Restores a saved vertical position in the current rich layout.
+    pub fn set_scroll_top(&self, top: f32) {
+        if top.is_finite() {
+            self.rv.set_viewport_scroll(top);
+        }
     }
 
     /// Replaces the document with `doc` (ProseMirror's JSON), as a change

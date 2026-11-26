@@ -269,7 +269,7 @@ fn framed_attrs(hwnd: HWND) -> Option<crate::shell::Attrs> {
 
 /// The window's title bar is hidden now: the system frame stays, the
 /// caption buttons are drawn over the app.
-fn hidden(hwnd: HWND) -> bool {
+pub(crate) fn hidden(hwnd: HWND) -> bool {
     framed_attrs(hwnd).is_some_and(|a| a.hidden_title_bar())
 }
 
@@ -2357,7 +2357,7 @@ fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>, area: Option<&
                 MenuRole::Paste => (0x56, false),
                 _ => (0x41, false),
             };
-            crate::input::key(
+            crate::input::menu_key(
                 surface,
                 KeyEvent {
                     vk,

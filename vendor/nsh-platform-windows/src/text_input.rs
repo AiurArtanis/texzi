@@ -111,12 +111,13 @@ use windows::{
                 CFM_WEIGHT, EM_CANREDO, EM_EXSETSEL, EM_GETLANGOPTIONS, EM_GETSCROLLPOS, EM_REDO,
                 EM_SETEDITSTYLE, EM_SETEVENTMASK, EM_SETLANGOPTIONS, EM_SETSCROLLPOS,
                 EM_SETTEXTMODE, EM_SETTYPOGRAPHYOPTIONS, EM_STOPGROUPTYPING, ENM_CHANGE,
-                ENM_ENDCOMPOSITION, ENM_SELCHANGE, ENM_STARTCOMPOSITION, IMF_IMEALWAYSSENDNOTIFY,
-                IMF_SPELLCHECKING, IMF_TKBPREDICTION, PFA_CENTER, PFA_JUSTIFY, PFA_LEFT, PFA_RIGHT,
-                PFM_ALIGNMENT, PFM_LINESPACING, PFM_RTLPARA, SES_USECTF, TM_MULTICODEPAGE,
-                TM_MULTILEVELUNDO, TM_RICHTEXT, TO_ADVANCEDTYPOGRAPHY, TXTBIT_AUTOWORDSEL,
-                TXTBIT_CHARFORMATCHANGE, TXTBIT_CLIENTRECTCHANGE, TXTBIT_D2DDWRITE,
-                TXTBIT_DISABLEDRAG, TXTBIT_HIDESELECTION, TXTBIT_MAXLENGTHCHANGE, TXTBIT_MULTILINE,
+                ENM_ENDCOMPOSITION, ENM_SELCHANGE, ENM_STARTCOMPOSITION, ENM_UPDATE,
+                IMF_IMEALWAYSSENDNOTIFY, IMF_SPELLCHECKING, IMF_TKBPREDICTION, PFA_CENTER,
+                PFA_JUSTIFY, PFA_LEFT, PFA_RIGHT, PFM_ALIGNMENT, PFM_LINESPACING, PFM_RTLPARA,
+                SES_USECTF, TM_MULTICODEPAGE, TM_MULTILEVELUNDO, TM_RICHTEXT,
+                TO_ADVANCEDTYPOGRAPHY, TXTBIT_AUTOWORDSEL, TXTBIT_CHARFORMATCHANGE,
+                TXTBIT_CLIENTRECTCHANGE, TXTBIT_D2DDWRITE, TXTBIT_DISABLEDRAG,
+                TXTBIT_HIDESELECTION, TXTBIT_MAXLENGTHCHANGE, TXTBIT_MULTILINE,
                 TXTBIT_PARAFORMATCHANGE, TXTBIT_READONLY, TXTBIT_RICHTEXT, TXTBIT_SCROLLBARCHANGE,
                 TXTBIT_USEPASSWORD, TXTBIT_WORDWRAP,
             },
@@ -288,7 +289,8 @@ fn make_editor(
         // The text mode (only while empty), the notifications the
         // field follows, DirectWrite's shaping.
         e.send(EM_SETTEXTMODE, TEXT_MODE as usize, 0);
-        let mask = ENM_CHANGE | ENM_SELCHANGE | ENM_STARTCOMPOSITION | ENM_ENDCOMPOSITION;
+        let mask =
+            ENM_CHANGE | ENM_UPDATE | ENM_SELCHANGE | ENM_STARTCOMPOSITION | ENM_ENDCOMPOSITION;
         e.send(EM_SETEVENTMASK, 0, mask as isize);
         // Text Services Framework input: dictation, the emoji
         // panel, the touch keyboard, reconversion, spelling.
@@ -1490,6 +1492,29 @@ fn drop_quietly(surface: &Surface, field: &NshView) {
     blink::update();
 }
 
+/// Diagnostic-only snapshot. Unlike `focused`, this never repairs stale focus,
+/// processes notes, queries services or changes the input/IME state.
+pub(crate) fn trace_composition(surface: &Surface, hwnd: HWND) -> (bool, bool) {
+    let view = FOCUS.with(|f| f.borrow().get(&surface.key()).and_then(|f| f.view.clone()));
+    let Some(view) = view else {
+        return (false, false);
+    };
+    if !view.attached() || crate::app_window::hwnd_showing(surface, &view) != hwnd {
+        return (false, false);
+    }
+    let Some(input) = input_of(&view) else {
+        return (false, false);
+    };
+    (
+        input.composing.get().is_some(),
+        input
+            .editor
+            .borrow()
+            .as_ref()
+            .is_some_and(Editor::composing),
+    )
+}
+
 /// The surface stopped (its views are detached): its focused field goes
 /// now, while the thread is alive, rather than with the thread's locals,
 /// whose destruction order is undefined (#1767).
@@ -1729,6 +1754,13 @@ fn caret_bounds(view: &NshView, input: &InputState) -> Bounds<Points> {
 fn report_composition(surface: &Surface, view: &NshView, input: &InputState) {
     let now = input.composed_text();
     if *input.composed.borrow() != now {
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!(
+                "TX04_IME_NATIVE_EVENT composing={} preedit_utf16={}",
+                now.is_some(),
+                now.as_ref().map_or(0, |text| text.encode_utf16().count())
+            );
+        }
         input.composed.replace(now.clone());
         send(surface, view, EventKind::CompositionChange, || {
             EventPayload::Map(vec![
@@ -1781,10 +1813,12 @@ fn process(surface: &Surface, view: &NshView, input: &InputState) -> bool {
     if started.is_some() {
         input.composing.set(started);
     }
-    if (notes.changed || started.is_some()) && !input.programmatic.get() {
-        if input.composing.get().is_some() {
+    if !input.programmatic.get() {
+        if input.composing.get().is_some()
+            && (notes.preedit || notes.selection || notes.changed || started.is_some())
+        {
             report_composition(surface, view, input);
-        } else {
+        } else if notes.changed && input.composing.get().is_none() {
             changed |= report_text(surface, view, input);
         }
     }

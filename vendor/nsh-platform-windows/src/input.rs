@@ -1342,6 +1342,15 @@ pub(crate) fn wheel(surface: &Rc<Surface>, event: WheelEvent) {
 /// is reported to the focused custom view (or heard for Alt's release)
 /// and runs nothing else.
 pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
+    dispatch_key(surface, event, false)
+}
+
+/// An edit menu role re-enters the focused editor without invoking its own accelerator.
+pub(crate) fn menu_key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
+    dispatch_key(surface, event, true)
+}
+
+fn dispatch_key(surface: &Rc<Surface>, event: KeyEvent, from_menu: bool) -> bool {
     let input = &surface.input;
     if MODIFIER_KEYS.contains(&event.vk) && !event.repeat {
         modifiers_changed(surface, event.modifiers);
@@ -1381,7 +1390,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
             }
             opened
         }
-        || crate::chrome::shortcut(surface, &event)
+        || (!from_menu && crate::chrome::shortcut(surface, &event))
         || crate::text_input::key(surface, &event)
         || crate::text::key(surface, &event)
         || crate::selectable_view::key(surface, &event)

@@ -1,6 +1,6 @@
 {
-  "recorded": "2026-11-16",
-  "basis": "Fixed NSH 224d9a7 rich_editor/mod.rs and docs/dev/rich-editor.md credits; original port revisions unspecified by upstream, not invented here.",
+  "recorded": "2026-11-27",
+  "basis": "NSH v0.7.1, f78eace7af23a9c1c72605c7ee46204f57f3e8e6. rich_editor/mod.rs and docs/dev/rich-editor.md credit these ProseMirror and Tiptap ports. Upstream identifies the projects and applicable MIT licenses without pinning their original revisions.",
   "sources": [
     {
       "owner": "ProseMirror",

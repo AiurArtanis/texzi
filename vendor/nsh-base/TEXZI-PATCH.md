@@ -1,80 +1,20 @@
 # texzi native editor fork
 
-Source: longbridge/nsh commit224d9a795c7ac9d10d75750de9351adac5549675,
-Apache-2.0 (LICENSE-APACHE). UPSTREAM-MANIFEST.json records the original src/fonts
-Git blob SHA256. Cargo.upstream.toml is the original manifest; Cargo.toml expands
-workspace inheritance and excludes upstream test-only workspace dependencies.
-Only editor/{external,buffer,commands,controller,mod}.rs adds the external owner path.
-Unbound upstream Editor retains its existing implementation. This is not an
-upstream defect claim or upgrade. The T04 app used feature editor; T05/T06 additionally enables rich-editor.
+The source baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78eace7af23a9c1c72605c7ee46204f57f3e8e6/crates/nsh-base). `UPSTREAM-MANIFEST.json` identifies each original file under `src` and `fonts` by SHA-256. `Cargo.upstream.toml` preserves the upstream manifest. `Cargo.toml` resolves workspace dependencies outside the NSH workspace and declares the MIT terms applicable to the rich-editor ports alongside Apache-2.0. The KaTeX fonts carry their own SIL OFL 1.1 license.
 
-ExternalBuffer comes from each component context. The owner accepts versioned
-source-byte plans and restores its authoritative snapshot/selection. NSH's Rope
-is a persistent rendering cache, never the second editable truth; its internal
-undo/redo queues stay empty in bound mode. Full onChange serialization is disabled
-for bound mode; incremental receipt patches update layout/highlighter state.
-Notifications cause complete snapshot refresh when the view missed updates;
-no event replay or blindly advancing cursors is needed by this UI adapter.
+## Source editor
 
-This fork requires actual Windows/IME/clipboard/selection testing. New code is
-not an assertion that all T04, rectangular/multi-caret, IME or rich text passed.
+- `editor/external.rs`, `buffer.rs`, `commands.rs`, `controller.rs` and `mod.rs` connect a mounted editor to texzi's versioned document owner. Both editor modes share the owner's history. The view consumes incremental changes and publishes composition transitions without serializing the full rope on each change.
+- `editor/hooks.rs` and `view.rs` expose viewport and caret positioning, preserve an anchor during reflow and report the visible logical range when the source minimap subscribes. The source sink sizes itself to the remainder of the caret row so multiline RichEdit can position IME candidates. For large external documents, its additional accessibility value follows the caret with a byte cap. The rows retain their own accessible semantics.
+- `editor/languages.rs` exposes the existing language classifier for texzi's word-wrap preference. Focus and native input selection use the v0.7.1 field's own handling.
 
-T05/T06 candidate additionally enables rich-editor and changes rich_editor/view/render.rs native sink width from 1px to remaining viewport. Offscreen layout remains active. Rich IME and source/rich integration need their own evidence; the prior source-editor IME PASS is not inherited. Original upstream manifest/source files retained.
+## Rich editor
 
-Rich-editor credits in fixed upstream name MIT ProseMirror/Tiptap ported code. Derived package license metadata is Apache-2.0 AND MIT; original Cargo.upstream.toml remains unchanged. Official license texts and source blob identities are included in docs/tx00/licenses and docs/t05/LICENSE-SOURCES.json, not invented port revision claims.
+- `rich_editor/view/mod.rs` and `controller.rs` give the host its configured application keystrokes. Binding equivalence uses the NSH platform parser, including for v0.7.1's selection-dependent Copy. Plain Escape reaches the host at an empty text caret or a gap only after editor composition, node views, plugins and selections have had their turn. The terminal keeps its native focus behavior.
+- `view/session.rs` also notifies the document owner's mode guard of composition transitions. v0.7.1's public view event remains available after the view has finished processing composition.
+- `view/controller.rs` and `render.rs` expose scroll restoration, visible caret position and caret reveal across mode changes. A distant selection is brought into the upstream block window using the same measured or estimated heights as its spacers. The local sink-width adjustment keeps the Windows candidate window on the caret row.
+- NSH v0.7.1 supplies the long-document block window, selection/geometry tracking, native scrolling and incremental Markdown support. The v0.5.1 fork's separate `visible_rows.rs` and Windows-specific scroll registry have been retired.
 
-T05 source review corrections additionally report transient source composition
-through the external owner, and provide an opt-in Rust session composition
-listener for the rich mode guard. These metadata hooks do not edit text or
-create history. Target projection preparation precedes visible mode publication.
+## Reproducing checks
 
-2026-11-18: rich_editor/view/{mod,controller}.rs additionally exposes the opt-in
-RichEditorProps.application_shortcuts (default empty Vec<SharedString>). The
-focused key-registration effect normalizes valid host declarations with the
-same platform-aware Keystroke parser as the editor, and omits equivalent rich
-view bindings. The host remains responsible for its engine-keymap/native-menu
-commands; no application callback is invoked inside the rich key handler.
-Invalid declarations are ignored. An empty list preserves upstream bindings;
-all other rich key handling, source ownership, document/history behavior,
-dependencies, features and original upstream manifests remain unchanged.
-Validation for this change: NOT_RUN (no Cargo, component execution or GUI in
-this scoped edit); the host integration and focused RichEditor regression are
-validated separately before any product acceptance claim.
-
-### 2026-11-26 RichEditor Escape
-
-`rich_editor/view/{mod,controller}.rs` emits `UnhandledEscape`
-for a plain Escape at an empty text caret or gap cursor on non-terminal
-platforms. The focused RichEditor still receives the keystroke first. Composition, selected
-node views, plugins, and the base keymap have priority. Non-empty selections
-retain their existing collapse behavior, and the terminal retains its focus
-behavior. Texzi uses the event for Zen only in the active rich document and
-group, using the existing priority for modals, editor panels, and format controls.
-A composition notification also resets any pending Zen exit.
-
-The focused RichEditor and source Editor cases run as part of `Windows x64
-verify`. Run the focused regressions from the workspace on Windows x64 with
-the following command.
-
-```powershell
-cargo test -p texzi-app --release --locked --target x86_64-pc-windows-msvc zen_ -- --test-threads=1
-```
-
-### Settings source language classification
-
-`editor::known_language` exposes the editor's existing language resolution for
-paths and aliases. Texzi uses it to apply the code word-wrap preference. The
-editor retains its existing rendering language and plain-text fallback.
-
-`Editor` optionally reports the logical range of its viewport as scroll,
-layout or text changes. Texzi opts in while the source minimap is visible.
-The event does not allocate another document snapshot or introduce a
-scroll listener when feedback is disabled.
-
-When Texzi's source editor reflows wrapped rows, it retains the first
-visible source position and its vertical offset. The source minimap and
-indent width can change the layout while retaining this position. Font
-changes prefer to anchor a visible caret and otherwise use the top row.
-
-`RichEditorApi::set_scroll_top` restores a saved vertical position through
-the existing visible-row scroll path when a session view mounts.
+From the workspace on Windows x64, run `cargo test --workspace --release --locked --target x86_64-pc-windows-msvc -- --test-threads=1`. Document/source/rich integration, mode switches, focus, Zen Escape, and shortcut arbitration are exercised by texzi's workspace tests. CI builds and packages the same checkout.

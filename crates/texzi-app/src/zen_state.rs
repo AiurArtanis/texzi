@@ -62,6 +62,7 @@ fn reset_options() -> KeyOptions {
         when: When::Always,
         repeat: true,
         pass_through: true,
+        ..Default::default()
     }
 }
 fn reset_strokes(os: Os) -> Vec<Keystroke> {
@@ -97,6 +98,7 @@ fn reset_strokes(os: Os) -> Vec<Keystroke> {
                     alt: bits & 2 != 0,
                     shift: bits & 4 != 0,
                     cmd: bits & 8 != 0,
+                    alt_graph: false,
                 },
             };
             if stroke.reserved(os).is_none() {

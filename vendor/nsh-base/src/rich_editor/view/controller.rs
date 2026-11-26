@@ -13,7 +13,7 @@ use std::{
 };
 
 use nsh_core::{
-    keymap::{Modifiers, When},
+    keymap::{Keystroke, Modifiers, When},
     prelude::*,
 };
 use serde_json::Value;
@@ -244,6 +244,8 @@ pub(crate) struct Rv {
     autoscroll: Rc<RefCell<AutoScroll>>,
     /// The state's scroll request was not carried out yet.
     scroll_pending: Rc<Cell<bool>>,
+    selection_viewport_top: Rc<Cell<Option<f32>>>,
+    owner: Owner,
     blink_task: Rc<RefCell<Option<Spawned<()>>>>,
     base_keymap: Rc<Keymap>,
     /// A press on a table's handle or grip being dragged.
@@ -312,6 +314,8 @@ impl Rv {
             document_size: signal(Size::default()),
             autoscroll: Rc::default(),
             scroll_pending: Rc::default(),
+            selection_viewport_top: Rc::default(),
+            owner: Owner::current(),
             blink_task: Rc::default(),
             base_keymap: Rc::new(base_keymap),
             table_gesture: Rc::default(),
@@ -398,7 +402,11 @@ impl Rv {
             if !rv.focused.get() {
                 return;
             }
+            let host_keys = rv.application_keys();
             for spec in keys::key_table().into_iter().filter(|spec| !spec.copy) {
+                if rv.host_owns(&host_keys, &spec.keystroke) {
+                    continue;
+                }
                 let rv = rv.clone();
                 let event = spec.event.clone();
                 on_key_with(
@@ -429,7 +437,11 @@ impl Rv {
             }
             rv.sel_rev.get();
             let empty = untracked(|| rv.session.state().selection().empty());
+            let host_keys = rv.application_keys();
             for spec in &copy_keys {
+                if rv.host_owns(&host_keys, &spec.keystroke) {
+                    continue;
+                }
                 let rv = rv.clone();
                 let event = spec.event.clone();
                 on_key_with(
@@ -449,6 +461,7 @@ impl Rv {
         effect(move || {
             rv.layout_rev.get();
             rv.sel_rev.get();
+            rv.viewport.get();
             if rv.scroll_pending.get() {
                 untracked(|| rv.scroll_into_view());
             }
@@ -515,6 +528,7 @@ impl Rv {
             self.touch_follow();
         }
         if state.scroll_to_selection() != old.scroll_to_selection() {
+            self.selection_viewport_top.set(None);
             self.scroll_pending.set(true);
         }
         if doc_changed {
@@ -1162,6 +1176,21 @@ impl Rv {
 
     /// A key: the selected node's view, the plugins' `handle_key_down`
     /// (keymaps), the base keymap, the clipboard keys, then the view's
+    fn application_keys(&self) -> HashSet<Keystroke> {
+        self.props
+            .application_shortcuts
+            .get()
+            .iter()
+            .filter_map(|stroke| Keystroke::parse_with(stroke.as_str(), apple_keys()).ok())
+            .collect()
+    }
+
+    fn host_owns(&self, keys: &HashSet<Keystroke>, stroke: &str) -> bool {
+        !keys.is_empty()
+            && Keystroke::parse_with(stroke, apple_keys())
+                .is_ok_and(|stroke| keys.contains(&stroke))
+    }
+
     /// caret movement.
     pub(crate) fn key(&self, event: &KeyEvent) {
         if self.sink.borrow().composing {
@@ -1248,13 +1277,14 @@ impl Rv {
         // Escape no plugin, node view or keymap took collapses a selection
         // to its head. With nothing to collapse, a terminal's focus leaves
         // the editor, so it is no trap there (Tab then goes on after it);
-        // the other platforms keep Escape as it was. It stays bound for the
-        // plugins' own Escape (a suggestion's).
+        // elsewhere the host can handle an unused Escape at a caret.
         if plain && event.key == "Escape" {
             let sel = state.selection();
             if sel.empty() {
                 if crate::terminal::is_terminal() {
                     self.blur();
+                } else if sel.cursor().is_some() || sel.is_gap_cursor() {
+                    self.cx.emit(RichEditorEvent::UnhandledEscape);
                 }
             } else if let Ok(p) = state.doc().resolve(sel.head()) {
                 self.set_selection(Selection::near(&p, 1), false);
@@ -1370,6 +1400,33 @@ impl Rv {
         let doc = state.doc().clone();
         let sel = state.selection().clone();
         let vertical = matches!(m.unit, Unit::Line | Unit::Page);
+        let head = sel.head();
+        let affinity = sel.affinity();
+        if (vertical || m.unit == Unit::LineEdge)
+            && sel.as_text().is_some()
+            && self.geo.borrow().caret_rect(head, affinity).is_none()
+            && super::render::reveal_unmounted_block(self, head)
+        {
+            // The scroll may have removed the current caret's view. Resume
+            // the key after the row has had time to report its geometry.
+            let rv = self.clone();
+            self.owner.run(|| {
+                spawn(async move {
+                    for _ in 0..2 {
+                        next_frame().await;
+                        let current = rv.session.state();
+                        if !current.doc().ptr_eq(&doc) || current.selection() != &sel {
+                            return;
+                        }
+                        if rv.geo.borrow().caret_rect(head, affinity).is_some() {
+                            rv.move_caret(m);
+                            return;
+                        }
+                    }
+                })
+            });
+            return;
+        }
         if !vertical {
             self.goal_x.set(None);
         }
@@ -1397,8 +1454,6 @@ impl Rv {
             }
             return;
         }
-        let head = sel.head();
-        let affinity = sel.affinity();
         let target: Option<(usize, Affinity, Option<Selection>)> = match m.unit {
             Unit::Char => self
                 .char_step(&doc, &sel, m.dir)
@@ -2885,28 +2940,62 @@ impl Rv {
         handle.scroll_to(Point::new((*offset + delta).max(px(0.)), px(0.)), false);
     }
 
+    pub(crate) fn viewport_caret_top(&self) -> Option<f32> {
+        let caret = self.caret_rect()?;
+        let height = self.viewport.get_untracked().height.0;
+        let offset = (caret.origin.y - self.scroll_y.get_untracked()).0;
+        (offset >= 0.0 && offset + caret.size.height.0 <= height).then_some(offset)
+    }
+
+    pub(crate) fn reveal_primary_caret(&self, viewport_top: Option<f32>) {
+        let midpoint = self.viewport.get_untracked().height.0 / 2.0;
+        self.selection_viewport_top
+            .set(Some(viewport_top.unwrap_or(midpoint)));
+        self.scroll_pending.set(true);
+        self.scroll_into_view();
+    }
+
+    pub(crate) fn set_viewport_scroll(&self, y: f32) {
+        let max = (self.content_height.get_untracked() - self.viewport.get_untracked().height)
+            .0
+            .max(0.0);
+        let to = px(y.clamp(0.0, max));
+        if (self.scroll_y.get_untracked() - to).0.abs() > 0.5 {
+            self.scroll_y.set(to);
+            self.scrolled.set(to);
+            self.scroll.scroll_to(Point::new(px(0.0), to), false);
+        }
+    }
+
     /// Scrolls the head into view, once it is laid out: a selected node
     /// whole, as ProseMirror scrolls its DOM node, else the caret.
     fn scroll_into_view(&self) {
         let state = self.session.state();
+        let height = self.viewport.get_untracked().height;
+        if height <= px(0.0) {
+            return;
+        }
         if state
             .plugins()
             .iter()
             .any(|p| p.handle_scroll_to_selection(&state))
         {
+            self.selection_viewport_top.set(None);
             self.scroll_pending.set(false);
             return;
         }
         let Some(caret) = self.node_selection_box().or_else(|| self.caret_rect()) else {
+            super::render::reveal_unmounted_block(self, state.selection().head());
             return;
         };
         self.scroll_pending.set(false);
         self.scroll_selected_cell(&state, caret);
-        let top = self.scroll_y.get_untracked();
-        let height = self.viewport.get_untracked().height;
-        if height <= px(0.0) {
+        if let Some(offset) = self.selection_viewport_top.take() {
+            let room = (height - caret.size.height).0.max(0.0);
+            self.set_viewport_scroll(caret.origin.y.0 - offset.clamp(0.0, room));
             return;
         }
+        let top = self.scroll_y.get_untracked();
         let y = if caret.origin.y < top {
             caret.origin.y
         } else if caret.origin.y + caret.size.height > top + height {

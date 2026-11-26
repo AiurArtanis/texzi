@@ -58,6 +58,8 @@ use windows::{
 
 /// `EN_CHANGE`: the text changed.
 const EN_CHANGE: u32 = 0x0300;
+/// `EN_UPDATE`: the display is about to update (not a committed edit).
+const EN_UPDATE: u32 = 0x0400;
 /// `EN_SELCHANGE`.
 const EN_SELCHANGE: u32 = 0x0702;
 /// `EN_STARTCOMPOSITION` (RichEdit 8).
@@ -168,6 +170,8 @@ pub(crate) struct Caret {
 /// Notifications since the field last took them.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Notes {
+    /// TSF preedit invalidated without a committed text/selection notification.
+    pub(crate) preedit: bool,
     /// The text changed (`EN_CHANGE`).
     pub(crate) changed: bool,
     /// The selection changed (`EN_SELCHANGE`).
@@ -184,7 +188,8 @@ pub(crate) struct Notes {
 impl Notes {
     /// Nothing was noted.
     fn is_empty(&self) -> bool {
-        !self.changed
+        !self.preedit
+            && !self.changed
             && !self.selection
             && self.composition_start.is_none()
             && !self.composition_end
@@ -212,6 +217,7 @@ struct Host {
     props: RefCell<Props>,
     caret: Cell<Caret>,
     notes: Cell<Notes>,
+    composing: Cell<bool>,
     /// The services (not counted: they hold the host), for timers and the
     /// queries notifications make. Null once they are released.
     services: Cell<*mut c_void>,
@@ -268,6 +274,7 @@ impl Editor {
             props: RefCell::new(props),
             caret: Cell::new(Caret::default()),
             notes: Cell::new(Notes::default()),
+            composing: Cell::new(false),
             services: Cell::new(std::ptr::null_mut()),
             drawing: Cell::new(false),
             invalidate,
@@ -390,6 +397,11 @@ impl Editor {
                 std::ptr::null_mut(),
             );
         }
+    }
+
+    /// Read-only synchronous host state, before deferred input processing.
+    pub(crate) fn composing(&self) -> bool {
+        self.host().composing.get()
     }
 
     /// The caret the services placed.
@@ -898,6 +910,7 @@ unsafe extern "system" fn tx_invalidate_rect(this: This, _: *const RECT, _: BOOL
     // SAFETY: a live host.
     let host = unsafe { host(this) };
     if !host.drawing.get() {
+        preedit_later(host, "invalidate");
         (host.invalidate)();
     }
 }
@@ -906,6 +919,7 @@ unsafe extern "system" fn tx_view_change(this: This, _: BOOL) {
     // SAFETY: a live host.
     let host = unsafe { host(this) };
     if !host.drawing.get() {
+        preedit_later(host, "view_change");
         (host.invalidate)();
     }
 }
@@ -940,6 +954,7 @@ unsafe extern "system" fn tx_set_caret_pos(this: This, x: i32, y: i32) -> BOOL {
         c.x = x;
         c.y = y;
         host.caret.set(c);
+        preedit_later(host, "caret");
         (host.invalidate)();
     }
     BOOL(1)
@@ -998,6 +1013,21 @@ unsafe extern "system" fn tx_set_timer(this: This, id: u32, ms: u32) -> BOOL {
 /// edits their text from the thread's message loop, in no message of the
 /// field's: its composition, and the text it commits, waited for the next
 /// key the field sent (a commit showed only once another key was typed).
+fn preedit_later(host: &Host, source: &'static str) {
+    if !host.composing.get() || host.drawing.get() || host.services.get().is_null() {
+        return;
+    }
+    let mut notes = host.notes.get();
+    notes.preedit = true;
+    host.notes.set(notes);
+    if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        log::info!("TX04_IME_HOST_WAKE source={source}");
+    }
+    // Queue through the existing deduplicated thread timer, never query the
+    // services or reenter the field from an ITextHost invalidation callback.
+    notes_later(host);
+}
+
 fn notes_later(host: *const Host) {
     // `try_with`: none during thread teardown (#1767).
     let pending = TIMERS.try_with(|t| {
@@ -1187,11 +1217,19 @@ unsafe extern "system" fn tx_get_property_bits(this: This, mask: u32, out: *mut 
 unsafe extern "system" fn tx_notify(this: This, code: u32, _: *mut c_void) -> HRESULT {
     // SAFETY: a live host.
     let host = unsafe { host(this) };
+    if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        log::info!(
+            "TX04_IME_HOST_NOTIFY code={code:#x} composing={}",
+            host.composing.get()
+        );
+    }
     let mut notes = host.notes.get();
     match code {
         EN_CHANGE => notes.changed = true,
         EN_SELCHANGE => notes.selection = true,
+        EN_UPDATE if host.composing.get() => notes.preedit = true,
         EN_STARTCOMPOSITION => {
+            host.composing.set(true);
             let services = host.services.get();
             if !services.is_null() {
                 // SAFETY: queries the services answer from a notification
@@ -1213,6 +1251,7 @@ unsafe extern "system" fn tx_notify(this: This, code: u32, _: *mut c_void) -> HR
             }
         }
         EN_ENDCOMPOSITION => {
+            host.composing.set(false);
             // A composition that started since the field last looked ended
             // unseen: its commit stays in the text as a plain edit.
             if notes.composition_start.take().is_none() {

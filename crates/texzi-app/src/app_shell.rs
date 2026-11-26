@@ -2219,6 +2219,9 @@ fn bind_chord_continuations(run: Rc<dyn Fn(Option<&'static str>)>) {
                 &stroke,
                 KeyOptions {
                     when: nsh_core::keymap::When::Always,
+                    // While the prefix is pending its continuation belongs to
+                    // the shell, including keys normally bound by the editor.
+                    over_focused: true,
                     ..Default::default()
                 },
                 move |_| run(target),

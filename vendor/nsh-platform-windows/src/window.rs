@@ -46,8 +46,8 @@ use windows::{
             Input::{
                 KeyboardAndMouse::{
                     GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture, SetFocus,
-                    VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_LWIN, VK_MBUTTON, VK_MENU, VK_RBUTTON,
-                    VK_RWIN, VK_SHIFT, VK_XBUTTON1, VK_XBUTTON2,
+                    VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_LWIN, VK_MBUTTON, VK_MENU,
+                    VK_PROCESSKEY, VK_RBUTTON, VK_RWIN, VK_SHIFT, VK_XBUTTON1, VK_XBUTTON2,
                 },
                 Pointer::{GetPointerInfo, POINTER_INFO},
             },
@@ -1004,11 +1004,56 @@ pub(crate) fn run_loop() -> i32 {
             // The thread hook does this before `GetMessage` returns; this
             // also covers a hook that could not be installed.
             crate::keyboard::suppress_translation(&mut msg);
+            if matches!(
+                msg.message,
+                WM_KEYDOWN | WM_SYSKEYDOWN | WM_NSH_KEYDOWN | WM_NSH_SYSKEYDOWN
+            ) && std::env::var_os("TEXZI_TRACE_CHORD").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                trace_chord_key(
+                    "pre_translate",
+                    msg.hwnd,
+                    key_event(msg.message, msg.wParam, msg.lParam),
+                    None,
+                );
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
     msg.wParam.0 as i32
+}
+
+// All fields are flags or an owned application's window handle. In particular,
+// do not log the VK, scan code, character, input text or any path here.
+fn trace_chord_key(stage: &'static str, hwnd: HWND, event: KeyEvent, handled: Option<bool>) {
+    if !event.down
+        || std::env::var_os("TEXZI_TRACE_CHORD").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let Some(data) = data(hwnd) else { return };
+    let Some(surface) = data.surface.upgrade() else {
+        return;
+    };
+    let (input_composing, host_composing) = crate::text_input::trace_composition(&surface, hwnd);
+    let utc_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_micros());
+    let m = event.modifiers;
+    log::info!(
+        "TX_CHORD_NATIVE utc_us={utc_us} stage={stage} hwnd={:#x} processkey={} ctrl={} alt={} shift={} meta={} repeat={} native_composing={} input_composing={input_composing} host_composing={host_composing} handled_known={} handled={}",
+        hwnd.0 as usize,
+        event.vk == VK_PROCESSKEY.0,
+        m.ctrl,
+        m.alt,
+        m.shift,
+        m.meta,
+        event.repeat,
+        input_composing || host_composing,
+        handled.is_some(),
+        handled.unwrap_or(false),
+    );
 }
 
 /// The key event a `WM_KEY*` message (or its untranslated private form
@@ -1297,7 +1342,9 @@ fn handle(
             .and_then(|id| crate::app_window::enter(surface, id));
         let event = key_event(msg, wparam, lparam);
         let sys = event.sys;
-        if crate::input::key(surface, event) {
+        let handled = crate::input::key(surface, event);
+        trace_chord_key("post_key_dispatch", hwnd, event, Some(handled));
+        if handled {
             return Some(LRESULT(0));
         }
         // The capture rule went away between the hook and this dispatch (a
@@ -1632,6 +1679,7 @@ fn handle(
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
             let event = key_event(msg, wparam, lparam);
             let handled = crate::input::key(surface, event);
+            trace_chord_key("post_key_dispatch", hwnd, event, Some(handled));
             if msg == WM_SYSKEYDOWN {
                 data.sys_char.set(handled);
             }
@@ -1641,6 +1689,29 @@ fn handle(
             // Alt+F4 and the system menu keep working.
         }
         WM_SYSCHAR if data.sys_char.replace(false) => return Some(LRESULT(0)),
+        WM_SYSCOMMAND
+            if (wparam.0 & 0xFFF0) as u32 == SC_KEYMENU
+                && lparam.0 == 0
+                && crate::chrome::hidden(hwnd) =>
+        {
+            // A hidden native menu has no Alt focus destination. Give an app
+            // with its own title bar the same menu shortcut as F10.
+            if crate::input::key(
+                surface,
+                KeyEvent {
+                    vk: 0x79,
+                    down: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                    scan: 0,
+                    extended: false,
+                    sys: false,
+                    translated: false,
+                },
+            ) {
+                return Some(LRESULT(0));
+            }
+        }
         WM_CHAR => {
             let unit = wparam.0 as u16;
             if (0xD800..0xDC00).contains(&unit) {

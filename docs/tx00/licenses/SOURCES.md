@@ -7,6 +7,9 @@ in the locked crates.io package (root LICENSE):
   5f3ea5ba03395f2f2908e3587e01788cfdfd3555.
 - taffy 0.15.1: DioxusLabs/taffy,
   0064bd54cbe38bf1d8bcd6ec6ab0704d45fb048a.
+  Taffy 0.16.0 ships the same MIT license text in its source repository
+  at commit 497de49c200daee81a18ce627bec98d5340ae57a
+  (LICENSE blob f6b3d8f95569d0dfca076b6b24901b2a4a89aca8).
 - webview2-com/sys 0.39.1: wravery/webview2-rs,
   edc2caf886175ccaebe86078c9cfe1ae2a187328.
 - webview2-com-macros 0.8.1: wravery/webview2-rs,
