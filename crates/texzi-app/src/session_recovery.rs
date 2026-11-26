@@ -107,10 +107,16 @@ pub(super) fn keep_scroll(doc: &Document) {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct Draft {
     text: String,
+    #[serde(flatten)]
+    format: FilePreference,
+    disk_sha256: Option<[u8; 32]>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+struct FilePreference {
     encoding: String,
     bom: bool,
     eol: String,
-    disk_sha256: Option<[u8; 32]>,
 }
 
 struct DraftCapture {
@@ -121,7 +127,18 @@ struct DraftCapture {
 
 impl DraftCapture {
     fn materialize(self) -> Draft {
-        let encoding = match self.format.encoding {
+        Draft {
+            text: String::from_utf8(self.body.to_utf8())
+                .expect("document recovery bytes are UTF-8"),
+            format: FilePreference::capture(self.format, self.body.default_eol()),
+            disk_sha256: self.baseline.as_deref().map(digest),
+        }
+    }
+}
+
+impl FilePreference {
+    fn capture(format: Format, eol: Eol) -> Self {
+        let encoding = match format.encoding {
             Encoding::Utf8 => "utf-8",
             Encoding::Utf16Le => "utf-16le",
             Encoding::Utf16Be => "utf-16be",
@@ -131,19 +148,30 @@ impl DraftCapture {
             Encoding::Gb18030_2022 => "gb18030-2022",
             Encoding::Gb18030WebEncodingRs0844 => "gb18030",
         };
-        let eol = match self.body.default_eol() {
+        let eol = match eol {
             Eol::Lf => "LF",
             Eol::CrLf => "CRLF",
             Eol::Cr => "CR",
         };
-        Draft {
-            text: String::from_utf8(self.body.to_utf8())
-                .expect("document recovery bytes are UTF-8"),
+        Self {
             encoding: encoding.into(),
-            bom: self.format.bom,
+            bom: format.bom,
             eol: eol.into(),
-            disk_sha256: self.baseline.as_deref().map(digest),
         }
+    }
+
+    fn restore(&self) -> (Format, Eol) {
+        let (mut format, mut eol) = settings::new_document_format(&self.encoding, &self.eol);
+        format.bom = self.bom;
+        if self.encoding == "gbk-936" {
+            format.encoding = Encoding::Gbk936;
+        } else if self.encoding == "gb18030-2022" {
+            format.encoding = Encoding::Gb18030_2022;
+        }
+        if self.eol == "CR" {
+            eol = Eol::Cr;
+        }
+        (format, eol)
     }
 }
 
@@ -157,6 +185,7 @@ struct Tab {
     path: Option<LocalPath>,
     view: EditorView,
     draft: Option<Draft>,
+    blank: Option<FilePreference>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -399,9 +428,12 @@ fn collect(shell: &Shell, drafts: bool) -> (Signature, Vec<(u64, DraftCapture)>)
                             scroll: None,
                         },
                         draft: None,
+                        blank: None,
                     });
                 }
                 let revision = doc.source.dirty_revision();
+                let view = EditorView::capture(doc);
+                let mut blank = None;
                 if drafts
                     && let Some(revision) = revision
                     && let Some(body) = doc.source.current_body()
@@ -416,14 +448,22 @@ fn collect(shell: &Shell, drafts: bool) -> (Signature, Vec<(u64, DraftCapture)>)
                             baseline,
                         },
                     ));
-                } else if path.is_none() || revision.is_some() {
+                } else if revision.is_some() {
                     return None;
+                } else if path.is_none() {
+                    if view.wrap.is_none() && view.tabs.is_none() {
+                        return None;
+                    }
+                    let (format, _) = doc.source.recovery_format();
+                    let eol = doc.source.current_body()?.default_eol();
+                    blank = Some(FilePreference::capture(format, eol));
                 }
                 Some(Tab {
                     id: doc.id,
                     path,
-                    view: EditorView::capture(doc),
+                    view,
                     draft: None,
+                    blank,
                 })
             })
             .collect()
@@ -532,6 +572,8 @@ pub(super) fn remove_discarded(shell: &Shell, id: u64) -> io::Result<()> {
         return Ok(());
     };
     session.sequence.set(session.sequence.get() + 1);
+    session.writing.set(false);
+    *session.last.borrow_mut() = None;
     session.disk.update(session.sequence.get(), || {
         let mut record = match session.disk.read() {
             Ok(record) => record,
@@ -540,10 +582,7 @@ pub(super) fn remove_discarded(shell: &Shell, id: u64) -> io::Result<()> {
         };
         record.tabs.retain(|tab| tab.id != id);
         Ok(Some(record))
-    })?;
-    session.writing.set(false);
-    *session.last.borrow_mut() = None;
-    Ok(())
+    })
 }
 
 pub(super) fn finish(shell: &Shell, discard_dirty: bool) -> io::Result<()> {
@@ -551,6 +590,8 @@ pub(super) fn finish(shell: &Shell, discard_dirty: bool) -> io::Result<()> {
         return Ok(());
     };
     session.sequence.set(session.sequence.get() + 1);
+    session.writing.set(false);
+    *session.last.borrow_mut() = None;
     if enabled(shell) {
         let record = collect(shell, false).0.0;
         return session.disk.update(session.sequence.get(), || {
@@ -660,16 +701,7 @@ fn restore_tab(shell: &Rc<Shell>, tab: Tab) -> bool {
         if baseline.is_none() {
             path = None;
         }
-        let (mut format, mut eol) = settings::new_document_format(&draft.encoding, &draft.eol);
-        format.bom = draft.bom;
-        if draft.encoding == "gbk-936" {
-            format.encoding = Encoding::Gbk936;
-        } else if draft.encoding == "gb18030-2022" {
-            format.encoding = Encoding::Gb18030_2022;
-        }
-        if draft.eol == "CR" {
-            eol = Eol::Cr;
-        }
+        let (format, eol) = draft.format.restore();
         let Ok(source) = NativeView::recover_file(&draft.text, format, eol, baseline) else {
             return false;
         };
@@ -687,6 +719,15 @@ fn restore_tab(shell: &Rc<Shell>, tab: Tab) -> bool {
         };
         tab.view.restore_source(&source);
         shell.add_with_mode(source, Some(path), Some(tab.view.rich));
+        if let Some(doc) = shell.primary() {
+            tab.view.restore_view(&doc);
+        }
+        true
+    } else if let Some(blank) = tab.blank {
+        let (format, eol) = blank.restore();
+        let source = shell.owner.run(|| NativeView::new_file(format, eol));
+        tab.view.restore_source(&source);
+        shell.add_with_mode(source, None, Some(false));
         if let Some(doc) = shell.primary() {
             tab.view.restore_view(&doc);
         }
@@ -733,11 +774,14 @@ mod tests {
             },
             draft: Some(Draft {
                 text: "private draft\r\nsecond\n".into(),
-                encoding: "utf-8".into(),
-                bom: false,
-                eol: "LF".into(),
+                format: FilePreference {
+                    encoding: "utf-8".into(),
+                    bom: false,
+                    eol: "LF".into(),
+                },
                 disk_sha256: Some(digest(bytes)),
             }),
+            blank: None,
         }
     }
 
@@ -782,6 +826,30 @@ mod tests {
         );
         assert_eq!(fs::read(&path).unwrap(), b"published");
 
+        let blank_format = Format {
+            encoding: Encoding::Utf16Be,
+            bom: true,
+        };
+        restored.add(NativeView::new_file(blank_format, Eol::Lf), None);
+        let blank = restored.current().unwrap();
+        blank.tab_size.set(Some(8));
+        let ((metadata, _), _) = collect(&restored, false);
+        let blank_record = metadata
+            .tabs
+            .into_iter()
+            .find(|entry| entry.id == blank.id)
+            .unwrap();
+        assert!(blank_record.draft.is_none() && blank_record.blank.is_some());
+        let mut with_blank = disk.read().unwrap();
+        with_blank.active = blank.id;
+        with_blank.tabs.push(blank_record);
+        restore(&restored, with_blank);
+        let blank = restored.current().unwrap();
+        assert!(blank.path.get().is_none() && !blank.source.is_dirty().unwrap());
+        assert_eq!(restored.tab_size(&blank), 8);
+        assert_eq!(blank.source.recovery_format().0, blank_format);
+        assert_eq!(blank.source.current_body().unwrap().default_eol(), Eol::Lf);
+
         fs::write(&path, b"changed elsewhere").unwrap();
         restore(&restored, disk.read().unwrap());
         let tab = restored.current().unwrap();
@@ -789,6 +857,36 @@ mod tests {
         assert!(tab.source.is_dirty().unwrap());
         assert_eq!(tab.source.text().unwrap(), "private draft\nsecond\n");
         assert_eq!(fs::read(&path).unwrap(), b"changed elsewhere");
+
+        tab.source.set_composing(true);
+        restored.add_blank();
+        let independent = restored.current().unwrap();
+        let snapshot = independent.source.snapshot().unwrap();
+        independent
+            .source
+            .edit(
+                snapshot.revision,
+                snapshot.view_epoch,
+                vec![(0..0, "other tab".into())],
+                ExternalSelections {
+                    ranges: vec![(9, 9)],
+                    primary: 0,
+                },
+                nsh_base::editor::ExternalEditKind::Typing,
+            )
+            .unwrap();
+        let (_, captured) = collect(&restored, true);
+        assert_eq!(captured.len(), 2);
+        assert!(
+            captured.iter().any(
+                |(id, capture)| *id == independent.id && capture.body.to_utf8() == b"other tab"
+            )
+        );
+        assert!(
+            captured.iter().any(|(id, capture)| *id == tab.id
+                && capture.body.to_utf8() == b"private draft\r\nsecond\n")
+        );
+        tab.source.set_composing(false);
 
         *restored.session.borrow_mut() = Some(Rc::new(Session {
             disk: disk.clone(),
@@ -803,6 +901,15 @@ mod tests {
         );
         finish(&restored, false).unwrap();
         assert_eq!(disk.read().unwrap().tabs.len(), 1);
+        let recovery = restored.session.borrow().clone().unwrap();
+        recovery.writing.set(true);
+        let obstructed = disk.path.with_extension("tmp");
+        fs::create_dir(&obstructed).unwrap();
+        assert!(remove_discarded(&restored, 4).is_err());
+        assert!(!recovery.writing.get());
+        assert!(tab.source.is_dirty().unwrap());
+        assert_eq!(disk.read().unwrap().tabs.len(), 1);
+        fs::remove_dir(&obstructed).unwrap();
         remove_discarded(&restored, 4).unwrap();
         assert!(disk.read().unwrap().tabs.is_empty());
         disk.update(1, || Ok(Some(record(initial)))).unwrap();
@@ -812,6 +919,7 @@ mod tests {
         );
 
         *restored.session.borrow_mut() = None;
+        drop(recovery);
         drop(disk);
         fs::remove_file(path).unwrap();
         fs::remove_file(directory.join("410.json")).unwrap();

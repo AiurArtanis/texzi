@@ -103,6 +103,14 @@ pub(super) fn render(source: Rc<NativeView>, viewport: Signal<(u32, u32)>) -> im
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nsh_base::editor::{Editor, EditorApi, EditorRange};
+    use nsh_core::{
+        ApproxTextEngine, Core, EventKind, EventPayload, MountItem, PayloadValue, ROOT_ID, Size,
+        element::Root,
+        geometry::point,
+        keymap::{Keymap, Keystroke},
+    };
+    use std::{cell::Cell, sync::Arc};
 
     #[test]
     fn sample_preserves_indentation_and_uses_only_bounded_line_prefixes() {
@@ -119,5 +127,101 @@ mod tests {
         let single = NativeView::fixture(&"x".repeat(5_000));
         let image = sample(&single.current_body().unwrap());
         assert_eq!(image.bands, vec![(0, MAX_PREFIX as u8)]);
+    }
+
+    thread_local! {
+        static REFLOW: Cell<Option<(EditorRange, f32)>> = const { Cell::new(None) };
+    }
+
+    #[component]
+    fn ReflowFixture() -> impl IntoElement {
+        let minimap_shown = signal(false);
+        let editor = component_ref::<Editor>();
+        let line = "0123456789".repeat(36);
+        let body = (0..40)
+            .map(|n| format!("{n:02} {line}\n"))
+            .collect::<String>();
+        on_key("f6", move |_| {
+            editor
+                .api::<EditorApi>()
+                .unwrap()
+                .set_scroll_offset(point(px(0.0), px(950.0)));
+        });
+        on_key("f7", move |_| {
+            let api = editor.api::<EditorApi>().unwrap();
+            REFLOW.with(|slot| slot.set(Some((api.visible_range(), api.scroll_offset().y.0))));
+        });
+        on_key("f8", move |_| minimap_shown.set(true));
+        view()
+            .size_full()
+            .flex_row()
+            .child(
+                nsh_base::editor::editor()
+                    .component_ref(&editor)
+                    .default_value(Some(body.into()))
+                    .soft_wrap(true)
+                    .anchor_wrap_reflow(true)
+                    .font_size(px(16.0))
+                    .line_height(px(24.0))
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full(),
+            )
+            .child(when(
+                move || minimap_shown.get(),
+                || view().w(px(64.0)).flex_shrink_0().h_full(),
+            ))
+    }
+
+    #[test]
+    fn narrower_minimap_layout_holds_the_top_logical_line() {
+        let mut core = Core::new(
+            ApproxTextEngine,
+            Size {
+                width: px(620.0),
+                height: px(480.0),
+            },
+        );
+        core.mount_root(&Root::new::<ReflowFixture>(|| ()));
+        let mut keys: Option<Arc<Keymap>> = None;
+        for _ in 0..10 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    if let MountItem::Keymap(keymap) = item {
+                        keys = Some(keymap);
+                    }
+                }
+            }
+        }
+        let keys = keys.unwrap();
+        let press = |core: &mut Core<ApproxTextEngine>, key| {
+            let key = Keystroke::parse_with(key, false).unwrap();
+            let command = keys.find(key, true, false).fired().unwrap();
+            assert!(core.component_event(
+                ROOT_ID,
+                EventKind::KeyCommand,
+                &EventPayload::Value(PayloadValue::Number(command as f64))
+            ));
+            for _ in 0..10 {
+                core.run_component_tasks();
+                let _ = core.commit();
+            }
+        };
+        press(&mut core, "f6");
+        press(&mut core, "f7");
+        let (before, old_y) = REFLOW.with(Cell::take).unwrap();
+        assert!(
+            before.start.line > 0,
+            "the fixture must be below the first folded display rows"
+        );
+        press(&mut core, "f8");
+        press(&mut core, "f7");
+        let (after, new_y) = REFLOW.with(Cell::take).unwrap();
+        assert_ne!(
+            old_y, new_y,
+            "the fixture must actually rewrap above the viewport"
+        );
+        assert_eq!(before.start.line, after.start.line);
     }
 }

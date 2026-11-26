@@ -422,7 +422,9 @@ fn named_auto_save_uses_the_configured_trigger_and_protects_external_changes() {
             next_file: None,
         });
         let (_runtime, mut core, mut harness) = open_shell(&probe);
-        harness.change_input(&mut core, "original changed");
+        harness.change_input(&mut core, "!");
+        let local = harness.sample(&mut core, &probe).bytes;
+        assert_eq!(local, b"!original");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
         let blur = |core: &mut Core<ApproxTextEngine>, harness: &mut Harness| {
             if mode == "onFocusChange" {
@@ -440,7 +442,7 @@ fn named_auto_save_uses_the_configured_trigger_and_protects_external_changes() {
             .pop()
             .unwrap();
         assert!(!saved.dirty);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original changed");
+        assert_eq!(std::fs::read(&path).unwrap(), local);
 
         std::fs::write(&path, "external").unwrap();
         core.component_event(
@@ -448,7 +450,7 @@ fn named_auto_save_uses_the_configured_trigger_and_protects_external_changes() {
             EventKind::Focus,
             &EventPayload::None,
         );
-        harness.change_input(&mut core, "original changed locally");
+        harness.change_input(&mut core, "?");
         blur(&mut core, &mut harness);
         let deadline = Instant::now() + Duration::from_secs(6);
         loop {
@@ -487,19 +489,23 @@ fn delayed_auto_save_survives_other_tabs_and_an_edit_during_publication() {
         next_file: Some(second.clone()),
     });
     let (_runtime, mut core, mut harness) = open_shell(&probe);
-    harness.change_input(&mut core, "A1");
+    harness.change_input(&mut core, "1");
+    let first_revision = harness.sample(&mut core, &probe).bytes;
+    assert_eq!(first_revision, b"1A");
     harness.key(&mut core, "f6");
     core.component_event(
         harness.source_input.unwrap(),
         EventKind::Focus,
         &EventPayload::None,
     );
-    harness.change_input(&mut core, "B2");
+    harness.change_input(&mut core, "2");
+    let second_revision = harness.sample(&mut core, &probe).bytes;
+    assert_eq!(second_revision, b"2B");
     let deadline = Instant::now() + Duration::from_secs(9);
     loop {
         harness.drain(&mut core);
         if let Ok(bytes) = started_rx.try_recv() {
-            assert_eq!(bytes, b"A1");
+            assert_eq!(bytes, first_revision);
             break;
         }
         assert!(
@@ -514,7 +520,14 @@ fn delayed_auto_save_survives_other_tabs_and_an_edit_during_publication() {
         EventKind::Focus,
         &EventPayload::None,
     );
-    harness.change_input(&mut core, "A13");
+    harness.change_input(&mut core, "3");
+    let new_first_revision = harness
+        .samples(&mut core, &probe)
+        .into_iter()
+        .find(|state| state.path.as_ref() == Some(&first))
+        .unwrap()
+        .bytes;
+    assert_ne!(first_revision, new_first_revision);
     assert_eq!(std::fs::read(&first).unwrap(), b"A");
     resume_tx.send(()).unwrap();
 
@@ -539,8 +552,8 @@ fn delayed_auto_save_survives_other_tabs_and_an_edit_during_publication() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(std::fs::read(&first).unwrap(), b"A13");
-    assert_eq!(std::fs::read(&second).unwrap(), b"B2");
+    assert_eq!(std::fs::read(&first).unwrap(), new_first_revision);
+    assert_eq!(std::fs::read(&second).unwrap(), second_revision);
     std::fs::remove_file(first).unwrap();
     std::fs::remove_file(second).unwrap();
     std::fs::remove_dir(root).unwrap();
