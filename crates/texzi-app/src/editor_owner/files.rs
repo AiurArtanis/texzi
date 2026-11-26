@@ -74,11 +74,38 @@ pub(crate) struct PreparedFile {
     files: FileState,
 }
 
+const MAX_EDIT_LINES: usize = 2_000_000;
+
+pub(crate) fn line_limit_message() -> String {
+    format!("文件超过完整编辑上限（{MAX_EDIT_LINES} 行），可继续只读分页查看。")
+}
+
+#[derive(Debug)]
+pub(crate) enum PrepareError {
+    LineLimit(Encoding),
+    Other(String),
+}
+
+impl From<String> for PrepareError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl std::fmt::Display for PrepareError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LineLimit(_) => f.write_str(&line_limit_message()),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
 impl PreparedFile {
     #[cfg(test)]
     pub(crate) fn read(path: &Path, limit: u64, cancel: &AtomicBool) -> Result<Self, String> {
         let source = doc::files::paged::FileSource::open(path).map_err(|e| e.to_string())?;
-        Self::from_source(&source, limit, cancel, None)
+        Self::from_source(&source, limit, cancel, None).map_err(|e| e.to_string())
     }
 
     pub(crate) fn from_source(
@@ -86,7 +113,7 @@ impl PreparedFile {
         limit: u64,
         cancel: &AtomicBool,
         encoding: Option<Encoding>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, PrepareError> {
         let stopped = || {
             if cancel.load(Ordering::Relaxed) {
                 Err("已取消加载".to_owned())
@@ -118,8 +145,16 @@ impl PreparedFile {
         stopped()?;
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let snapshot = store
-            .open_decoded_cancellable(loaded.into_shared_text(), format, cancelled)
-            .map_err(err)?;
+            .open_decoded_with_line_limit(
+                loaded.into_shared_text(),
+                format,
+                MAX_EDIT_LINES,
+                cancelled,
+            )
+            .map_err(|e| match e {
+                doc::Error::LineLimit => PrepareError::LineLimit(format.encoding),
+                e => PrepareError::Other(err(e)),
+            })?;
         let files = FileState {
             format,
             disk: Some(DiskContents {
@@ -329,6 +364,26 @@ mod tests {
         )
         .unwrap();
     }
+    #[test]
+    fn dense_file_stays_out_of_the_editor_with_its_detected_encoding() {
+        with_file("many-lines", |dir, _| {
+            let path = dir.join("dense.txt");
+            let mut bytes = Vec::with_capacity(2 + 2 * MAX_EDIT_LINES);
+            bytes.extend_from_slice(b"\xff\xfe");
+            for _ in 0..MAX_EDIT_LINES {
+                bytes.extend_from_slice(b"\n\0");
+            }
+            fs::write(&path, bytes).unwrap();
+            let file = doc::files::paged::FileSource::open(&path).unwrap();
+            let prepared =
+                PreparedFile::from_source(&file, u64::MAX, &AtomicBool::new(false), None);
+            assert!(matches!(
+                prepared,
+                Err(PrepareError::LineLimit(Encoding::Utf16Le))
+            ));
+        });
+    }
+
     #[test]
     fn saving_without_edits_preserves_encoding_bom_and_newlines() {
         with_file("roundtrip", |dir, worker| {

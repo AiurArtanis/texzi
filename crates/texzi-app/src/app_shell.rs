@@ -797,15 +797,22 @@ impl Shell {
         let file =
             texzi_document::files::paged::FileSource::open(&path).map_err(|e| e.to_string())?;
         if file.len >= LARGE_BYTES {
-            self.open_large(path, Arc::new(file));
+            self.open_large(path, Arc::new(file), None);
             return Ok(());
         }
-        let prepared = crate::editor_owner::PreparedFile::from_source(
+        let prepared = match crate::editor_owner::PreparedFile::from_source(
             &file,
             LARGE_BYTES - 1,
             &AtomicBool::new(false),
             None,
-        )?;
+        ) {
+            Ok(prepared) => prepared,
+            Err(crate::editor_owner::PrepareError::LineLimit(encoding)) => {
+                self.open_large(path, Arc::new(file), Some(encoding));
+                return Ok(());
+            }
+            Err(e) => return Err(e.to_string()),
+        };
         let source = self.owner.run(|| prepared.attach())?;
         self.remember(&path);
         self.add(source, Some(path));

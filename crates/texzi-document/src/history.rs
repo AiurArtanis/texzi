@@ -524,6 +524,17 @@ impl Store {
         format: crate::files::Format,
         cancelled: impl Fn() -> bool,
     ) -> Result<Snapshot, Error> {
+        self.open_decoded_with_line_limit(text, format, usize::MAX, cancelled)
+    }
+    /// Enforce the full editor's logical line budget while normalizing the decoded input.
+    /// The empty document and the empty line following a final newline each count as a line.
+    pub fn open_decoded_with_line_limit(
+        &mut self,
+        text: Arc<str>,
+        format: crate::files::Format,
+        max_lines: usize,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Snapshot, Error> {
         let profile = Profile {
             version: 2,
             file_format: Some(format),
@@ -533,7 +544,7 @@ impl Store {
             return Err(Error::InvalidProfile);
         }
         let empty = text.is_empty();
-        let body = Body::import_cancellable(text, profile, &cancelled)?;
+        let body = Body::import_cancellable(text, profile, max_lines, &cancelled)?;
         if cancelled() {
             return Err(Error::Cancelled);
         }

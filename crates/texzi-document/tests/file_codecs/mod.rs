@@ -81,6 +81,43 @@ fn cancellation_stops_decode_and_model_build_before_registration() {
     );
 }
 #[test]
+fn logical_line_limit_counts_normalized_breaks_and_stops_before_registration() {
+    use std::cell::Cell;
+    let format = format(Encoding::Utf8, false);
+    let text: Arc<str> = format!("{}\r\n甲\r乙\n丙\u{2028}尾\n", "x".repeat(65_535)).into();
+    let mut reference = Store::new(HistoryBudget::default());
+    let expected = reference.open_decoded(&text, format).unwrap();
+    let lines = expected.body.source().len_lines();
+    let mut store = Store::new(HistoryBudget::default());
+    assert!(matches!(
+        store.open_decoded_with_line_limit(text.clone(), format, lines - 1, || false),
+        Err(Error::LineLimit)
+    ));
+    let dense: Arc<str> = "a\r\n".repeat(50_000).into();
+    let checks = Cell::new(0);
+    assert!(matches!(
+        store.open_decoded_with_line_limit(dense.clone(), format, 100, || {
+            checks.set(checks.get() + 1);
+            false
+        }),
+        Err(Error::LineLimit)
+    ));
+    assert_eq!(checks.get(), 1);
+    assert_eq!(Arc::strong_count(&dense), 1);
+    let accepted = store
+        .open_decoded_with_line_limit(text, format, lines, || false)
+        .unwrap();
+    assert_eq!(accepted.token, expected.token);
+    assert_eq!(accepted.body.eols(), expected.body.eols());
+    assert_eq!(accepted.body.source(), expected.body.source());
+    assert!(
+        store
+            .open_decoded_with_line_limit(Arc::from(""), format, 1, || false)
+            .is_ok()
+    );
+}
+
+#[test]
 fn malformed_input_and_bom_conflicts_reject_without_replacement() {
     assert_eq!(
         LoadedBytes::decode(Arc::from([0xff, 0xfe, 0, 0]), Some(Encoding::Utf16Le))

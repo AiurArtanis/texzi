@@ -1,4 +1,5 @@
 use super::*;
+use crate::editor_owner::{PrepareError, line_limit_message};
 use std::collections::VecDeque;
 use texzi_document::files::{
     Encoding,
@@ -19,6 +20,7 @@ enum ImportState {
     Loading,
     Cancelling,
     Cancelled,
+    LineLimit,
 }
 
 pub(super) fn requires_editable(id: &str) -> bool {
@@ -42,6 +44,7 @@ pub(super) fn requires_editable(id: &str) -> bool {
 pub(super) struct LargeFile {
     source: Arc<FileSource>,
     choice: Cell<Option<Encoding>>,
+    limited_encodings: RefCell<Vec<Encoding>>,
     pending_seek: Signal<Option<Position>>,
     path: PathBuf,
     len: u64,
@@ -60,6 +63,7 @@ impl LargeFile {
         Rc::new(Self {
             source,
             choice: Cell::new(None),
+            limited_encodings: RefCell::new(Vec::new()),
             pending_seek: signal(None),
             path,
             len,
@@ -82,6 +86,7 @@ impl LargeFile {
             ImportState::Loading => "正在加载完整文档 · 预览只读".into(),
             ImportState::Cancelling => "正在取消完整加载 · 预览只读".into(),
             ImportState::Cancelled => "已取消完整加载 · 预览只读".into(),
+            ImportState::LineLimit => "行数超限 · 只读分页".into(),
             ImportState::Idle => format!(
                 "大文件 · 只读分页 · {:.1} MiB",
                 self.len as f64 / MIB as f64
@@ -94,6 +99,14 @@ impl LargeFile {
             cancel.store(true, Ordering::Relaxed);
         }
         self.import_state.set(ImportState::Idle);
+    }
+
+    fn mark_line_limit(&self, encoding: Encoding) {
+        let mut known = self.limited_encodings.borrow_mut();
+        if !known.contains(&encoding) {
+            known.push(encoding);
+        }
+        self.import_state.set(ImportState::LineLimit);
     }
 
     fn cancelled(&self, token: &Arc<AtomicBool>) {
@@ -182,9 +195,12 @@ impl LargeFile {
         let current = self.reader.borrow().clone();
         let source = self.source.clone();
         self.pending_seek.set(None);
-        if encoding.is_some() {
+        if let Some(selected) = encoding {
             self.cancel_import();
             self.choice.set(encoding);
+            if self.limited_encodings.borrow().contains(&selected) {
+                self.import_state.set(ImportState::LineLimit);
+            }
         }
         let choice = self.choice.get();
         let generation = self.generation.get();
@@ -249,13 +265,22 @@ pub(super) struct ImportQueue {
 }
 
 impl Shell {
-    pub(super) fn open_large(self: &Rc<Self>, path: PathBuf, source: Arc<FileSource>) {
+    pub(super) fn open_large(
+        self: &Rc<Self>,
+        path: PathBuf,
+        source: Arc<FileSource>,
+        limited_encoding: Option<Encoding>,
+    ) {
         let size = source.len;
         self.remember(&path);
         let id = self.next.get();
         self.next.set(id + 1);
         let (doc, large) = self.owner.run(|| {
             let large = LargeFile::new(path.clone(), source);
+            if let Some(encoding) = limited_encoding {
+                large.choice.set(Some(encoding));
+                large.mark_line_limit(encoding);
+            }
             let doc = self.make_document(
                 id,
                 NativeView::new_file(),
@@ -282,7 +307,7 @@ impl Shell {
         }
         if matches!(
             large.import_state.get(),
-            ImportState::Loading | ImportState::Cancelling
+            ImportState::Loading | ImportState::Cancelling | ImportState::LineLimit
         ) {
             return;
         }
@@ -384,17 +409,21 @@ impl Shell {
                 {
                     job.large.cancel_import();
                     match result
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| PrepareError::Other(e.to_string()))
                         .and_then(|r| r)
                         .and_then(|r| {
                             job.large
                                 .source
                                 .verify_path(&job.large.path)
                                 .map(|_| r)
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| PrepareError::Other(e.to_string()))
                         })
-                        .and_then(|data| shell.owner.run(|| data.attach()))
-                    {
+                        .and_then(|data| {
+                            shell
+                                .owner
+                                .run(|| data.attach())
+                                .map_err(PrepareError::Other)
+                        }) {
                         Ok(source) => {
                             let path = job.large.path.clone();
                             let markdown = is_markdown(&path);
@@ -421,6 +450,9 @@ impl Shell {
                                     "大文件加载完成 · 可编辑".into()
                                 });
                             }
+                        }
+                        Err(PrepareError::LineLimit(encoding)) => {
+                            job.large.mark_line_limit(encoding)
                         }
                         Err(error) => job.large.message.set(format!("完整编辑加载失败：{error}")),
                     }
@@ -506,9 +538,17 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 .child(action("只读分页查看", move || {
                     open.load(owner, Position::Boundary(0), None)
                 }))
-                .child(action("尝试完整编辑", move || {
-                    start.queue_import(doc.clone(), import.clone())
-                }))
+                .child(when(
+                    move || import_state.get() != ImportState::LineLimit,
+                    move || {
+                        let start = start.clone();
+                        let doc = doc.clone();
+                        let import = import.clone();
+                        action("尝试完整编辑", move || {
+                            start.queue_import(doc.clone(), import.clone())
+                        })
+                    },
+                ))
                 .child(when(
                     move || import_state.get() == ImportState::Loading,
                     move || {
@@ -521,6 +561,10 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 ))
                 .child(action("关闭文件", move || close.close_tab(id))),
         )
+        .child(when(
+            move || import_state.get() == ImportState::LineLimit,
+            || text(line_limit_message()).number_of_lines(2),
+        ))
         .child(text(move || message.get()).number_of_lines(2))
         .child(when(move || calibration.pending_seek.get().is_some(), {
             let file = file.clone();

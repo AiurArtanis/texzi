@@ -94,14 +94,19 @@ impl Body {
     }
     /// Text is already decoded: a leading FEFF is content, never a BOM signature.
     pub fn import_decoded(raw: &str, profile: Profile) -> Self {
-        Self::import_cancellable(Arc::from(raw), profile, &|| false)
+        Self::import_cancellable(Arc::from(raw), profile, usize::MAX, &|| false)
             .expect("uninterrupted document import")
     }
     pub(crate) fn import_cancellable(
         raw: Arc<str>,
         profile: Profile,
+        max_lines: usize,
         cancelled: &impl Fn() -> bool,
     ) -> Result<Self, Error> {
+        if max_lines == 0 {
+            return Err(Error::LineLimit);
+        }
+        let mut lines = 1;
         let mut text = RopeBuilder::new();
         let mut line_breaks = RopeBuilder::new();
         let mut eols = RopeBuilder::new();
@@ -140,9 +145,14 @@ impl Body {
                     logical.push(c);
                 }
             }
+            let breaks = break_markers(RopeSlice::from(logical.as_str()));
+            lines += breaks.len();
+            if lines > max_lines {
+                return Err(Error::LineLimit);
+            }
             text.append(&logical);
             eols.append(&codes);
-            line_breaks.append(&break_markers(RopeSlice::from(logical.as_str())));
+            line_breaks.append(&breaks);
             rest = remaining;
         }
         Ok(Self {
