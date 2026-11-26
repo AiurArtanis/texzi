@@ -21,6 +21,7 @@ The source baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78ea
 - Preparing a thumb destination uses its fraction on the current track and the latest height prefix. Measuring shorter blocks keeps a mid-track grab near the middle and includes the complete final viewport at the new scroll limit.
 - The windowed block flow has its own intrinsic-height, noninteractive scroll scope. Native content culling can therefore mount both bounded ranges ahead of the outer scroll. The outer scroll owns the scrollbar and input. `TEXZI_TRACE_RICH_THUMB=1` records monotonic request, range, mount and offset events for this editor without recording document text.
 - Width, text scale, DPI and rich-style changes invalidate measured heights by generation. Content replacement invalidates its own block. Mounted blocks report fresh geometry, including the grid and clip for a scrollable table. A distant caret waits for its target's layout. Unmounting releases the old positional and text geometry.
+- A selection scroll request wakes the caret reveal even when the selection stays at the same document position. This lets Ctrl+Home return to the existing caret after scrolling away.
 
 ## Reproducing checks
 

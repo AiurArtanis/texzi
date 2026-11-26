@@ -248,8 +248,9 @@ pub(crate) struct Rv {
     pub(crate) document_size: Signal<Size<Points>>,
     /// A drag scrolling on its own past the viewport's edge.
     autoscroll: Rc<RefCell<AutoScroll>>,
-    /// The state's scroll request was not carried out yet.
-    scroll_pending: Rc<Cell<bool>>,
+    /// A scroll request can arrive without moving the selection (e.g. Home
+    /// when the caret is already at the start of a scrolled-away document).
+    scroll_pending: Signal<bool>,
     selection_viewport_top: Rc<Cell<Option<f32>>>,
     pub(super) owner: Owner,
     blink_task: Rc<RefCell<Option<Spawned<()>>>>,
@@ -323,7 +324,7 @@ impl Rv {
             content_height: signal(px(0.0)),
             document_size: signal(Size::default()),
             autoscroll: Rc::default(),
-            scroll_pending: Rc::default(),
+            scroll_pending: signal(false),
             selection_viewport_top: Rc::default(),
             owner: Owner::current(),
             blink_task: Rc::default(),

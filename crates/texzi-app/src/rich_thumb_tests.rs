@@ -1,10 +1,15 @@
 //! Exercise the actual rich editor mount batches while withholding the
 //! Windows mount fence and native offset receipt independently.
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use nsh_core::{
-    ApproxTextEngine, Command, Core, EventKind, EventPayload, MountItem, NodeId, ViewKind,
+    ApproxTextEngine, Command, Core, EventKind, EventPayload, MountItem, NodeId, PayloadValue,
+    ROOT_ID, ViewKind,
     element::{Environment, JsEvent, Root},
+    keymap::{Keymap, Keystroke},
     platform::Os,
     prelude::*,
 };
@@ -23,6 +28,9 @@ fn ThumbFixture() -> impl IntoElement {
 
 #[derive(Default)]
 struct Mounted {
+    input: Option<NodeId>,
+    keys: Option<Arc<Keymap>>,
+    scroll_to: Option<f32>,
     receiver: Option<NodeId>,
     scroll: Option<NodeId>,
     scrolls: HashSet<NodeId>,
@@ -44,6 +52,15 @@ impl Mounted {
             if let Some(batch) = core.commit() {
                 for item in batch.items {
                     match item {
+                        MountItem::Keymap(keys) => self.keys = Some(keys),
+                        MountItem::Create {
+                            id,
+                            kind: ViewKind::Input,
+                        } => self.input = Some(id),
+                        MountItem::Command {
+                            id,
+                            command: Command::ScrollTo { y, .. },
+                        } if Some(id) == self.scroll => self.scroll_to = Some(y.0),
                         MountItem::Create {
                             id,
                             kind: ViewKind::Scroll,
@@ -298,6 +315,66 @@ fn translating_the_mounted_page_after_release_does_not_resize_or_move_the_docume
         assert_eq!(mounted.rows.get(&anchor), Some(&number));
         assert_eq!(mounted.row_top(anchor, outer), top);
     }
+}
+
+#[test]
+fn control_home_reveals_the_unchanged_caret_after_a_scrollbar_drag() {
+    let mut core = Core::new(ApproxTextEngine, Size::new(px(800.0), px(600.0)));
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<ThumbFixture>(|| ()));
+    let mut mounted = Mounted::default();
+    mounted.flush(&mut core);
+    let outer = mounted.parents[&mounted.receiver.unwrap()];
+    mounted.scroll = Some(outer);
+    assert!(core.component_event(
+        mounted.input.unwrap(),
+        EventKind::Focus,
+        &EventPayload::None
+    ));
+    mounted.flush(&mut core);
+    let home = Keystroke::parse_with("ctrl+home", false).unwrap();
+    let press_home = |core: &mut Core<ApproxTextEngine>, mounted: &mut Mounted| {
+        let binding = mounted
+            .keys
+            .as_ref()
+            .unwrap()
+            .find(home, true, false)
+            .fired()
+            .unwrap();
+        assert!(core.component_event(
+            ROOT_ID,
+            EventKind::KeyCommand,
+            &EventPayload::Value(PayloadValue::Number(binding as f64))
+        ));
+        mounted.flush(core);
+    };
+    press_home(&mut core, &mut mounted);
+    mounted.scroll_to = None;
+
+    mounted.event(&mut core, "thumbBegin", json!([1]));
+    mounted.event(&mut core, "thumbTarget", json!([1, 0.9]));
+    mounted.flush(&mut core);
+    for fence in core.take_main_thread_tasks() {
+        fence.run();
+    }
+    mounted.flush(&mut core);
+    let (_, _, ticket, fraction) = *mounted.requests.last().unwrap();
+    let max = mounted.content[&outer].height.0 - mounted.frames[&outer].size.height.0;
+    let y = fraction * max;
+    core.set_scroll_offset(outer, Point::new(px(0.0), px(y)), 0);
+    mounted.event(&mut core, "thumbApplied", json!([1, ticket, y]));
+    mounted.flush(&mut core);
+    assert!(!mounted.contains(1));
+    assert_eq!(
+        mounted.scroll_to, None,
+        "manual scrolling keeps the viewport at the thumb"
+    );
+
+    press_home(&mut core, &mut mounted);
+    assert_eq!(mounted.scroll_to, Some(0.0));
+    assert!(mounted.contains(1));
 }
 
 #[test]
