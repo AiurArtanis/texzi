@@ -6,6 +6,7 @@ use texzi_document as doc;
 
 mod commands;
 mod files;
+pub(crate) use files::PreparedFile;
 pub(crate) use files::SaveError;
 
 pub struct Owner {

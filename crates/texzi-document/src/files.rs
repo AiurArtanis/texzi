@@ -1,6 +1,7 @@
 //! Document file formats and serialization.
 use crate::{DocId, SaveCapture, Snapshot, Store, TargetKey};
 use std::sync::Arc;
+pub mod paged;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub mod save;

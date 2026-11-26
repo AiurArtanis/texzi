@@ -1,8 +1,12 @@
 use super::*;
 use doc::files::{Encoding, FileError, Format, LoadedBytes, encode, save};
 use std::{
+    io::Read,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 pub(super) struct FileState {
@@ -45,16 +49,69 @@ pub(crate) enum SaveError {
 }
 
 impl NativeView {
+    pub(crate) fn disk_len(&self) -> u64 {
+        self.owner
+            .files
+            .borrow()
+            .disk
+            .as_ref()
+            .map_or(0, |file| file.bytes.len() as u64)
+    }
     pub fn new_file() -> Rc<Self> {
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let snapshot = store.open_decoded("", UTF8).expect("empty UTF-8 file");
         Self::from_store(store, snapshot, FileState::default()).expect("empty source view")
     }
 
+    #[cfg(test)]
     pub fn open_file(path: &Path) -> Result<Rc<Self>, String> {
-        let bytes: Arc<[u8]> = std::fs::read(path)
-            .map_err(|error| error.to_string())?
-            .into();
+        PreparedFile::read(path, u64::MAX, &AtomicBool::new(false))?.attach()
+    }
+}
+
+pub(crate) struct PreparedFile {
+    store: doc::Store,
+    snapshot: doc::Snapshot,
+    files: FileState,
+}
+
+impl PreparedFile {
+    pub(crate) fn read(path: &Path, limit: u64, cancel: &AtomicBool) -> Result<Self, String> {
+        let stopped = || {
+            if cancel.load(Ordering::Relaxed) {
+                Err("已取消加载".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        stopped()?;
+        let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let info = file.metadata().map_err(|e| e.to_string())?;
+        if !info.is_file() || info.len() > limit {
+            return Err("文件大小超出此次完整编辑预算，请重新打开并选择分页查看".into());
+        }
+        let mut raw = Vec::new();
+        raw.try_reserve_exact(usize::try_from(info.len()).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("可用内存不足：{e}"))?;
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            stopped()?;
+            let count = file.read(&mut chunk).map_err(|e| e.to_string())?;
+            if count == 0 {
+                break;
+            }
+            if raw.len() as u64 + count as u64 > info.len() {
+                return Err("文件在读取期间变大，请重新打开".into());
+            }
+            raw.extend_from_slice(&chunk[..count]);
+        }
+        if raw.len() as u64 != info.len()
+            || file.metadata().and_then(|m| m.modified()).ok() != info.modified().ok()
+        {
+            return Err("文件已在读取期间更改，请重新打开".into());
+        }
+        stopped()?;
+        let bytes: Arc<[u8]> = raw.into();
         let loaded = match LoadedBytes::decode(bytes.clone(), None) {
             Err(FileError::EncodingChoiceRequired) => {
                 LoadedBytes::decode(bytes.clone(), Some(Encoding::GbkWebEncodingRs0844)).or_else(
@@ -67,6 +124,7 @@ impl NativeView {
         }
         .map_err(|error| format!("{error:?}"))?;
         let format = loaded.format();
+        stopped()?;
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let snapshot = store.open_decoded(loaded.text(), format).map_err(err)?;
         let files = FileState {
@@ -77,9 +135,20 @@ impl NativeView {
             }),
             ..FileState::default()
         };
-        Self::from_store(store, snapshot, files)
+        stopped()?;
+        Ok(Self {
+            store,
+            snapshot,
+            files,
+        })
     }
 
+    pub(crate) fn attach(self) -> Result<Rc<NativeView>, String> {
+        NativeView::from_store(self.store, self.snapshot, self.files)
+    }
+}
+
+impl NativeView {
     pub(crate) fn file_status(&self) -> Option<(&'static str, &'static str)> {
         self.track();
         let encoding = match self.owner.files.borrow().format {
