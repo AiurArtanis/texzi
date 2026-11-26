@@ -193,16 +193,23 @@ impl LargeFile {
             return;
         }
         let current = self.reader.borrow().clone();
-        let source = self.source.clone();
-        self.pending_seek.set(None);
         if let Some(selected) = encoding {
+            if current
+                .as_ref()
+                .is_some_and(|reader| reader.first != 0 && reader.encoding != selected)
+            {
+                self.message
+                    .set("所选编码与文件 BOM 不一致，已保留当前编码和页面。".into());
+                return;
+            }
             self.cancel_import();
-            self.choice.set(encoding);
             if self.limited_encodings.borrow().contains(&selected) {
                 self.import_state.set(ImportState::LineLimit);
             }
         }
-        let choice = self.choice.get();
+        self.pending_seek.set(None);
+        let source = self.source.clone();
+        let choice = encoding.or(self.choice.get());
         let generation = self.generation.get();
         self.reading.set(true);
         self.message.set("正在读取请求的页面…".into());
@@ -220,6 +227,16 @@ impl LargeFile {
                 .await;
                 if generation != view.generation.get() {
                     return;
+                }
+                // A first codec selection may precede the first page and its BOM detection.
+                if encoding.is_some()
+                    && let Ok(Ok((reader, _))) = &result
+                {
+                    view.choice.set(Some(reader.encoding));
+                    if view.limited_encodings.borrow().contains(&reader.encoding) {
+                        view.cancel_import();
+                        view.import_state.set(ImportState::LineLimit);
+                    }
                 }
                 view.reading.set(false);
                 match result {
