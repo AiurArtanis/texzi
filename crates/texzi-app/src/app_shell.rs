@@ -2171,7 +2171,11 @@ fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoEl
             }))
         })
         .selected(move || !selected.displayed_rich())
-        .disabled(move || disabled.pending_mode.get().is_some())
+        .disabled(move || {
+            disabled.pending_mode.get().is_some()
+                || (!disabled.displayed_rich()
+                    && disabled.source.disk_len() > large_file::SOURCE_ONLY_BYTES)
+        })
         .on_press(move |_: &()| {
             shell.second_active.set(second);
             shell.request_mode(doc.clone(), !doc.displayed_rich());

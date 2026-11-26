@@ -263,11 +263,34 @@ impl Shell {
         let cancel = Arc::new(AtomicBool::new(false));
         *large.cancel.borrow_mut() = Some(cancel.clone());
         large.importing.set(true);
-        self.imports
-            .jobs
-            .borrow_mut()
-            .push_back(Import { doc, large, cancel });
-        self.next_import();
+        if large.page.with(Option::is_none) && !large.reading.get() {
+            large.load(self.owner, Position::Boundary(0), None);
+        }
+        let shell = self.clone();
+        self.owner.run(|| {
+            spawn(async move {
+                while large.reading.get() && !cancel.load(Ordering::Relaxed) {
+                    let _ = next_frame().await;
+                }
+                if !cancel.load(Ordering::Relaxed)
+                    && large.page.with(Option::is_some)
+                    && shell
+                        .current()
+                        .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                {
+                    wait_for_editor_frame(doc.body).await;
+                }
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                shell
+                    .imports
+                    .jobs
+                    .borrow_mut()
+                    .push_back(Import { doc, large, cancel });
+                shell.next_import();
+            })
+        });
     }
 
     fn next_import(self: &Rc<Self>) {
@@ -365,6 +388,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let owner = shell.owner;
     let id = doc.id;
     let reference = doc.reference;
+    let body = doc.body;
     let focus = shell.second_active;
     let input = signal(String::new());
     let page = file.page;
@@ -486,6 +510,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                     .child(navigate("末页", |_, len| Position::Before(len)))
                     .child(
                         nsh_core::element::input()
+                            .label("文件字节位置")
                             .w(px(145.))
                             .placeholder("字节位置")
                             .value(move || input.get())
@@ -509,6 +534,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
             let page = show_bytes.page.get()?;
             Some(
                 nsh_base::editor::editor()
+                    .element_ref(&body)
                     .component_ref(&reference)
                     .default_value(Some(SharedString::from(page.text.clone())))
                     .read_only(true)

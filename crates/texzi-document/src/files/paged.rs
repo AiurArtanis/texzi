@@ -102,19 +102,23 @@ impl FileSource {
         bytes
             .try_reserve_exact(usize::try_from(self.len).map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
-        let mut file = self.lock()?;
-        self.check(file.metadata()?)?;
-        file.seek(SeekFrom::Start(0))?;
+        self.check(self.lock()?.metadata()?)?;
         let mut chunk = [0; 64 * 1024];
         while (bytes.len() as u64) < self.len {
             if cancel.load(Ordering::Relaxed) {
                 return Err(io::Error::other("已取消加载"));
             }
             let count = (self.len - bytes.len() as u64).min(chunk.len() as u64) as usize;
-            file.read_exact(&mut chunk[..count])?;
+            // A duplicated Windows handle shares the seek pointer. Keep seek+read
+            // atomic but let previews and independent page requests run between chunks.
+            {
+                let mut file = self.lock()?;
+                file.seek(SeekFrom::Start(bytes.len() as u64))?;
+                file.read_exact(&mut chunk[..count])?;
+            }
             bytes.extend_from_slice(&chunk[..count]);
         }
-        self.check(file.metadata()?)?;
+        self.check(self.lock()?.metadata()?)?;
         Ok(bytes)
     }
 }
