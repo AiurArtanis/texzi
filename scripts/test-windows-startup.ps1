@@ -68,7 +68,8 @@ function Find-Editor([string]$Marker) {
     foreach ($edit in $edits) {
         $value = $null
         if ($edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$value) -and
-            !$value.Current.IsReadOnly -and (([string]$value.Current.Value).Contains($Marker) -or (Has-Text $Marker))) { return $value }
+            !$value.Current.IsReadOnly -and (([string]$value.Current.Value).Contains($Marker) -or
+            ([string]$edit.Current.Name).Contains($Marker))) { return $value }
     }
 }
 
@@ -93,7 +94,7 @@ try {
     Invoke-Named '切换到源码'
     Wait-For 'editable Markdown source' { Find-Editor 'TEXZI-STARTUP-HEADING' } | Out-Null
     Invoke-Named '返回所见即所得'
-    Wait-For 'formatted Markdown' { Find-Named '格式命令' } | Out-Null
+    Wait-For 'formatted Markdown body' { (Find-Named '格式命令') -and (Has-Text 'TEXZI-STARTUP-BODY') } | Out-Null
     Invoke-Named 'large.txt'
     Wait-For 'large-file import to finish' { Has-Text '大文件加载完成' } | Out-Null
     $editor = Wait-For 'the complete 20 MiB editable body' { Find-Editor 'TEXZI-LARGE-BODY' }
@@ -103,7 +104,10 @@ try {
     if ((Get-FileHash -LiteralPath $large).Hash -ne $original) { throw 'Opening the 20 MiB fixture changed it on disk.' }
     Write-Host "Verified Windows workbench PID $($proc.Id), Markdown modes, editable 20 MiB and clean exit."
 } finally {
-    if (!$proc.HasExited) { $proc.Kill(); $proc.WaitForExit() }
+    if (!$proc.HasExited) {
+        $proc.Kill()
+        if (!$proc.WaitForExit(5000)) { throw "The isolated process $($proc.Id) did not stop." }
+    }
     if ($stderr.IsCompletedSuccessfully) { Write-Host $stderr.Result }
     $proc.Dispose()
 }
