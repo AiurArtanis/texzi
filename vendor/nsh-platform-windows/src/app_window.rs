@@ -101,6 +101,9 @@ pub(crate) struct AppWindow {
     scale: Cell<f32>,
     /// A `WM_PAINT` is asked for.
     invalid: Cell<bool>,
+    /// Placing native children can synchronously send another paint or resize.
+    painting: Cell<bool>,
+    repaint: Cell<bool>,
     /// It was sized and placed as the app opened it ([`place`]): until
     /// then its size is the system's default, which is reported to nobody.
     positioned: Cell<bool>,
@@ -371,6 +374,8 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         pixels: Cell::new((0, 0)),
         scale: Cell::new(1.0),
         invalid: Cell::new(false),
+        painting: Cell::new(false),
+        repaint: Cell::new(false),
         positioned: Cell::new(false),
         reported: Cell::new(None),
         opened: Cell::new(false),
@@ -501,6 +506,10 @@ fn main_title(surface: &Surface) -> String {
 /// Asks for `window` to be drawn again (once, however often asked before it
 /// is).
 fn invalidate(window: &AppWindow) {
+    if window.painting.get() {
+        window.repaint.set(true);
+        return;
+    }
     if !window.invalid.replace(true) {
         crate::window::invalidate(window.hwnd);
     }
@@ -604,6 +613,10 @@ fn resized(surface: &Surface, window: &AppWindow) {
 
 /// Draws `window` (`WM_PAINT`, and at once when resized).
 fn paint(surface: &Rc<Surface>, window: &AppWindow) {
+    if window.painting.replace(true) {
+        window.repaint.set(true);
+        return;
+    }
     window.invalid.set(false);
     let web = window.web.borrow().upgrade();
     // Deferred: the swap chain posts `WM_NSH_PAINT` when it has room, so
@@ -624,8 +637,22 @@ fn paint(surface: &Rc<Surface>, window: &AppWindow) {
             composed: &window.composed,
         },
     );
+    window.painting.set(false);
     if deferred {
         window.invalid.set(true);
+    } else if window.repaint.replace(false) {
+        // A nested WM_PAINT may already have validated the update region.
+        // Wake the window after the active frame releases its swap chain.
+        window.invalid.set(true);
+        // SAFETY: post to this window's UI thread without entering its procedure.
+        let _ = unsafe {
+            PostMessageW(
+                Some(window.hwnd),
+                crate::window::WM_NSH_PAINT,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        };
     }
 }
 
@@ -1003,6 +1030,47 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn a_nested_workbench_paint_wakes_the_window_after_the_active_frame() {
+        let app = crate::app::AppView::new(None, Default::default()).unwrap();
+        let surface = app.surface();
+        let view = NshView::new(7, ViewKind::Modal);
+        open(surface, &view, &OpenWindow::default());
+        let window = get(surface, view.id()).unwrap();
+        // A zero-sized client keeps this scheduling test independent of the GPU.
+        window.pixels.set((0, 0));
+        // SAFETY: inspect only the wake message of this test's window on its UI thread.
+        let take_wake = || unsafe {
+            PeekMessageW(
+                &mut MSG::default(),
+                Some(window.hwnd),
+                crate::window::WM_NSH_PAINT,
+                crate::window::WM_NSH_PAINT,
+                PM_REMOVE,
+            )
+            .as_bool()
+        };
+        while take_wake() {}
+        window.painting.set(true);
+        let active_swap = window.swap.borrow_mut();
+        paint(surface, &window);
+        invalidate(&window);
+        paint(surface, &window);
+        assert!(window.repaint.get());
+        assert!(!take_wake());
+        drop(active_swap);
+        window.painting.set(false);
+
+        paint(surface, &window);
+        assert!(!window.repaint.get());
+        assert!(
+            take_wake(),
+            "the validated nested request still gets a frame"
+        );
+        assert!(!take_wake(), "repeated requests coalesce into one wake");
+        removed(surface, &view);
+    }
+
     /// A window's hidden title bar is known when the window is made, not
     /// only once it shows: the platform reports it then, so the app's first
     /// frame reserves the controls. Its first state still comes once it
@@ -1043,6 +1111,8 @@ mod tests {
             pixels: Cell::new((0, 0)),
             scale: Cell::new(1.0),
             invalid: Cell::new(false),
+            painting: Cell::new(false),
+            repaint: Cell::new(false),
             positioned: Cell::new(true),
             reported: Cell::new(None),
             opened: Cell::new(false),
@@ -1125,6 +1195,8 @@ mod tests {
                 pixels: Cell::new((0, 0)),
                 scale: Cell::new(1.0),
                 invalid: Cell::new(false),
+                painting: Cell::new(false),
+                repaint: Cell::new(false),
                 positioned: Cell::new(true),
                 reported: Cell::new(None),
                 opened: Cell::new(false),
