@@ -1514,6 +1514,7 @@ impl Shell {
                         MenuItem::new(label).on_select(move || shell.format_action(&doc, action))
                     })
                     .collect();
+                shell.zen_exit.reset();
                 let _ = popup_menu_at(
                     items,
                     point(bounds.page.x, bounds.page.y + bounds.frame.size.height),
@@ -2187,7 +2188,7 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
     let icon = ImageSrc::rgba(
         32,
         32,
-        include_bytes!(concat!(env!("OUT_DIR"), "/ink-z.rgba")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/app-icon.rgba")),
     );
     view()
         .flex_row()

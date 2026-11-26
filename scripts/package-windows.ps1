@@ -20,7 +20,7 @@ New-Item -Path $licenses -ItemType Directory | Out-Null
 
 Copy-Item -LiteralPath $sourceExe, 'LICENSE' -Destination $package
 Copy-Item -LiteralPath 'docs/WINDOWS_RUN.md' -Destination (Join-Path $package 'RUN.md')
-Copy-Item -LiteralPath 'crates/texzi-app/assets/README.md' -Destination (Join-Path $licenses 'ink-z-provenance.md')
+Copy-Item -LiteralPath 'crates/texzi-app/assets/README.md' -Destination (Join-Path $licenses 'app-icon-provenance.md')
 Copy-Item -LiteralPath 'docs/t05/LICENSE-SOURCES.json' -Destination (Join-Path $licenses 'supplemental-rich-sources.json')
 Copy-Item -LiteralPath 'docs/tx00/licenses' -Destination (Join-Path $licenses 'supplemental') -Recurse
 $metadata = (cargo metadata --locked --format-version 1 --filter-platform $windowsTarget) | ConvertFrom-Json
