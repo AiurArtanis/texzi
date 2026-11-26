@@ -14,7 +14,7 @@ use std::{
     cell::{Cell, RefCell},
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, BufReader, BufWriter, Write},
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     process::Command,
@@ -311,7 +311,9 @@ impl Disk {
     }
 
     fn read(&self) -> io::Result<WindowRecord> {
-        let record: WindowRecord = serde_json::from_reader(File::open(&self.path)?)?;
+        // serde_json reads one byte at a time from a Read source.
+        let record: WindowRecord =
+            serde_json::from_reader(BufReader::new(File::open(&self.path)?))?;
         if record.version != 1
             || record
                 .tabs
@@ -344,10 +346,11 @@ impl Disk {
         };
         let temporary = self.path.with_extension("tmp");
         let result = (|| {
-            let mut file = File::create(&temporary)?;
+            let mut file = BufWriter::new(File::create(&temporary)?);
             serde_json::to_writer(&mut file, &record)?;
             file.write_all(b"\n")?;
-            file.sync_all()?;
+            file.flush()?;
+            file.get_ref().sync_all()?;
             drop(file);
             fs::rename(&temporary, &self.path)
         })();
