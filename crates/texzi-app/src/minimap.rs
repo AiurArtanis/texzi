@@ -106,7 +106,7 @@ mod tests {
     use nsh_base::editor::{Editor, EditorApi, EditorRange};
     use nsh_core::{
         ApproxTextEngine, Core, EventKind, EventPayload, MountItem, PayloadValue, ROOT_ID, Size,
-        element::Root,
+        element::{JsEvent, Root},
         geometry::point,
         keymap::{Keymap, Keystroke},
     };
@@ -130,16 +130,16 @@ mod tests {
     }
 
     thread_local! {
-        static REFLOW: Cell<Option<(EditorRange, f32)>> = const { Cell::new(None) };
+        static REFLOW: Cell<Option<(EditorRange, f32, f32)>> = const { Cell::new(None) };
     }
 
     #[component]
     fn ReflowFixture() -> impl IntoElement {
         let minimap_shown = signal(false);
+        let editor_width = signal(0.0_f32);
         let editor = component_ref::<Editor>();
-        let line = "0123456789".repeat(36);
         let body = (0..40)
-            .map(|n| format!("{n:02} {line}\n"))
+            .map(|n| format!("{n:02} {}\n", "a source word ".repeat(7 + n % 19)))
             .collect::<String>();
         on_key("f6", move |_| {
             editor
@@ -149,28 +149,71 @@ mod tests {
         });
         on_key("f7", move |_| {
             let api = editor.api::<EditorApi>().unwrap();
-            REFLOW.with(|slot| slot.set(Some((api.visible_range(), api.scroll_offset().y.0))));
+            REFLOW.with(|slot| {
+                slot.set(Some((
+                    api.visible_range(),
+                    api.scroll_offset().y.0,
+                    editor_width.get(),
+                )))
+            });
         });
         on_key("f8", move |_| minimap_shown.set(true));
         view()
             .size_full()
             .flex_row()
             .child(
-                nsh_base::editor::editor()
-                    .component_ref(&editor)
-                    .default_value(Some(body.into()))
-                    .soft_wrap(true)
-                    .anchor_wrap_reflow(true)
-                    .font_size(px(16.0))
-                    .line_height(px(24.0))
+                view()
                     .flex_1()
                     .min_w(px(0.0))
-                    .h_full(),
+                    .h_full()
+                    .on_layout(move |bounds: &Bounds<Points>| editor_width.set(bounds.size.width.0))
+                    .child(
+                        nsh_base::editor::editor()
+                            .component_ref(&editor)
+                            .default_value(Some(body.into()))
+                            .soft_wrap(true)
+                            .anchor_wrap_reflow(true)
+                            .font_size(px(16.0))
+                            .line_height(px(24.0))
+                            .size_full()
+                            .min_w(px(0.0)),
+                    ),
             )
             .child(when(
                 move || minimap_shown.get(),
                 || view().w(px(64.0)).flex_shrink_0().h_full(),
             ))
+    }
+
+    fn settle_layout(core: &mut Core<ApproxTextEngine>) -> Option<Arc<Keymap>> {
+        let mut keys = None;
+        let mut events = Vec::new();
+        for _ in 0..12 {
+            core.take_events(&mut events);
+            for event in events.drain(..) {
+                match event {
+                    JsEvent::LayoutListener {
+                        host,
+                        id,
+                        listener,
+                        frame,
+                    } => core.component_layout(host, id, &listener, frame),
+                    JsEvent::Event(id, EventKind::Layout, payload) => {
+                        core.component_event(id, EventKind::Layout, &payload);
+                    }
+                    _ => {}
+                }
+            }
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    if let MountItem::Keymap(keymap) = item {
+                        keys = Some(keymap);
+                    }
+                }
+            }
+        }
+        keys
     }
 
     #[test]
@@ -183,18 +226,7 @@ mod tests {
             },
         );
         core.mount_root(&Root::new::<ReflowFixture>(|| ()));
-        let mut keys: Option<Arc<Keymap>> = None;
-        for _ in 0..10 {
-            core.run_component_tasks();
-            if let Some(batch) = core.commit() {
-                for item in batch.items {
-                    if let MountItem::Keymap(keymap) = item {
-                        keys = Some(keymap);
-                    }
-                }
-            }
-        }
-        let keys = keys.unwrap();
+        let keys = settle_layout(&mut core).unwrap();
         let press = |core: &mut Core<ApproxTextEngine>, key| {
             let key = Keystroke::parse_with(key, false).unwrap();
             let command = keys.find(key, true, false).fired().unwrap();
@@ -203,21 +235,22 @@ mod tests {
                 EventKind::KeyCommand,
                 &EventPayload::Value(PayloadValue::Number(command as f64))
             ));
-            for _ in 0..10 {
-                core.run_component_tasks();
-                let _ = core.commit();
-            }
+            settle_layout(core);
         };
         press(&mut core, "f6");
         press(&mut core, "f7");
-        let (before, old_y) = REFLOW.with(Cell::take).unwrap();
+        let (before, old_y, old_width) = REFLOW.with(Cell::take).unwrap();
         assert!(
             before.start.line > 0,
             "the fixture must be below the first folded display rows"
         );
         press(&mut core, "f8");
         press(&mut core, "f7");
-        let (after, new_y) = REFLOW.with(Cell::take).unwrap();
+        let (after, new_y, new_width) = REFLOW.with(Cell::take).unwrap();
+        assert!(
+            old_width > 400.0 && ((old_width - new_width) - 64.0).abs() < 1.0,
+            "editor layout width must shrink by 64 DIP: {old_width} to {new_width}"
+        );
         assert_ne!(
             old_y, new_y,
             "the fixture must actually rewrap above the viewport"
