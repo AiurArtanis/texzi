@@ -1,94 +1,24 @@
-# texzi IME-01 Windows adapter patch
+# texzi Windows adapter
 
-Fixed source: longbridge/nsh224d9a795c7ac9d10d75750de9351adac5549675,
-Apache-2.0. UPSTREAM-MANIFEST.json covers 53 original src files by Git blob
-SHA256; Cargo.upstream.toml and LICENSE-APACHE preserve the original bytes.
-Cargo.toml expands workspace inheritance; README.md is the fixed upstream
-repository readme. No NSH version upgrade or new platform is introduced.
+The baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78eace7af23a9c1c72605c7ee46204f57f3e8e6/crates/nsh-platform-windows). `UPSTREAM-MANIFEST.json` records SHA-256 for the original source files. The upstream crate manifest and Apache-2.0 license are retained. The workspace resolves this adapter through its pinned NSH dependency graph.
 
-Only src/text_input.rs and src/richedit.rs change behavior. The c3f57bb first
-attempt still froze at N: no new process turn occurred after I. Preserve that
-failed candidate and its native/editor/render length logs.
+## Input and menus
 
-While composing, display-update notifications and ITextHost invalidation,
-view-change or caret callbacks now mark a preedit note and use the existing
-deduplicated notes timer. No services are queried inside the host callbacks;
-drawing, teardown and non-composition callbacks do not queue these updates.
-Each resulting native process turn re-reads the composed range.
-The existing report_composition deduplication remains. No committed ChangeText
-is emitted merely because preedit changed; final commit/cancel ordering stays.
-This addresses the white-box notification gap consistent with the observed
-frozen preedit, subject to new-package real Windows IME validation.
+- `richedit.rs` and `text_input.rs` schedule a deduplicated preedit observation when Windows TSF updates display text or caret geometry during composition. The host callback schedules work. The native field reads the composed span after the callback and publishes changes once. The v0.7.1 end/start ordering, programmatic-edit guard, and transparent glyph compositing remain active.
+- `chrome.rs`, `input.rs` and `window.rs` route a chosen native edit role to the focused editor without re-entering the menu accelerator. Bare Alt can open the custom shell menu through its F10 binding. Synthetic events are marked untranslated so that they cannot remove another key's text from the queue. Physical keys use v0.7.1's translation-capture and release routing.
+- A pointer press on an explicitly non-focusable trigger inside a semantic menu bar preserves the current field for native edit commands. Buttons and other keyboard stops retain v0.7.1 focus and Tab behavior.
+- A native popup tracked by a declared app window dispatches its selected edit role inside that window's input root.
+- A button that declares an OS-tracked popup preserves its window's current text field on a pointer press. This includes the Find query when the rich-format menu opens. Keyboard activation and in-tree popups with their own expanded state still use normal keyboard focus.
+- Set `TEXZI_TRACE_CHORD=1` for key dispatch stages, modifier and composition flags and handled status in this app's window. The trace omits key values, characters, document data and paths. `TEXZI_TRACE_IME=1` enables host-update and composition-length diagnostics. Both are opt-in.
 
-TEXZI_TRACE_IME=1 explicitly enables length/flag diagnostics. Default is off;
-no text contents are logged. The same opt-in marker traces editor/render/owner
-revision flow in the base/app adapter. It does not replace real screenshots.
-The editor sink width is separately corrected in nsh-base/src/editor/view.rs
-to avoid the one-pixel multiline input wrapping its native candidate caret.
-The sink's transparent text plus hidden native caret also suppresses compositing
-its native command-list image; offscreen recording/layout and focus stay active.
-This prevents the wider low-opacity carrier leaking stale transient glyphs after
-an authoritative document Undo, without removing any document/overlay text.
+## Presentation and fonts
 
-Backend crate-wide tests are not claimed: the original internal tests refer
-to upstream gallery resources outside this vendored source subset. Existing
-component tests and actual application/IME regressions are reported separately.
+- `render.rs`, `surface.rs`, and `lib.rs` expose `node_presentation` to the active engine task. It pairs mounted node geometry with the surface's successful swap-chain presentation counter. Texzi uses it to show the bounded first page before promoting a large document to its complete editable model. A return from Present records submission by the app.
+- The declared workbench has its own swap chain. Its frame counter survives swap-chain recreation, its visible-content requests invalidate that HWND, and its successful draws contribute paint and present times when `NSH_FPS` is enabled.
+- A declared window coalesces paints received while drawing or placing native children. A pending draw resumes after the active frame releases its swap chain, including when DXGI defers presentation. This keeps the workbench open when a focused byte-position field disappears with its paged document.
+- `text.rs` exposes the installed font family selected by the platform's normal DirectWrite family lookup for the settings preview.
+- A rich editor that virtualizes its blocks registers a direct scroll child for Windows indicator drags. The thumb reports its absolute position along the captured track. The editor mounts the destination, applies the offset, and releases the old page after the Windows scroll view reports its actual position. Wheels, small rich documents and other scroll views retain the v0.7.1 paths.
+- `scroll/rich_thumb.rs` accepts a mounted target only for the same receiver and the most recent grab. Normal release permits the final target. Capture loss, subsequent wheel/keyboard/pointer input, an explicit scroll command, or a resize/DPI change cancels it. Core's relative layout corrections still adjust and report the current offset while the requested page mounts. Native thumb movement preserves Core's ordinary scroll-command sequence.
+- On application, Windows resolves the requested fraction against the scroll view's current measured travel. Its receipt carries the actual offset in points.
 
-## Native application edit-menu relay
-
-The application now supplies a native menu. An edit MenuRole synthesizes the
-focused control's Ctrl key. Relaying it through the ordinary input entry used
-to match the same native accelerator again before reaching a plain input,
-forming a recursive menu -> key -> menu cycle. `input::menu_key` uses the same
-key pipeline but skips only this second application-menu accelerator lookup;
-the engine keymap and focused text/selectable controls remain in their original
-order. Ordinary hardware input is unchanged. `chrome::choose` calls this relay
-for edit roles. No clipboard read/write API is added or run by this change.
-The upstream manifest is retained as the original source inventory; changed
-files are input.rs and chrome.rs. Real window/menu validation is separate from
-source review and compilation. This does not modify file IO or the blocked
-T07 rename implementation.
-
-## CHORD-IME-01 opt-in synchronous diagnosis
-
-`TEXZI_TRACE_CHORD=1` explicitly enables diagnostic logs; the default is off.
-This is observation only: no pre-IME shortcut branch, consumption change,
-Translate/Dispatch reordering, IME setting change or new dependency is added.
-
-`window.rs` records KeyDown flags before the existing `TranslateMessage` call
-and after the existing `input::key` dispatch, only for this process's own NSH
-windows validated by `data(hwnd)`. Records contain Unix-epoch UTC microseconds,
-window handle, process-key/modifier/repeat flags, handled-known/handled flags
-and read-only native composition flags. No VK value, scan code, character,
-document text or path is logged. `text_input.rs` reads focus without invoking
-the ordinary stale-focus repair path; `richedit.rs` exposes only its existing
-host composition boolean, so deferred input processing can be distinguished
-from the host's synchronous notification state. No borrow spans key dispatch.
-
-The Shell uses the same UTC-microsecond basis to record prefix begin/rejection,
-continuation registration, actual known/unknown continuation hits and timeout.
-Only state flags and a static command ID are recorded. Registration is an
-engine-side observation, not proof that Windows has received the resulting
-mounted keymap. Native records do not reveal the original key behind
-VK_PROCESSKEY, and UTC timestamps are subject to system-clock adjustment.
-These diagnostics do not establish a CHORD-IME-01 root cause or claim a fix;
-the next fixed package still requires targeted real Windows/IME observation.
-
-## Viewport-bounded rich-editor wheel
-
-The Windows input router preserves the native hit-test, latching, modifier
-and delta handling. The tagged virtual rich-editor scroll delegates its
-wheel offset to the editor. It keeps the previous rows through a Windows
-mount fence and advances only the latest offset. Other wheel targets keep
-the existing native scroll path.
-
-While a virtual rich editor is attached to a surface, the mounter suspends
-NSH content culling there. The editor bounds both row windows itself. The
-mounter restores the ordinary policy when the last such editor detaches.
-
-## Settings font preview
-
-`installed_font_family` resolves the primary installed family in the source
-editor's stack at regular weight. It shares the DirectWrite platform family
-parsing, aliases and lookup with ordinary text rendering. Texzi uses it to
-show the active family, while DirectWrite retains per-glyph fallback.
+The native scheduling regression is `app_window::tests::a_nested_workbench_paint_wakes_the_window_after_the_active_frame`. To run it on Windows, copy `examples/gallery/fonts/Pacifico-Regular.ttf` from the pinned NSH source to the same path in an isolated texzi checkout. Two upstream unit tests embed that gallery asset when compiling the platform test binary. Run `cargo test --locked -p nsh-platform-windows --lib app_window::tests::a_nested_workbench_paint_wakes_the_window_after_the_active_frame -- --exact --test-threads=1`.

@@ -53,6 +53,10 @@
 //!   window on another virtual desktop ([`crate::presence`], followed from
 //!   the system's notifications), and from the moment the session may end
 //!   (signing out, shutting down: [`crate::session`]);
+//! - the wake count (`wakeCount()`): one more on every
+//!   `WM_POWERBROADCAST` with `PBT_APMRESUMEAUTOMATIC` ([`woke`]), which
+//!   top-level windows get on every resume (an embedded surface's root
+//!   window passes it on);
 //! - the time zone (`localeSettings()`'s): the zone of the system's setting
 //!   (`GetDynamicTimeZoneInformation`, its Windows key name) by its IANA
 //!   name, which the ICU Windows ships knows
@@ -133,7 +137,7 @@ use crate::{
     input::{Cursor, KeyEvent, PointerKind},
     render::{DrawCx, rect_f},
     surface::Surface,
-    view::{Hosted, ItemPointer},
+    view::{Hosted, ItemPointer, NshView},
 };
 
 /// Fades of overlays, in seconds.
@@ -238,6 +242,7 @@ pub(crate) fn watch_environment(surface: &Rc<Surface>) {
 /// A system setting changed (`WM_SETTINGCHANGE`, `WM_THEMECHANGED`,
 /// `WM_SYSCOLORCHANGE`, `WM_DWMCOLORIZATIONCOLORCHANGED`).
 pub(crate) fn settings_changed(surface: &Rc<Surface>) {
+    crate::text::invalidate_rendering_params();
     refresh_accent();
     update(surface, settings());
     // The taskbar's colors may have changed: a template tray icon follows.
@@ -371,6 +376,13 @@ pub(crate) fn app_activated(surface: &Surface, active: bool) {
 pub(crate) fn lifecycle_changed(surface: &Surface) {
     let mut env: Environment = surface.environment.get();
     env.lifecycle = lifecycle(surface, env.lifecycle);
+    surface.set_environment(env);
+}
+
+/// The system woke from sleep: `surface` counts it (`wakeCount()`).
+pub(crate) fn woke(surface: &Surface) {
+    let mut env: Environment = surface.environment.get();
+    env.wake_count = env.wake_count.wrapping_add(1);
     surface.set_environment(env);
 }
 
@@ -598,22 +610,33 @@ fn reading_layout_rtl(value: &str) -> bool {
 /// The OS version (major, minor), as `RtlGetVersion` has it: unlike
 /// `GetVersionEx` it does not depend on the executable's manifest.
 fn os_version() -> (u16, u16) {
+    let (major, minor, _) = os_info();
+    (major, minor)
+}
+
+/// The OS build number (Windows 11's from 22000), read with
+/// [`os_version`].
+pub(crate) fn os_build() -> u32 {
+    os_info().2
+}
+
+fn os_info() -> (u16, u16, u32) {
     thread_local! {
-        static VERSION: (u16, u16) = read_os_version();
+        static VERSION: (u16, u16, u32) = read_os_version();
     }
     VERSION.with(|v| *v)
 }
 
-fn read_os_version() -> (u16, u16) {
+fn read_os_version() -> (u16, u16, u32) {
     type RtlGetVersion = unsafe extern "system" fn(*mut OSVERSIONINFOW) -> i32;
     // SAFETY: ntdll is loaded in every process; `RtlGetVersion` has the
     // signature above and fills the structure whose size is set.
     unsafe {
         let Ok(ntdll) = GetModuleHandleW(w!("ntdll.dll")) else {
-            return (0, 0);
+            return (0, 0, 0);
         };
         let Some(proc) = GetProcAddress(ntdll, s!("RtlGetVersion")) else {
-            return (0, 0);
+            return (0, 0, 0);
         };
         let get: RtlGetVersion = std::mem::transmute(proc);
         let mut info = OSVERSIONINFOW {
@@ -621,11 +644,12 @@ fn read_os_version() -> (u16, u16) {
             ..Default::default()
         };
         if get(&mut info) != 0 {
-            return (0, 0);
+            return (0, 0, 0);
         }
         (
             info.dwMajorVersion.min(u16::MAX as u32) as u16,
             info.dwMinorVersion.min(u16::MAX as u32) as u16,
+            info.dwBuildNumber,
         )
     }
 }
@@ -680,7 +704,8 @@ fn accent(dark: bool) -> Color {
 
 /// Opens `url` with the app registered for its scheme (`ShellExecuteW`'s
 /// `open`): whether one took it. The URL passed `nsh_core::open_url`'s
-/// check, so it names no file or program to run.
+/// check, so it names no file or program to run: `ShellExecuteW` would
+/// run one given its path, which is why the check takes no `C:/…`.
 pub(crate) fn open_url(url: &str) -> bool {
     // SAFETY: plain call with valid NUL-terminated strings.
     let instance = unsafe {
@@ -697,14 +722,25 @@ pub(crate) fn open_url(url: &str) -> bool {
     instance.0 as isize > 32
 }
 
+/// Reports a clipboard write's result (`clipboard_write_result`).
+fn clipboard_written(surface: &Rc<Surface>, written: bool) {
+    surface.event(
+        ROOT_ID,
+        EventKind::ClipboardWrite,
+        EventPayload::Map(vec![("written", PayloadValue::Bool(written))]),
+    );
+}
+
 /// A command not addressed to a kind of view.
 pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     match command {
-        Command::Dialog(dialog) => show_dialog(surface, dialog),
+        Command::CloseDialog(dialog) => close_dialog(surface, *dialog),
         Command::SetClipboard(text) => {
-            if !set_clipboard_text(text) {
+            let written = set_clipboard_text(text);
+            if !written {
                 log::debug!("windows: cannot set the clipboard");
             }
+            clipboard_written(surface, written);
         }
         Command::ReadClipboard { id, has_only } => {
             let has = clipboard_has_text();
@@ -718,6 +754,26 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
                 EventKind::Clipboard,
                 clipboard_answer(*id, has, text),
             );
+        }
+        Command::SetClipboardItem(item) => {
+            let units: Vec<u16> = item.text.encode_utf16().chain(Some(0)).collect();
+            let text: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+            let unicode = u32::from(windows::Win32::System::Ole::CF_UNICODETEXT.0);
+            let mut formats = vec![(unicode, text)];
+            if let Some(html) = &item.html {
+                let mut html = clipboard::cf_html(html).into_bytes();
+                html.push(0);
+                formats.push((html_format(), html));
+            }
+            let formats: Vec<(u32, &[u8])> = formats
+                .iter()
+                .map(|(kind, bytes)| (*kind, bytes.as_slice()))
+                .collect();
+            let written = set_clipboard_formats(&formats);
+            if !written {
+                log::debug!("windows: cannot set the clipboard");
+            }
+            clipboard_written(surface, written);
         }
         Command::SetClipboardImage(uri) => match clipboard::decode_data_uri(uri) {
             Some(("image/png", bytes)) => {
@@ -749,6 +805,21 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::FileRequest { id, request } => {
             crate::file_requests::request(surface, *id, request)
         }
+        Command::RenderCanvas {
+            id,
+            drawing,
+            width,
+            height,
+            scale,
+            format,
+        } => crate::canvas::render_offscreen(
+            surface,
+            *id,
+            drawing.clone(),
+            (*width, *height),
+            *scale,
+            *format,
+        ),
         Command::OpenUrl { id, url } => {
             let opened = open_url(url);
             surface.event(
@@ -792,7 +863,10 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::StatusBar(_)
         | Command::SetStatusBar(_)
         | Command::LayoutAnimation(_)
-        | Command::CancelPress => {}
+        | Command::CancelPress
+        // The app's address: this platform keeps none.
+        | Command::SetAppUrl(_)
+        | Command::PushAppUrl(_) => {}
         other => log::debug!("windows: command {other:?} is not supported"),
     }
 }
@@ -923,16 +997,63 @@ pub(crate) fn clear(surface: &Surface) {
         removed
     });
     for overlay in removed {
-        surface.root.remove_native(&overlay.kind.item());
+        if let Some(root) = overlay_root(surface, &overlay.kind) {
+            root.remove_native(&overlay.kind.item());
+        }
     }
 }
 
-/// Hosts the overlay where it goes in a `width` × `height` surface.
+/// The root view overlay `kind` is hosted in: the window that presented
+/// it, else the main window's (the app root).
+fn overlay_root(surface: &Surface, kind: &OverlayKind) -> Option<NshView> {
+    match kind {
+        OverlayKind::Dialog(d) if d.window != ROOT_ID => {
+            crate::app_window::root_view(surface, d.window)
+        }
+        _ => Some(surface.root.clone()),
+    }
+}
+
+/// Hosts the overlay where it goes in a `width` × `height` surface; one a
+/// window presented fills that window.
 fn place(surface: &Surface, kind: &OverlayKind, width: f32, height: f32) {
+    // Its window is gone: nothing to place it over.
+    let Some(root) = overlay_root(surface, kind) else {
+        return;
+    };
+    let (width, height) = match kind {
+        OverlayKind::Dialog(d) if d.window != ROOT_ID => {
+            let size = root.state().frame.size;
+            (size.width.0, size.height.0)
+        }
+        _ => (width, height),
+    };
     let r = match kind {
         OverlayKind::Dialog(_) => rect(0.0, 0.0, width, height),
     };
-    surface.root.set_native(&kind.item(), r);
+    root.set_native(&kind.item(), r);
+}
+
+/// The window `id` is `width` × `height` points now: the dialogs it
+/// presented follow.
+pub(crate) fn window_resized(surface: &Surface, id: NodeId, width: f32, height: f32) {
+    let ours: Vec<Rc<DialogItem>> = OVERLAYS.with(|o| {
+        o.borrow()
+            .iter()
+            .filter_map(|o| match &o.kind {
+                OverlayKind::Dialog(d) if o.key == surface.key() && d.window == id => {
+                    Some(d.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    });
+    for d in ours {
+        let kind = OverlayKind::Dialog(d);
+        if let Some(root) = overlay_root(surface, &kind) {
+            root.set_native(&kind.item(), rect(0.0, 0.0, width, height));
+        }
+    }
 }
 
 /// Hosts a new overlay over `surface`'s views and fades it in.
@@ -958,6 +1079,43 @@ fn add_overlay(surface: &Rc<Surface>, serial: u64, kind: OverlayKind) {
     }
 }
 
+/// Window `id` is closing: the dialogs it showed are dismissed (`-1`), so
+/// nothing is left over another window or takes its keys.
+pub(crate) fn window_closing(surface: &Surface, id: NodeId) {
+    let ours: Vec<Rc<DialogItem>> = OVERLAYS.with(|overlays| {
+        overlays
+            .borrow()
+            .iter()
+            .filter_map(|overlay| match &overlay.kind {
+                OverlayKind::Dialog(d) if overlay.key == surface.key() && d.window == id => {
+                    Some(d.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    });
+    for dialog in ours {
+        dialog.answer(-1);
+    }
+}
+
+/// Takes back the dialog [`show_dialog`] showed as `id`
+/// (`Command::CloseDialog`): it fades out as an answered one does, and
+/// reports nothing (the core answered it).
+fn close_dialog(surface: &Rc<Surface>, id: u32) {
+    let serial = OVERLAYS.with(|o| {
+        o.borrow().iter().find_map(|o| match &o.kind {
+            OverlayKind::Dialog(d) if o.key == surface.key() && d.id == id && !d.closing.get() => {
+                Some(o.serial)
+            }
+            _ => None,
+        })
+    });
+    if let Some(serial) = serial {
+        remove_overlay(surface, serial);
+    }
+}
+
 /// Fades overlay `serial` out, then removes it. No-op when it is gone.
 fn remove_overlay(surface: &Rc<Surface>, serial: u64) {
     let Some((_, kind)) = find(serial) else {
@@ -979,8 +1137,10 @@ fn drop_overlay(surface: &Surface, serial: u64) {
         let i = o.iter().position(|o| o.serial == serial)?;
         Some(o.remove(i))
     });
-    if let Some(overlay) = removed {
-        surface.root.remove_native(&overlay.kind.item());
+    if let Some(overlay) = removed
+        && let Some(root) = overlay_root(surface, &overlay.kind)
+    {
+        root.remove_native(&overlay.kind.item());
     }
 }
 
@@ -1000,7 +1160,9 @@ fn fade(surface: &Rc<Surface>, serial: u64, to: f32, secs: f64, remove: bool) {
         let t = ((now - t0) / secs).clamp(0.0, 1.0) as f32;
         let eased = 1.0 - (1.0 - t) * (1.0 - t);
         kind.opacity().set(from + (to - from) * eased);
-        surface.root.changed();
+        if let Some(root) = overlay_root(surface, &kind) {
+            root.changed();
+        }
         if t < 1.0 {
             // A newer fade took over (a dialog answered while fading in).
             return !matches!(&kind, OverlayKind::Dialog(d) if d.closing.get() && !remove);
@@ -1530,6 +1692,8 @@ struct DialogLayout {
 /// An alert or action sheet, hosted by the root over the whole surface
 /// (it takes every pointer event: the dialog is modal).
 struct DialogItem {
+    /// The window of the app's own showing it (`ROOT_ID`: the main one).
+    window: NodeId,
     key: u64,
     /// The UI thread of the surface: the answer is posted back to it.
     ui: crate::window::UiThread,
@@ -1728,7 +1892,7 @@ impl Hosted for DialogItem {
         }
         if let (Some(footer), Some(card)) = (g.footer, g.cards.first()) {
             // The footer's band, its bottom corners the card's.
-            cx.push_clip_rounded(*card, [RADIUS; 4]);
+            cx.push_clip_rounded_shapes(*card, [RADIUS; 4]);
             // SAFETY: a COM call between BeginDraw and EndDraw.
             unsafe {
                 cx.dc.FillRectangle(
@@ -1903,7 +2067,7 @@ impl Hosted for DialogItem {
 /// the bottom (an action sheet) over a dimmed backdrop. Answers the
 /// button's index; -1 when dismissed (a click outside or Escape, when
 /// cancelable); Escape presses the cancel button when there is one.
-fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
+pub(crate) fn show_dialog(surface: &Rc<Surface>, window: NodeId, dialog: &Dialog) {
     // `AlertDialog` always brings the app's actions (it rejects none): no
     // label of NSH's own.
     let buttons = &dialog.buttons[..];
@@ -1955,6 +2119,7 @@ fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
     let default = default_button(&styles, sheet);
     let serial = next_serial();
     let item = Rc::new(DialogItem {
+        window,
         key: surface.key(),
         ui: surface.ui_thread(),
         serial,
@@ -2019,14 +2184,36 @@ pub(crate) fn dialog_point(
     }
 }
 
+/// Whether a dialog shows over the app: it owns the keyboard, so a view
+/// under it hears no key releases either.
+pub(crate) fn dialog_shown(surface: &Surface) -> bool {
+    // The dialog is modal over the window that showed it, not the app:
+    // another window's keyboard is its own.
+    let window = surface.input_root().id();
+    OVERLAYS.with(|overlays| {
+        overlays.borrow().iter().any(|overlay| {
+            overlay.key == surface.key()
+                && matches!(&overlay.kind, OverlayKind::Dialog(d)
+                    if d.window == window && !d.closing.get())
+        })
+    })
+}
+
 /// Keys while a dialog shows over the app (it is modal: every key goes to
 /// it). Enter and Space press the focused button (the default action at
 /// first), Escape cancels, Tab and the arrows move between the buttons.
 /// True when handled.
 pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
+    // The key belongs to the window that received it: a dialog in another
+    // window does not hear it.
+    let window = surface.input_root().id();
     let top = OVERLAYS.with(|o| {
         o.borrow().iter().rev().find_map(|o| match &o.kind {
-            OverlayKind::Dialog(d) if o.key == surface.key() && !d.closing.get() => Some(d.clone()),
+            OverlayKind::Dialog(d)
+                if o.key == surface.key() && d.window == window && !d.closing.get() =>
+            {
+                Some(d.clone())
+            }
             _ => None,
         })
     });
@@ -2155,8 +2342,21 @@ fn clipboard_bytes(format: u32) -> Option<Vec<u8>> {
     }
 }
 
+/// Windows' `HTML Format` (CF_HTML).
+fn html_format() -> u32 {
+    use windows::{Win32::System::DataExchange::RegisterClipboardFormatW, core::w};
+    // SAFETY: a plain registration of a constant name.
+    unsafe { RegisterClipboardFormatW(w!("HTML Format")) }
+}
+
 /// Puts `bytes` on the clipboard as `format`, replacing what it holds.
 fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> bool {
+    set_clipboard_formats(&[(format, bytes)])
+}
+
+/// Puts each of `formats`' bytes on the clipboard as its format, together,
+/// replacing what it holds: the same content in several formats.
+fn set_clipboard_formats(formats: &[(u32, &[u8])]) -> bool {
     use windows::Win32::{
         Foundation::{GlobalFree, HANDLE, HGLOBAL},
         System::{
@@ -2164,24 +2364,28 @@ fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> bool {
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
         },
     };
-    // SAFETY: as in `set_clipboard_text`: the memory is the clipboard's once
-    // `SetClipboardData` succeeds, freed here otherwise.
+    // SAFETY: as in `set_clipboard_text`: each format's memory is the
+    // clipboard's once `SetClipboardData` succeeds, freed here otherwise.
     unsafe {
         if OpenClipboard(None).is_err() {
             return false;
         }
-        let mut ok = false;
-        if EmptyClipboard().is_ok()
-            && let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1))
-        {
-            let ptr = GlobalLock(memory) as *mut u8;
-            if !ptr.is_null() {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
-                let _ = GlobalUnlock(memory);
-                ok = SetClipboardData(format, Some(HANDLE(memory.0))).is_ok();
-            }
+        let mut ok = EmptyClipboard().is_ok();
+        for &(format, bytes) in formats {
             if !ok {
-                let _ = GlobalFree(Some(HGLOBAL(memory.0)));
+                break;
+            }
+            ok = false;
+            if let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1)) {
+                let ptr = GlobalLock(memory) as *mut u8;
+                if !ptr.is_null() {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+                    let _ = GlobalUnlock(memory);
+                    ok = SetClipboardData(format, Some(HANDLE(memory.0))).is_ok();
+                }
+                if !ok {
+                    let _ = GlobalFree(Some(HGLOBAL(memory.0)));
+                }
             }
         }
         let _ = CloseClipboard();

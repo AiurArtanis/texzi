@@ -116,7 +116,7 @@ parts! {
     /// The row of a code block's actions (`codeBlockActions`), floating
     /// over its top right corner (only with actions).
     code_block_header => CodeBlockHeader,
-    /// The horizontal scroll view of a code block's code.
+    /// The horizontal scroll view of unwrapped code (`wrap: false`).
     code_block_scroll => CodeBlockScroll,
     /// The code of a code block (monospace, as written).
     code_block_code => CodeBlockCode,
@@ -135,6 +135,9 @@ parts! {
     /// Highlighted text (`<mark>`; on the document's color when it gives
     /// one).
     highlight => Highlight,
+    /// Text in styles the document gives it (`<span style="color: …">`,
+    /// `<font color>`; in the document's color when it gives one).
+    text_style => TextStyle,
     /// Superscript (smaller).
     superscript => Superscript,
     /// Subscript (smaller).
@@ -160,6 +163,9 @@ parts! {
     /// The horizontal scroll view of a table's cells: they scroll when the
     /// columns cannot shrink further.
     table_scroll => TableScroll,
+    /// The grid of a table's cells, in its scroll view. It draws the
+    /// table's top and left lines, each cell its right and bottom ones.
+    table_grid => TableGrid,
     /// The header row of a table, after `tableRow`.
     table_head => TableHead,
     /// Every row of a table: a view behind its cells, for backgrounds and

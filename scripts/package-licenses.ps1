@@ -15,6 +15,9 @@ function Copy-DependencyLicenses {
         Get-ChildItem -LiteralPath $root -File |
             Where-Object Name -Match '^(LICENSE|LICENCE|COPYING|NOTICE|COPYRIGHT)' |
             Copy-Item -Destination $folder
+        if ($package.name -eq 'nsh-base') {
+            Copy-Item -LiteralPath (Join-Path $root 'fonts/katex.LICENSE.txt') -Destination $folder
+        }
         if ($package.name -eq 'mac') {
             Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $folder
             Copy-Item -LiteralPath $ProjectLicense -Destination (Join-Path $folder 'Apache-2.0.txt')

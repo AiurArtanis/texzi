@@ -298,13 +298,72 @@ impl DomParser {
         Slice::max_open(cx.finish().into_fragment(), true)
     }
 
+    /// Parses an HTML fragment for content insertion (Tiptap's
+    /// `createNodeFromContent` with `slice: true` and
+    /// `preserveWhitespace: 'full'`), wrapping in `<body>` so leading and
+    /// trailing whitespace survives HTML parsing and stripping inter-tag
+    /// formatting whitespace (`^(\n\s\s|\n)$`) as Tiptap's `elementFromString`.
+    pub fn parse_insert_fragment(&self, html: &str) -> Fragment {
+        let wrapped = format!("<body>{html}</body>");
+        let mut body = self.read_html(&wrapped);
+        strip_insert_whitespace(&mut body);
+        let options = ParseOptions {
+            preserve_whitespace: Some(Whitespace::Full),
+            ..Default::default()
+        };
+        let mut cx = ParseContext::new(self, &options, true, false);
+        cx.add_all(&body, Vec::new());
+        cx.finish().into_fragment()
+    }
+
     /// Pasted `html` as the slice that fits at `context` (ProseMirror's
     /// `parseFromClipboard` for HTML): parsed in that context, sibling
     /// nodes wrapped so they fit where they land together, then opened as
     /// deep as non-isolating nodes allow. A trailing `<br>` of a block is
     /// dropped as browsers do.
     pub fn parse_with_context(&self, html: &str, context: &ResolvedPos) -> Slice {
+        self.parse_body_with_context(self.read_html(html), context)
+    }
+
+    /// Pasted `html` as the slice that fits at `context` (ProseMirror's
+    /// `parseFromClipboard` for HTML). HTML an editor copied
+    /// ([`super::DomSerializer::serialize_for_clipboard`]) carries the
+    /// slice's open depths and context in `data-pm-slice`: it is read
+    /// back as that slice, its whitespace kept, wrapped in its context
+    /// again. Other HTML is read as [`DomParser::parse_with_context`]
+    /// reads it.
+    pub(crate) fn parse_from_clipboard(&self, html: &str, context: &ResolvedPos) -> Slice {
         let body = self.read_html(html);
+        let data = slice_element(&body)
+            .and_then(|el| el.attr("data-pm-slice"))
+            .and_then(slice_data)
+            .map(|(start, end, wrappers, nodes)| (start, end, wrappers, nodes.to_owned()));
+        let Some((open_start, open_end, wrappers, nodes)) = data else {
+            return self.parse_body_with_context(body, context);
+        };
+        let mut dom = &body;
+        for _ in 0..wrappers {
+            match dom.children().iter().find_map(DomNode::as_element) {
+                Some(child) => dom = child,
+                None => break,
+            }
+        }
+        let options = ParseOptions {
+            preserve_whitespace: Some(Whitespace::Preserve),
+            context: Some(context.clone()),
+            ..Default::default()
+        };
+        let mut cx = ParseContext::new(self, &options, true, false);
+        cx.add_all(dom, Vec::new());
+        let slice = Slice::max_open(cx.finish().into_fragment(), true);
+        add_context(
+            close_slice(slice, open_start, open_end),
+            &nodes,
+            &self.schema,
+        )
+    }
+
+    fn parse_body_with_context(&self, body: DomElement, context: &ResolvedPos) -> Slice {
         let options = ParseOptions {
             context: Some(context.clone()),
             ..Default::default()
@@ -340,12 +399,14 @@ impl DomParser {
         slice
     }
 
-    /// `html` read into an owned tree: its body, lists normalized.
+    /// `html` read into an owned tree: its body, lists normalized and
+    /// `<colgroup><col width>` propagated onto cells without explicit widths.
     fn read_html(&self, html: &str) -> DomElement {
         let mut body = read_body(html);
         if self.normalize_lists {
             normalize_lists(&mut body);
         }
+        propagate_colgroup_widths(&mut body);
         body
     }
 
@@ -457,6 +518,12 @@ fn parsed_attrs(target: &Target, dom: &DomElement, attrs: Option<Attrs>) -> Opti
             Some(AttrParse::Skip) => None,
         };
         let Some(raw) = raw else { continue };
+        if let Some(allowed) = &spec.allowed_values {
+            let trimmed = raw.trim();
+            if !allowed.iter().any(|v| v == trimmed) {
+                continue;
+            }
+        }
         let value = match spec.validate {
             Some(kind @ (AttrType::Number | AttrType::Boolean)) => typed_value(kind, &raw),
             _ => Some(value_from_string(&raw)),
@@ -602,6 +669,89 @@ fn convert_children(node: &Handle, depth: usize) -> Vec<DomNode> {
             _ => None,
         })
         .collect()
+}
+
+fn is_stripped_insert_ws(text: &str) -> bool {
+    if text == "\n" {
+        return true;
+    }
+    let mut chars = text.chars();
+    matches!(
+        (chars.next(), chars.next(), chars.next(), chars.next()),
+        (Some('\n'), Some(a), Some(b), None) if a.is_whitespace() && b.is_whitespace()
+    )
+}
+
+fn strip_insert_whitespace(el: &mut DomElement) {
+    el.children.retain(|child| match child {
+        DomNode::Text(text) => !is_stripped_insert_ws(text),
+        _ => true,
+    });
+    for child in &mut el.children {
+        if let DomNode::Element(child_el) = child {
+            strip_insert_whitespace(child_el);
+        }
+    }
+}
+
+/// Propagates `<colgroup> > <col width="...">` values onto each row's
+/// `<td>`/`<th>` elements that lack an explicit `colwidth` or `data-colwidth`
+/// attribute (Tiptap's `parseColgroupWidth`), without crossing into nested
+/// tables.
+fn propagate_colgroup_widths(el: &mut DomElement) {
+    if el.tag == "table" {
+        let mut col_widths: Vec<Option<String>> = Vec::new();
+        for child in &el.children {
+            if let DomNode::Element(cg) = child
+                && cg.tag == "colgroup"
+            {
+                for col in &cg.children {
+                    if let DomNode::Element(c) = col
+                        && c.tag == "col"
+                    {
+                        col_widths.push(c.attr("width").map(str::to_owned));
+                    }
+                }
+            }
+        }
+        if col_widths.iter().any(Option::is_some) {
+            apply_colgroup_to_rows(&mut el.children, &col_widths);
+        }
+    }
+    for child in &mut el.children {
+        if let DomNode::Element(e) = child {
+            propagate_colgroup_widths(e);
+        }
+    }
+}
+
+fn apply_colgroup_to_rows(children: &mut [DomNode], col_widths: &[Option<String>]) {
+    for child in children {
+        let DomNode::Element(el) = child else {
+            continue;
+        };
+        match el.tag.as_str() {
+            "thead" | "tbody" | "tfoot" => apply_colgroup_to_rows(&mut el.children, col_widths),
+            "tr" => {
+                let mut cell_index = 0;
+                for cell in &mut el.children {
+                    let DomNode::Element(cell_el) = cell else {
+                        continue;
+                    };
+                    if matches!(cell_el.tag.as_str(), "td" | "th") {
+                        if cell_el.attr("data-colwidth").is_none()
+                            && cell_el.attr("colwidth").is_none()
+                            && let Some(Some(width)) = col_widths.get(cell_index)
+                        {
+                            cell_el.attrs.push(("data-colwidth".into(), width.clone()));
+                        }
+                        cell_index += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Moves lists placed directly in a list into the item before them, as
@@ -1116,7 +1266,22 @@ impl<'p> ParseContext<'p> {
                 }
             }
             Target::Mark(ty) => {
-                if let Ok(mark) = ty.create(attrs) {
+                let merged_attrs = if ty.name() == "textStyle"
+                    && let Some(outer) = marks.iter().rev().find(|m| m.ty() == ty)
+                {
+                    let mut combined = outer.attrs().clone();
+                    if let Some(inner) = attrs {
+                        for (k, v) in inner {
+                            if !v.is_null() {
+                                combined.insert(k, v);
+                            }
+                        }
+                    }
+                    Some(combined)
+                } else {
+                    attrs
+                };
+                if let Ok(mark) = ty.create(merged_attrs) {
                     marks.push(mark);
                 }
             }
@@ -1236,7 +1401,7 @@ impl<'p> ParseContext<'p> {
         let top = &mut self.nodes[open];
         top.mtch = top.mtch.as_ref().and_then(|m| m.match_type(&ty));
         let mut options = ws_options_for(Some(&ty), preserve, top.options);
-        if top.options & OPT_OPEN_LEFT != 0 && top.content.is_empty() {
+        if top.options & OPT_OPEN_LEFT != 0 && top.content.is_empty() && !ty.spec().isolating {
             options |= OPT_OPEN_LEFT;
         }
         let mut apply: Vec<Mark> = Vec::new();
@@ -1561,6 +1726,99 @@ fn close_range(
         fragment.child_count() - 1
     };
     fragment.replace_child(index, node.copy(inner))
+}
+
+/// The first element (in document order) with a `data-pm-slice`.
+fn slice_element(el: &DomElement) -> Option<&DomElement> {
+    el.children()
+        .iter()
+        .filter_map(DomNode::as_element)
+        .find_map(|child| {
+            if child.attr("data-pm-slice").is_some() {
+                Some(child)
+            } else {
+                slice_element(child)
+            }
+        })
+}
+
+/// What a `data-pm-slice` records, read as ProseMirror reads it
+/// (`/^(\d+) (\d+)(?: -(\d+))? (.*)/`): the slice's open depths, how many
+/// table wrappers were added around it, and its context as JSON
+/// (`"1 1 -2 [\"listItem\",null]"`). `None` when it does not match: the
+/// HTML is then read as any other.
+fn slice_data(data: &str) -> Option<(usize, usize, usize, &str)> {
+    /// The leading ASCII digits of `s` as a number (saturating, as a
+    /// JS number never fails) and what follows them.
+    fn number(s: &str) -> Option<(usize, &str)> {
+        let len = s.bytes().take_while(u8::is_ascii_digit).count();
+        if len == 0 {
+            return None;
+        }
+        let n = s[..len].bytes().fold(0usize, |n, d| {
+            n.saturating_mul(10).saturating_add(usize::from(d - b'0'))
+        });
+        Some((n, &s[len..]))
+    }
+    let (open_start, rest) = number(data)?;
+    let (open_end, rest) = number(rest.strip_prefix(' ')?)?;
+    // ` -N ` counts wrappers only when a space follows it; otherwise it
+    // is the start of the context, as the regular expression backtracks.
+    let (wrappers, context) = match rest
+        .strip_prefix(" -")
+        .and_then(number)
+        .and_then(|(n, after)| Some((n, after.strip_prefix(' ')?)))
+    {
+        Some(found) => found,
+        None => (0, rest.strip_prefix(' ')?),
+    };
+    // `.` stops at a line terminator.
+    let context = context
+        .split(['\n', '\r', '\u{2028}', '\u{2029}'])
+        .next()
+        .unwrap_or_default();
+    Some((open_start, open_end, wrappers, context))
+}
+
+/// `slice` wrapped in the nodes of `context` (`[type, attrs, ...]`, the
+/// outermost first), each opening it one deeper (ProseMirror's
+/// `addContext`). Context that is no JSON array leaves the slice as it
+/// is; a type the schema lacks, or one with required attributes, stops
+/// the wrapping.
+fn add_context(slice: Slice, context: &str, schema: &Schema) -> Slice {
+    if slice.size() == 0 {
+        return slice;
+    }
+    let Ok(Value::Array(array)) = serde_json::from_str::<Value>(context) else {
+        return slice;
+    };
+    let Slice {
+        mut content,
+        mut open_start,
+        mut open_end,
+    } = slice;
+    // From the innermost pair out: `array.length - 2`, `- 4`, ...
+    let mut i = array.len();
+    while i >= 2 {
+        i -= 2;
+        let Some(ty) = array[i].as_str().and_then(|name| schema.node_type(name)) else {
+            break;
+        };
+        if ty.has_required_attrs() {
+            break;
+        }
+        let attrs = match array.get(i + 1) {
+            Some(Value::Object(map)) => Some(map.clone().into_iter().collect()),
+            _ => None,
+        };
+        let Ok(node) = ty.create(attrs, content.clone(), Vec::new()) else {
+            break;
+        };
+        content = Fragment::from(node);
+        open_start += 1;
+        open_end += 1;
+    }
+    Slice::new(content, open_start, open_end)
 }
 
 /// `slice` closed to `open_start` / `open_end` (ProseMirror's `closeSlice`).

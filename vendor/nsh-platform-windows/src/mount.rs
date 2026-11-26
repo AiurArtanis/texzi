@@ -6,7 +6,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use nsh_core::{Command, LayoutAnimation, MountItem, NodeId, ROOT_ID, ViewKind};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::{surface::Surface, view::NshView};
 
@@ -49,8 +49,6 @@ pub(crate) struct Mounter {
     pub(crate) layout_animation: Option<LayoutAnimation>,
     /// The surface lays out right to left.
     pub(crate) rtl: bool,
-    virtual_rich_scrolls: FxHashSet<NodeId>,
-    virtual_rich_culling_suspended: bool,
 }
 
 impl Mounter {
@@ -62,8 +60,6 @@ impl Mounter {
             root,
             layout_animation: None,
             rtl: false,
-            virtual_rich_scrolls: FxHashSet::default(),
-            virtual_rich_culling_suspended: false,
         }
     }
 
@@ -82,7 +78,6 @@ impl Mounter {
         // with the views that mounted it.
         root.state_mut().shader = None;
         self.views.insert(ROOT_ID, root);
-        self.virtual_rich_scrolls.clear();
         self.layout_animation = None;
     }
 
@@ -92,17 +87,6 @@ impl Mounter {
         crate::selectable_view::end_batch(surface);
         crate::navigation::end_batch(surface);
         crate::system::end_batch(surface);
-        // The rich editor already limits live rows to its display and
-        // pending windows. Core culling looks at the *previous* scroll
-        // offset and can defer those mounted-ahead rows' text descendants.
-        let suspended = self
-            .virtual_rich_scrolls
-            .iter()
-            .any(|&id| self.views.get(id).is_some_and(|view| view.attached()));
-        if suspended != self.virtual_rich_culling_suspended {
-            self.virtual_rich_culling_suspended = suspended;
-            surface.control(|control| control.set_content_culling(!suspended));
-        }
     }
 
     fn get(&self, id: NodeId) -> Option<NshView> {
@@ -178,6 +162,7 @@ impl Mounter {
             }
             MountItem::Remove { id } => {
                 if let Some(view) = &self.get(*id) {
+                    crate::input::removed(surface, view);
                     crate::navigation::removing(surface, view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, view, self.layout_animation.as_ref()) {
@@ -186,9 +171,9 @@ impl Mounter {
                 }
             }
             MountItem::Delete { id } => {
-                self.virtual_rich_scrolls.remove(id);
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(*id) {
+                    crate::input::removed(surface, &view);
                     crate::navigation::removing(surface, &view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);
@@ -375,11 +360,6 @@ impl Mounter {
             MountItem::ViewProps { id, props } => {
                 let Some(view) = &self.get(*id) else { return };
                 view.state_mut().props = props.clone();
-                if crate::input::is_virtual_rich_scroll(view) {
-                    self.virtual_rich_scrolls.insert(*id);
-                } else {
-                    self.virtual_rich_scrolls.remove(id);
-                }
                 crate::input::props_changed(surface, view);
                 crate::access::props_changed(view);
             }
@@ -452,6 +432,9 @@ impl Mounter {
             ViewKind::HeaderItem => return crate::navigation::header_item_removed(surface, view),
             _ => {}
         }
+        // A view that leaves has no keyboard focus to keep (its listeners
+        // hear no more keys).
+        crate::keyboard::forget(surface, view);
         let parent = view.parent_view();
         view.unparent();
         if let Some(parent) = parent
@@ -465,9 +448,18 @@ impl Mounter {
         let view = self.views.get(id);
         let view = view.as_ref();
         match command {
-            Command::Focus => view.map_or((), crate::text_input::focus),
+            // A field edits; a focusable custom view takes the keyboard
+            // focus as Tab gives it.
+            Command::Focus => match view {
+                Some(view) if view.kind() == ViewKind::Input => crate::text_input::focus(view),
+                Some(view) if view.id() != ROOT_ID => {
+                    crate::keyboard::focus_control(surface, view);
+                }
+                _ => {}
+            },
             Command::Blur => match view {
                 Some(view) if view.kind() == ViewKind::Input => crate::text_input::blur(view),
+                Some(view) if view.id() != ROOT_ID && crate::keyboard::blur(surface, view) => {}
                 _ => crate::text_input::blur_all(surface),
             },
             Command::SetSelection { start, end } => {
@@ -475,10 +467,15 @@ impl Mounter {
                     crate::text_input::set_selection(view, *start, *end);
                 }
             }
-            // Not carried out on this platform yet: the app's paste is lost,
-            // so say so.
-            Command::InsertText(_) => {
-                log::warn!("insertText is not supported on Windows yet; nothing inserted")
+            Command::ClearSelection => {
+                if let Some(view) = view {
+                    crate::selectable_view::clear_in(view);
+                }
+            }
+            Command::InsertText(text) => {
+                if let Some(view) = view {
+                    crate::text_input::insert_text(view, text);
+                }
             }
             Command::ScrollTo { y, .. } if view.is_some_and(|v| v.kind() == ViewKind::Input) => {
                 crate::text_input::scroll_to(view.expect("an input"), *y);
@@ -502,6 +499,16 @@ impl Mounter {
             Command::SetJsResponder { .. } | Command::ClearJsResponder => {
                 crate::input::command(surface, id, command);
             }
+            Command::Native { name, args }
+                if matches!(
+                    name.as_ref(),
+                    "texziApplyRichThumb" | "texziCancelRichThumb"
+                ) =>
+            {
+                if let Some(view) = view.filter(|view| view.kind() == ViewKind::Scroll) {
+                    crate::scroll::rich_thumb::command(surface, view, name, args);
+                }
+            }
             Command::Reload
             | Command::GoBack
             | Command::GoForward
@@ -509,6 +516,7 @@ impl Mounter {
             | Command::InjectJavaScript(_)
             | Command::PostMessage(_)
             | Command::Load(_)
+            | Command::WebViewRequest(_)
             | Command::Seek(_)
             | Command::Native { .. } => {
                 if let Some(view) = view {
@@ -519,6 +527,16 @@ impl Mounter {
             // `id`.
             Command::Desktop(desktop) if id != ROOT_ID => {
                 crate::app_window::command(surface, id, view, desktop);
+            }
+            // A dialog shows over the window whose content raised it. The
+            // app raises an alert without naming one (`AlertDialog.show`):
+            // it is the focused window's, else the first's.
+            Command::Dialog(dialog) => {
+                let window = match view {
+                    Some(v) if id != ROOT_ID => crate::app_window::window_of(surface, v),
+                    _ => crate::app_window::dialog_window(surface),
+                };
+                crate::system::show_dialog(surface, window, dialog);
             }
             other => crate::system::command(surface, id, other),
         }
@@ -536,7 +554,9 @@ enum Redraw {
 
 /// What `item` may change on screen once applied. Insertions and removals
 /// draw their parents again themselves ([`NshView::insert_before`],
-/// [`NshView::unparent`]); a new view is drawn when it is inserted.
+/// [`NshView::unparent`]), and so does a shader's layer, only when it
+/// changes what is drawn before its next frame ([`crate::shader::set`]); a
+/// new view is drawn when it is inserted.
 fn redrawn(item: &MountItem) -> Redraw {
     match item {
         MountItem::Create { .. }
@@ -554,6 +574,7 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::ComponentPropSlots { .. }
         | MountItem::TreeOrder(_)
         | MountItem::ProjectStates { .. }
+        | MountItem::Shader { .. }
         | MountItem::NavShader { .. } => Redraw::Nothing,
         MountItem::Frame { id, .. }
         | MountItem::ViewStyle { id, .. }
@@ -567,7 +588,6 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::ScrollBehavior { id, .. }
         | MountItem::Refreshing { id, .. }
         | MountItem::Canvas { id, .. }
-        | MountItem::Shader { id, .. }
         | MountItem::ShaderInput { id }
         | MountItem::ShaderTransition { id, .. }
         | MountItem::ViewProps { id, .. }

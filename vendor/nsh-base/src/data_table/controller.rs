@@ -2,7 +2,12 @@
 //! the revisions bindings subscribe to, the windows of rows and columns
 //! made, and what presses, keys, drags, props and the ref do to them.
 
-use std::{cell::RefCell, ops::Range, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    rc::Rc,
+    time::Duration,
+};
 
 use nsh_core::{
     PressEvent,
@@ -12,9 +17,9 @@ use nsh_core::{
 };
 
 use super::{
-    DataTableColumn, DataTableContextMenu, DataTableDump, DataTableEvent, DataTablePress,
-    DataTableProps, DataTableRange, DataTableSelection, DataTableSort, DataTableSortDirection,
-    DataTableTarget,
+    DataTableColumn, DataTableColumnPress, DataTableContextMenu, DataTableDump, DataTableEvent,
+    DataTablePress, DataTableProps, DataTableRange, DataTableSelection, DataTableSort,
+    DataTableSortDirection, DataTableTarget,
     axis::{Anchor, Axis},
     columns::{Columns, Spec},
     selection::{self, Move, Nav, Selectable, Selection},
@@ -100,6 +105,13 @@ pub(crate) struct MoveDrag {
     pub(crate) moving: bool,
 }
 
+pub(crate) type CellMarks = (
+    Option<(usize, usize)>,
+    Option<usize>,
+    Option<(usize, usize)>,
+);
+pub(crate) type RowMarks = (Option<usize>, Option<usize>);
+
 #[derive(Clone)]
 pub(crate) struct Dt {
     pub(crate) props: DataTableProps,
@@ -109,6 +121,10 @@ pub(crate) struct Dt {
     pub(crate) layout_rev: Signal<u64>,
     /// The data or what is drawn over it (selection, hover) changed.
     pub(crate) data_rev: Signal<u64>,
+    /// Cell/column selection and cell menu target; unchanged on row selection.
+    pub(crate) cell_marks: Signal<CellMarks>,
+    /// Row selection and row menu target; unchanged on cell/column selection.
+    pub(crate) row_marks: Signal<RowMarks>,
     pub(crate) scroll_x: Signal<Points>,
     pub(crate) scroll_y: Signal<Points>,
     pub(crate) viewport: Signal<Size<Points>>,
@@ -141,6 +157,9 @@ pub(crate) struct Dt {
     /// The cells `renderCell` draws, which the hit layer passes presses
     /// on to ([`Dt::press_with`]).
     pub(crate) custom_cells: Rc<RefCell<CustomCells>>,
+    /// The cell `renderCell` draws that the hit layer last passed the
+    /// pointer on to ([`Dt::hover_at`]).
+    hovered_cell: Rc<Cell<Option<(u64, ElementRef)>>>,
 }
 
 /// A cell `renderCell` draws: its view, and the row and column it shows
@@ -170,11 +189,11 @@ impl CustomCells {
         self.cells.retain(|(k, _)| *k != key);
     }
 
-    /// The view of the cell showing `row` of column `def`.
-    fn showing(&self, row: usize, def: usize) -> Option<ElementRef> {
-        self.cells.iter().find_map(|(_, c)| {
+    /// The key and view of the cell showing `row` of column `def`.
+    fn showing(&self, row: usize, def: usize) -> Option<(u64, ElementRef)> {
+        self.cells.iter().find_map(|(k, c)| {
             (c.row.get_untracked() == Some(row) && c.def.get_untracked() == Some(def))
-                .then_some(c.view)
+                .then_some((*k, c.view))
         })
     }
 }
@@ -187,6 +206,10 @@ fn spec_of(column: &DataTableColumn) -> Spec {
         min,
         max,
         fixed: column.fixed,
+        grow: column
+            .grow
+            .filter(|g| g.is_finite())
+            .map_or(0.0, |g| g.max(0.0)),
     }
 }
 
@@ -207,6 +230,8 @@ impl Dt {
             })),
             layout_rev: signal(0),
             data_rev: signal(0),
+            cell_marks: signal((None, None, None)),
+            row_marks: signal((None, None)),
             scroll_x: signal(Points::ZERO),
             scroll_y: signal(Points::ZERO),
             viewport: signal(Size::default()),
@@ -235,8 +260,11 @@ impl Dt {
             resizing: Rc::default(),
             handle_tap: Rc::default(),
             custom_cells: Rc::default(),
+            hovered_cell: Rc::default(),
         };
         dt.sync_columns();
+        dt.sync_room();
+        dt.sync_auto_fit();
         dt.sync_selection();
         dt.report();
         dt.bind_keys();
@@ -250,6 +278,32 @@ impl Dt {
     }
 
     pub(crate) fn bump_data(&self) {
+        let (cell_marks, row_marks) = {
+            let st = self.st.borrow();
+            let sel_cell = match st.selection {
+                Selection::Cell(r, c) => Some((r, c)),
+                _ => None,
+            };
+            let sel_col = match st.selection {
+                Selection::Column(c) => Some(c),
+                _ => None,
+            };
+            let sel_row = match st.selection {
+                Selection::Row(r) => Some(r),
+                _ => None,
+            };
+            let active_cell = match st.active {
+                Some((Some(r), Some(c))) => Some((r, c)),
+                _ => None,
+            };
+            let active_row = match st.active {
+                Some((Some(r), None)) => Some(r),
+                _ => None,
+            };
+            ((sel_cell, sel_col, active_cell), (sel_row, active_row))
+        };
+        self.cell_marks.set(cell_marks);
+        self.row_marks.set(row_marks);
         self.data_rev.update(|r| *r += 1);
     }
 
@@ -289,8 +343,72 @@ impl Dt {
                 }
                 dt.bump_layout();
                 dt.bump_data();
+                dt.auto_fit();
             });
         });
+    }
+
+    /// The columns that grow fill the width they are shown in: the table's,
+    /// less the row header and the bar a terminal keeps beside the rows.
+    fn sync_room(&self) {
+        let dt = self.clone();
+        effect(move || {
+            let width = dt.viewport.get().width.0.max(0.0);
+            let bar = dt
+                .rows_width
+                .get()
+                .map_or(0.0, |rows| (width - rows.0).max(0.0));
+            let room = (width - dt.lead_width() - bar).max(0.0) as f64;
+            untracked(|| {
+                if dt.st.borrow_mut().columns.set_room(room) {
+                    dt.bump_layout();
+                }
+            });
+        });
+    }
+
+    /// The columns with `autoFit` fit their content once their rows come.
+    fn sync_auto_fit(&self) {
+        let dt = self.clone();
+        effect(move || {
+            dt.props.data.with(|_| ());
+            dt.props.data_start.get();
+            dt.row_count();
+            untracked(|| dt.auto_fit());
+        });
+    }
+
+    /// Fits the columns with `autoFit` not fitted yet, once the rows the
+    /// table holds have a text in them. Rows without one leave the column
+    /// waiting: the app may hand over new columns and the rows for them one
+    /// after the other (in either order), and a fit between the two would
+    /// measure the titles alone. The fit is their base width, which they
+    /// still grow from, and is not reported as a resize.
+    fn auto_fit(&self) {
+        if self.row_count() == 0 || self.props.data.with_untracked(|d| d.is_empty()) {
+            return;
+        }
+        let pending: Vec<usize> = {
+            let st = self.st.borrow();
+            (0..st.defs.len())
+                .filter(|&def| st.defs[def].auto_fit && !st.columns.fitted(def))
+                .collect()
+        };
+        if pending.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        for def in pending {
+            let Some((width, true)) = self.measure(def) else {
+                continue;
+            };
+            let mut st = self.st.borrow_mut();
+            st.columns.mark_fitted(def);
+            changed |= st.columns.set_base(def, width);
+        }
+        if changed {
+            self.bump_layout();
+        }
     }
 
     /// The selection follows the app's `selection`, and stays within the
@@ -301,10 +419,16 @@ impl Dt {
             let given = dt.props.selection.get();
             let allowed = dt.selectable_kinds();
             untracked(|| {
+                let mut changed = false;
                 if let Some(given) = given {
-                    dt.st.borrow_mut().selection = from_public(given);
+                    let next = from_public(given);
+                    let mut st = dt.st.borrow_mut();
+                    changed = st.selection != next;
+                    st.selection = next;
                 }
-                dt.clamp_selection(allowed);
+                if !dt.clamp_selection_quiet(allowed) && changed {
+                    dt.bump_data();
+                }
             });
         });
         let dt = self.clone();
@@ -335,6 +459,10 @@ impl Dt {
     }
 
     fn clamp_selection(&self, allowed: Selectable) {
+        let _ = self.clamp_selection_quiet(allowed);
+    }
+
+    fn clamp_selection_quiet(&self, allowed: Selectable) -> bool {
         let rows = self.row_count();
         let changed = {
             let mut st = self.st.borrow_mut();
@@ -347,6 +475,7 @@ impl Dt {
         if changed {
             self.bump_data();
         }
+        changed
     }
 
     // Counts and cells.
@@ -384,6 +513,21 @@ impl Dt {
         self.props
             .row_classes
             .with(|c| c.get(at).filter(|c| !c.is_empty()).cloned())
+    }
+
+    /// The class `cellClasses` gives the cell of data row `row` in column
+    /// `def` (tracked). The list is the app's, and only cells on screen ask.
+    pub(crate) fn cell_class(&self, row: usize, def: usize) -> Option<SharedString> {
+        let row = u32::try_from(row).ok()?;
+        let def = u32::try_from(def).ok()?;
+        self.props.cell_classes.with(|list| {
+            if list.is_empty() {
+                return None;
+            }
+            list.iter()
+                .find(|c| c.row == row && c.column == def && !c.class.is_empty())
+                .map(|c| c.class.clone())
+        })
     }
 
     /// Whether the cell holds a rise or a fall (tracked).
@@ -457,17 +601,10 @@ impl Dt {
             .props
             .font_family
             .get()
-            .unwrap_or_else(|| "system-ui".into());
+            .map(|f| nsh_core::css_font_families(&f))
+            .filter(|f| !f.is_empty());
         let size = self.props.font_size.get().0;
-        let generic = matches!(
-            family.as_str(),
-            "monospace" | "sans-serif" | "serif" | "system-ui" | "ui-monospace"
-        );
-        if generic {
-            format!("{size}px {family}")
-        } else {
-            format!("{size}px \"{}\"", family.replace('"', ""))
-        }
+        format!("{size}px {}", family.as_deref().unwrap_or("system-ui"))
     }
 
     /// The width of the row header column (tracked): wide enough for the
@@ -731,6 +868,16 @@ impl Dt {
         }
     }
 
+    /// The row Enter / Return activates: the selection's row, when it has
+    /// one (`onRowActivate`). A selected column has no row, so the key does
+    /// nothing.
+    fn activate_row(&self) {
+        let row = self.st.borrow().selection.row();
+        if let Some(row) = row {
+            self.cx.emit(DataTableEvent::RowActivate(row as u32));
+        }
+    }
+
     fn bind_keys(&self) {
         let dt = self.clone();
         // A terminal's Tab moves the focus on, out of the table, as Tab does
@@ -786,6 +933,20 @@ impl Dt {
                     ..Default::default()
                 },
                 move |_| copy.copy_selection(),
+            );
+            // Enter / Return activates the focused row (its selection's
+            // row), as a list's does, unless a text input or a control
+            // inside the table takes the key.
+            let activate = dt.clone();
+            on_key_with(
+                "enter",
+                KeyOptions {
+                    when: When::NotEditing,
+                    repeat: false,
+                    for_focus: true,
+                    ..Default::default()
+                },
+                move |_| activate.activate_row(),
             );
         });
     }
@@ -1048,7 +1209,7 @@ impl Dt {
             (Some(row), Some(def)) if !hit.header => self.custom_cells.borrow().showing(row, def),
             _ => None,
         };
-        let Some(cell) = cell else {
+        let Some((_, cell)) = cell else {
             self.press_hit(hit, clicks, modifiers);
             return;
         };
@@ -1125,8 +1286,8 @@ impl Dt {
         }
     }
 
-    /// Whether a press with `modifiers` held selects a row
-    /// (`selectOnModifierPress`).
+    /// Whether a press with `modifiers` held selects (`selectOnModifierPress`):
+    /// a row, a cell or a title.
     fn selects_on(&self, modifiers: Modifiers) -> bool {
         let secondary = if matches!(os(), Os::Ios | Os::MacOs) {
             modifiers.cmd
@@ -1139,13 +1300,15 @@ impl Dt {
     /// What a press selects, as gpui-component's table: a cell when cells
     /// select (the selected cell again, without a row header, its row); a
     /// row when rows select, of a press of its row header or of a row whose
-    /// cells do not select; with Shift or the secondary modifier only when
-    /// `selectOnModifierPress`.
+    /// cells do not select. Shift or the secondary modifier selects only
+    /// when `selectOnModifierPress`; the press is reported either way.
     fn press_hit(&self, hit: Hit, clicks: u32, modifiers: Modifiers) {
         self.set_focus(true);
-        self.st.borrow_mut().active = None;
+        let cleared_active = self.st.borrow_mut().active.take().is_some();
         let Some(row) = hit.row else {
-            self.bump_data();
+            if cleared_active {
+                self.bump_data();
+            }
             return;
         };
         let allowed = untracked(|| self.selectable_kinds());
@@ -1154,6 +1317,8 @@ impl Dt {
         let next = match cell {
             // A cell of a column that does not select: nothing.
             Some(c) if !self.selectable(c) => None,
+            // Shift or the secondary modifier, left for the app.
+            Some(_) if !self.selects_on(modifiers) => None,
             Some(c) => {
                 let again = self.st.borrow().selection == Selection::Cell(row, c);
                 let escalate = !untracked(|| self.row_header_shown())
@@ -1172,7 +1337,10 @@ impl Dt {
         };
         if let Some(next) = next {
             self.set_selection(next, true);
-        } else {
+            if cleared_active {
+                self.bump_data();
+            }
+        } else if cleared_active {
             self.bump_data();
         }
         self.cx.emit(DataTableEvent::RowPress(DataTablePress {
@@ -1240,21 +1408,61 @@ impl Dt {
             }));
     }
 
-    /// The pointer moved over the body at `position`.
-    pub(crate) fn hover_at(&self, position: Point<Points>) {
-        let row = self.target_at(position).row;
-        if self.hover.get_untracked() != row {
-            self.hover.set(row);
+    /// The pointer moved over the body (`mouse.position` in the hit
+    /// layer's content): it hovers the row, and inside a cell
+    /// `renderCell` draws the app's views under it (the body under the hit
+    /// layer takes no pointer).
+    pub(crate) fn hover_at(&self, mouse: &MouseEvent) {
+        let hit = self.target_at(mouse.position);
+        if self.hover.get_untracked() != hit.row {
+            self.hover.set(hit.row);
+        }
+        let cell = match (hit.row, hit.column) {
+            (Some(row), Some(def)) if !hit.header => self.custom_cells.borrow().showing(row, def),
+            _ => None,
+        };
+        let before = self.hovered_cell.replace(cell);
+        if let Some((key, view)) = before
+            && cell.is_none_or(|(k, _)| k != key)
+        {
+            view.hover_at(None);
+        }
+        if let Some((_, view)) = cell {
+            view.hover_at(Some(*mouse));
+        }
+    }
+
+    /// The pointer left the body.
+    pub(crate) fn hover_left(&self) {
+        if self.hover.get_untracked().is_some() {
+            self.hover.set(None);
+        }
+        if let Some((_, view)) = self.hovered_cell.take() {
+            view.hover_at(None);
         }
     }
 
     /// A title was pressed: it selects its column when columns select and
-    /// the column does (sorting is the sort button's).
-    pub(crate) fn header_press(&self, def: usize, clicks: u32) {
+    /// the column does, and the press carries no modifier the app kept
+    /// (`selectOnModifierPress`). Sorting is the sort button's. The press
+    /// is reported either way (`onColumnPress`).
+    pub(crate) fn header_press(&self, def: usize, clicks: u32, modifiers: Modifiers) {
         self.set_focus(true);
-        if self.props.column_selectable.get_untracked() && self.selectable(def) {
+        if self.props.column_selectable.get_untracked()
+            && self.selectable(def)
+            && self.selects_on(modifiers)
+        {
             self.set_selection(Selection::Column(def), true);
         }
+        self.cx
+            .emit(DataTableEvent::ColumnPress(DataTableColumnPress {
+                column: def as u32,
+                clicks,
+                shift: modifiers.shift,
+                control: modifiers.ctrl,
+                alt: modifiers.alt,
+                platform: modifiers.cmd,
+            }));
         if clicks == 2 {
             self.cx.emit(DataTableEvent::DoublePress(DataTableTarget {
                 row: None,
@@ -1419,7 +1627,17 @@ impl Dt {
         self.fit(def).map(Points).ok_or_else(no_column)
     }
 
+    /// Fits column `def` to its content (the user's double press, or the
+    /// app's `fitColumn`): it keeps that width, reported as a resize.
     pub(crate) fn fit(&self, def: usize) -> Option<f32> {
+        let (width, _) = self.measure(def)?;
+        self.set_width(def, width, true)
+    }
+
+    /// The width column `def`'s widest text and title need, among the rows
+    /// in view and up to `FIT_ROWS` around them that are held, and whether
+    /// any of those rows has a text in it.
+    fn measure(&self, def: usize) -> Option<(f32, bool)> {
         let css = self.font_css();
         let rows = self.row_count();
         let visible = untracked(|| self.visible_rows());
@@ -1440,14 +1658,16 @@ impl Dt {
             widest += SORT_WIDTH;
         }
         let mut text = String::new();
+        let mut any = false;
         for row in from..to.max(from) {
             text.clear();
             self.write_cell(row, def, &mut text);
             if !text.is_empty() {
+                any = true;
                 widest = widest.max(measure_text(&css, &text).0);
             }
         }
-        self.set_width(def, (widest + padding).ceil(), true)
+        Some(((widest + padding).ceil(), any))
     }
 
     /// A title was grabbed to move its column.
@@ -1577,7 +1797,7 @@ impl Dt {
 
     pub(crate) fn copy_selection(&self) {
         if let Some(text) = self.selection_text() {
-            set_clipboard(text);
+            drop(set_clipboard(text));
         }
     }
 }

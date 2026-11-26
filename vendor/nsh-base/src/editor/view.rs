@@ -508,7 +508,6 @@ fn fold_hit(
                 .top(move || Length::from(lh() * slot.get().1 as f32))
                 .w(move || Length::from(fold_width()))
                 .h(move || Length::from(lh2()))
-                .cursor_pointer()
                 .on_mouse_enter(move |_: &MouseEvent| pointer.hover.set(Some(row())))
                 .on_mouse_leave(move |_: &MouseEvent| {
                     if pointer.hover.get_untracked() == Some(row()) {
@@ -1532,6 +1531,8 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         ed.clone(),
     );
     let value = ed.sink_value;
+    let content = ed.clone();
+    let moved = ed.clone();
     let width_ed = ed.clone();
     input()
         .element_ref(&ed.input)
@@ -1559,12 +1560,42 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         })
         .caret(false)
         .multiline(true)
+        // The app's scroll bars belong to the text area, not the caret sink.
+        .scrollbar(false)
+        .auto_focus(props.auto_focus)
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)
         .paste_behavior(PasteBehavior::Report)
         .value(move || value.get())
+        // The native field is a keyboard sink. Rendered rows have their own
+        // semantics. Bound the extra value published on an external edit,
+        // including when the caret is inside a single very long line.
+        .accessibility_value(move || {
+            const MAX_BYTES: usize = 64 * 1024;
+            content.text_rev.get();
+            let state = content.st.borrow();
+            let buffer = &state.buffer;
+            let text = if buffer.external.is_some() && buffer.len() > MAX_BYTES {
+                content.sel_rev.get();
+                let head = state.primary_head();
+                let line = buffer.line_of(head);
+                let start = buffer
+                    .line_start(line)
+                    .max(head.saturating_sub(MAX_BYTES / 2));
+                buffer.slice(start..buffer.line_end(line).min(start + MAX_BYTES))
+            } else {
+                buffer.text()
+            };
+            Some(nsh_core::AccessibilityValue {
+                text: Some(text.into()),
+                ..Default::default()
+            })
+        })
         .label(move || props.accessibility_label.get().unwrap_or_default())
         .on_change(move |text: &str| change.sink_changed(text))
+        .on_selection_change(move |selection: &nsh_core::element::Selection| {
+            moved.sink_selection(selection)
+        })
         .on_composition_change(move |c: &Composition| composition.composition(c.composing, &c.text))
         .on_key_press(move |k: &str| key.sink_key(k))
         .on_paste(move |p: &PasteEvent| paste.paste(&p.text))

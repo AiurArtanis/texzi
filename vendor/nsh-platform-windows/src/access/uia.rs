@@ -216,12 +216,7 @@ fn runtime_id(id: NodeId) -> [i32; 2] {
 fn local(parent: &NshView, child: &NshView) -> Option<Mat4> {
     let p = parent.try_state()?;
     let s = child.try_state()?;
-    let (x, y) = p.child_origin(s.frame, s.shift);
-    let m = Mat4::new().translate(x, y);
-    Some(match s.transform() {
-        Some(t) => Mat4::mul(&t, &m),
-        None => m,
-    })
+    Some(p.child_matrix(&s))
 }
 
 /// A rectangle (x, y, width, height).
@@ -642,7 +637,10 @@ impl IRawElementProviderFragmentRoot_Impl for Root_Impl {
 
     fn GetFocus(&self) -> Result<IRawElementProviderFragment> {
         let (surface, _, _) = self.window()?;
-        match super::focused(&surface).filter(|v| window_of(&surface, v) == self.window) {
+        // Each window keeps its own keyboard focus; a field's is shared.
+        let focused =
+            crate::keyboard::focused_in(&surface, self.window).or_else(|| super::focused(&surface));
+        match focused.filter(|v| window_of(&surface, v) == self.window) {
             Some(v) => Ok(element(self.key, &v)),
             None => none(),
         }
@@ -831,7 +829,9 @@ impl IRawElementProviderSimple_Impl for Element_Impl {
                 control.focusable() || view.state().events.contains(nsh_core::EventKind::Press),
             ),
             UIA_HasKeyboardFocusPropertyId => {
-                Var::bool(super::focused(&t.surface).is_some_and(|f| f == *view))
+                let focused = crate::keyboard::focused_in(&t.surface, window_of(&t.surface, view))
+                    .or_else(|| crate::text_input::focused(&t.surface));
+                Var::bool(focused.is_some_and(|f| f == *view))
             }
             UIA_IsOffscreenPropertyId => {
                 Var::bool(!placement(view).is_some_and(|(_, shown)| shown))
@@ -976,7 +976,9 @@ impl IRawElementProviderFragment_Impl for Element_Impl {
         if t.view.kind() == ViewKind::Input {
             crate::text_input::focus(&t.view);
             super::focus_changed(&t.surface, &t.view);
-        } else {
+        } else if !crate::keyboard::focus_control(&t.surface, &t.view) {
+            // A stop of the keyboard takes the focus as Tab gives it; the
+            // others keep UI Automation's focus alone.
             super::focus(&t.surface, &t.view);
         }
         Ok(())
@@ -1284,7 +1286,9 @@ fn control_type(c: Control) -> UIA_CONTROLTYPE_ID {
         Control::ToolBar => UIA_ToolBarControlTypeId,
         Control::List => UIA_ListControlTypeId,
         Control::ListItem => UIA_ListItemControlTypeId,
-        Control::Pane | Control::Dialog | Control::AlertDialog => UIA_PaneControlTypeId,
+        Control::Pane | Control::Dialog | Control::AlertDialog | Control::TabPanel => {
+            UIA_PaneControlTypeId
+        }
     }
 }
 
@@ -1325,6 +1329,7 @@ mod tests {
         assert_eq!(control_type(Control::ListItem), UIA_ListItemControlTypeId);
         assert_eq!(control_type(Control::Dialog), UIA_PaneControlTypeId);
         assert_eq!(control_type(Control::AlertDialog), UIA_PaneControlTypeId);
+        assert_eq!(control_type(Control::TabPanel), UIA_PaneControlTypeId);
     }
 
     #[test]

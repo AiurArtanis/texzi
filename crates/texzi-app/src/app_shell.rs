@@ -1940,13 +1940,32 @@ impl Shell {
         });
     }
 
-    fn show_format_menu(self: &Rc<Self>, doc: Rc<Document>, anchor: ElementRef) {
+    fn show_format_menu(
+        self: &Rc<Self>,
+        doc: Rc<Document>,
+        second: bool,
+        anchor: ElementRef,
+        button_focused: Rc<Cell<bool>>,
+    ) {
         let shell = self.clone();
         self.owner.run(|| {
             spawn(async move {
                 let Some(bounds) = anchor.measure().await else {
                     return;
                 };
+                let can_open = || {
+                    !shell.settings_active()
+                        && shell.second_active.get() == second
+                        && shell
+                            .current()
+                            .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                        && doc.displayed_rich()
+                        && doc.pending_mode.get().is_none()
+                        && !shell.escape_blocked()
+                };
+                if !can_open() {
+                    return;
+                }
                 let items = FORMAT_ACTIONS
                     .iter()
                     .map(|&(label, action)| {
@@ -1956,10 +1975,19 @@ impl Shell {
                     })
                     .collect();
                 shell.zen_exit.reset();
-                let _ = popup_menu_at(
+                popup_menu_at(
                     items,
                     point(bounds.page.x, bounds.page.y + bounds.frame.size.height),
-                );
+                )
+                .await;
+                if button_focused.get()
+                    && can_open()
+                    && shell.panel.get().is_empty()
+                    && shell.window.state().is_some_and(|state| state.focused)
+                    && let Some(editor) = doc.rich_reference.api::<RichEditorApi>()
+                {
+                    editor.focus();
+                }
             });
         });
     }
@@ -2219,6 +2247,9 @@ fn bind_chord_continuations(run: Rc<dyn Fn(Option<&'static str>)>) {
                 &stroke,
                 KeyOptions {
                     when: nsh_core::keymap::When::Always,
+                    // While the prefix is pending its continuation belongs to
+                    // the shell, including keys normally bound by the editor.
+                    over_focused: true,
                     ..Default::default()
                 },
                 move |_| run(target),
@@ -2725,9 +2756,22 @@ fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoEl
 fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let anchor = element_ref();
     let state = doc.clone();
-    icon_button(FORMAT_ICON, "格式命令", 32.0, 18.0)
+    let button_focused = Rc::new(Cell::new(false));
+    let focused = button_focused.clone();
+    let blurred = button_focused.clone();
+    view()
         .element_ref(&anchor)
+        .role(AccessibilityRole::Button)
+        .label("格式命令")
+        .accessibility_state(nsh_core::AccessibilityState {
+            has_popup: true,
+            ..Default::default()
+        })
+        .items_center()
+        .justify_center()
+        .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
         .absolute()
+        .w(px(32.0))
         .h(px(28.0))
         .top(px(12.0))
         .right(px(56.0))
@@ -2738,10 +2782,17 @@ fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl Into
         .disabled(move || {
             state.pending_mode.get().is_some() || state.gate.busy() || state.controls.open()
         })
+        .on_focus(move |_: &()| focused.set(true))
+        .on_blur(move |_: &()| blurred.set(false))
         .on_press(move |_: &()| {
-            shell.second_active.set(second);
-            shell.show_format_menu(doc.clone(), anchor);
+            if shell.second_active.get() != second {
+                // Native menus preserve their text target. On a group change
+                // that target must first become this pane's own editor.
+                shell.focus_group(if second { 2 } else { 1 });
+            }
+            shell.show_format_menu(doc.clone(), second, anchor, button_focused.clone());
         })
+        .child(shell_glyph(FORMAT_ICON, 18.0))
 }
 
 fn groups(s: Rc<Shell>) -> AnyElement {
@@ -2821,7 +2872,10 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                 .child(image(icon).w(px(20.0)).h(px(20.0))),
         )
         .child(dynamic(move || {
-            let mut row = view().flex_row().flex_shrink_0();
+            let mut row = view()
+                .flex_row()
+                .flex_shrink_0()
+                .role(AccessibilityRole::Menubar);
             if menus.compact_menu() {
                 row = row.child(title_menu_button("菜单", menus.clone(), None));
             } else {

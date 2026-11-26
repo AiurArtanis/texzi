@@ -10,8 +10,8 @@ rust-version = "1.97"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-nsh-core = { git = "https://github.com/longbridge/nsh", rev = "224d9a795c7ac9d10d75750de9351adac5549675", default-features = false }
-nsh-platform-windows = { git = "https://github.com/longbridge/nsh", rev = "224d9a795c7ac9d10d75750de9351adac5549675", default-features = false }
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "f78eace7af23a9c1c72605c7ee46204f57f3e8e6", default-features = false }
+nsh-platform-windows = { git = "https://github.com/longbridge/nsh", rev = "f78eace7af23a9c1c72605c7ee46204f57f3e8e6", default-features = false, features = ["editor", "rich-editor", "net", "svg"] }
 log = "=0.4.29"
 
 [patch."https://github.com/longbridge/nsh"]

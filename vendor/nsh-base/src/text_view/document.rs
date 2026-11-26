@@ -133,6 +133,21 @@ fn one() -> u32 {
 }
 
 impl Block {
+    /// How many task items it holds, at any depth.
+    pub(crate) fn tasks(&self) -> u32 {
+        let within = |blocks: &[Block]| blocks.iter().map(Block::tasks).sum::<u32>();
+        match self {
+            Block::List { items, .. } => items
+                .iter()
+                .map(|item| u32::from(item.checked.is_some()) + within(&item.children))
+                .sum(),
+            Block::Blockquote { children, .. } | Block::Details { children, .. } => {
+                within(children)
+            }
+            _ => 0,
+        }
+    }
+
     /// A paragraph of `content`.
     pub fn paragraph(content: Vec<Inline>) -> Self {
         Block::Paragraph { content }
@@ -260,6 +275,15 @@ pub enum Inline {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         color: Option<String>,
     },
+    /// Text in styles the document gives it (`<span style="color: …">`,
+    /// `<font color="…">`; the `textStyle` of `RichEditor` and Tiptap).
+    TextStyle {
+        /// Its content.
+        content: Vec<Inline>,
+        /// Its color, a CSS color; the text's own when not given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
     /// Superscript (`<sup>`).
     Superscript {
         /// Its content.
@@ -341,6 +365,7 @@ pub(crate) fn inline_text(inlines: &[Inline], out: &mut String) {
             | Inline::Strikethrough { content }
             | Inline::Underline { content }
             | Inline::Highlight { content, .. }
+            | Inline::TextStyle { content, .. }
             | Inline::Superscript { content }
             | Inline::Subscript { content }
             | Inline::Small { content }
@@ -362,6 +387,10 @@ pub(crate) fn inline_text(inlines: &[Inline], out: &mut String) {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct CodeBlock {
+    /// The app's id of the block, handed back with its actions
+    /// (`onCodeBlockAction`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     /// Its language (the info string's first word: `rust`), if named.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
@@ -370,6 +399,15 @@ pub struct CodeBlock {
     pub meta: Option<String>,
     /// The code, without a final line break.
     pub code: String,
+    /// The code as inline content (the app's annotations: strong text,
+    /// highlights, custom nodes shown as their content), shown in place of
+    /// the highlighted code when its plain text is `code`; other content is
+    /// ignored with a warning, so what shows is what copying takes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<Inline>,
+    /// Wraps long lines in the available width instead of scrolling them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wrap: bool,
 }
 
 impl CodeBlock {
@@ -377,8 +415,8 @@ impl CodeBlock {
     pub fn new(language: Option<String>, code: impl Into<String>) -> Self {
         Self {
             language,
-            meta: None,
             code: code.into(),
+            ..Self::default()
         }
     }
 }
@@ -755,6 +793,7 @@ export type TextViewInline =
   | { type: \"text\"; text: string }
   | { type: \"strong\" | \"emphasis\" | \"strikethrough\" | \"underline\" | \"superscript\" | \"subscript\" | \"small\"; content: TextViewInline[] }
   | { type: \"highlight\"; content: TextViewInline[]; color?: string }
+  | { type: \"textStyle\"; content: TextViewInline[]; color?: string }
   | { type: \"code\"; code: string }
   | { type: \"keyboard\"; text: string }
   | { type: \"link\"; url: string; title?: string; content: TextViewInline[] }
@@ -766,12 +805,18 @@ export type TextViewInline =
 
 const CODE_BLOCK: &str = "/** A block of code. */
 export interface TextViewCodeBlock {
+  /** The app's id of the block, handed back with its actions (`onCodeBlockAction`). */
+  id?: string;
   /** Its language (the info string's first word: `rust`), if named. */
   language?: string;
   /** The rest of the info string. */
   meta?: string;
   /** The code, without a final line break. */
   code: string;
+  /** The code as inline content (the app's annotations), shown when its plain text is `code`. */
+  content?: TextViewInline[];
+  /** Wrap long lines instead of scrolling horizontally. */
+  wrap?: boolean;
 }";
 
 const TABLE: &str = "/** A table. */
@@ -962,6 +1007,31 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({ "type": "highlight", "content": [], "color": "#336699" })
+        );
+    }
+
+    #[test]
+    fn text_styles_are_tagged_text_style_with_an_optional_color() {
+        let styled: Inline = serde_json::from_value(serde_json::json!({
+            "type": "textStyle", "content": [{ "type": "text", "text": "x" }]
+        }))
+        .unwrap();
+        assert_eq!(
+            styled,
+            Inline::TextStyle {
+                content: vec![Inline::text("x")],
+                color: None
+            }
+        );
+        assert_eq!(styled.plain_text(), "x");
+        let json = serde_json::to_value(Inline::TextStyle {
+            content: vec![],
+            color: Some("#e54545".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "textStyle", "content": [], "color": "#e54545" })
         );
     }
 }

@@ -6,7 +6,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -22,10 +22,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use super::{
     RichEditorChange, RichEditorEvent, RichEditorFile, RichEditorPastedFiles, RichEditorProps,
     RichEditorSelection,
-    geometry::{DOC, Geometry, Hit},
+    geometry::{DOC, Geometry, Hit, slot_id},
     keys::{self, Move, Unit},
     node_view::{NodeView, NodeViewEvent},
-    session::{EditorSession, NodeViews, ViewGeometry, ViewRequest},
+    session::{
+        EditorSession, NodeViews, ViewGeometry, ViewRequest, parse_paste, paste_transaction,
+    },
     table::{TableGesture, TablePreview},
 };
 use crate::{
@@ -33,20 +35,30 @@ use crate::{
     rich_editor::{
         commands::base_keymap,
         extensions::{HistoryOptions, Keymap, KeymapOptions, history, starter},
-        formats::{DomParser, slice_from_text, slice_to_text},
-        model::{Fragment, Mark, Node, SchemaSpec, Slice},
+        formats::{DomSerializer, slice_to_text},
+        js::{RichClipboardContent, SliceJson, paste_hooks},
+        model::{Fragment, Mark, Node, SchemaSpec, Slice, utf16_len, utf16_slice},
         state::{
             Affinity, ClickEvent, Decoration, EditorState, EditorStateConfig, GapCursor, KeyEvent,
             NodeSelection, Plugin, Selection, TextSelection, Transaction, TransactionOrigin,
         },
-        tables::{CellSelection, is_table, table_role},
+        tables::{CellSelection, cell_around, is_table, table_role},
         transform::drop_point,
     },
+    sink_text::{sink_edit, utf16_to_byte},
 };
 
 /// The sink is emptied once it holds this many bytes (and no composition
 /// is in progress).
 const SINK_LIMIT: usize = 256;
+
+/// How long a forward move of the sink's own caret waits for the text it
+/// may belong to (`sink_selection`).
+const SINK_TEXT_WAIT: Duration = Duration::from_millis(50);
+
+/// The meta prosemirror-view sets on a selection the pointer made (a
+/// press, a drag, a touch), which plugins tell it from the keyboard's by.
+const POINTER_META: &str = "pointer";
 
 /// How much nearer a drop place that takes a block as it is counts than
 /// one that takes it wrapped, between blocks.
@@ -56,37 +68,63 @@ const DIRECT_SLACK: f32 = 6.0;
 const GAP_PROBES: usize = 64;
 
 /// A rendered block: its id (kept while the block is the same block across
-/// changes), its node and where it starts.
+/// changes), its node and the box its frame is measured in.
 #[derive(Clone, Debug)]
 pub(crate) struct BlockItem {
     pub(crate) id: u64,
     pub(crate) node: Node,
-    /// The position before the node.
-    pub(crate) pos: usize,
     /// The id of the box its frame is measured in.
     pub(crate) parent: u64,
 }
 
 impl PartialEq for BlockItem {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-            && self.pos == other.pos
-            && self.parent == other.parent
-            && self.node.ptr_eq(&other.node)
+        self.id == other.id && self.parent == other.parent && self.node.ptr_eq(&other.node)
     }
 }
 
-/// The blocks' ids: the children of each rendered container.
+/// The blocks' ids, positions and tables.
 #[derive(Default)]
 pub(crate) struct Tree {
     pub(crate) children: HashMap<u64, Vec<BlockItem>>,
+    pub(crate) positions: rustc_hash::FxHashMap<u64, usize>,
+    pub(crate) by_pos: rustc_hash::FxHashMap<usize, u64>,
+    pub(crate) tables: Vec<(u64, Node)>,
+    /// The tables in each box around a table (the blocks and node views'
+    /// slots it is in, and the document's box, [`DOC`]): what a move of
+    /// the box moves.
+    pub(crate) table_holders: rustc_hash::FxHashMap<u64, Vec<u64>>,
+    /// Top-level views reused for different content during the current walk.
+    changed_roots: Vec<u64>,
+    /// The boxes the walk is in, outermost first.
+    path: Vec<u64>,
     next: u64,
 }
 
-/// The id of the slot a node view with an editable content slot renders
-/// its content in (a box measured in the content box).
-pub(crate) fn slot_id(id: u64) -> u64 {
-    id | (1 << 62)
+impl Tree {
+    pub(crate) fn pos(&self, id: u64) -> Option<usize> {
+        self.positions.get(&id).copied()
+    }
+
+    pub(crate) fn id_at(&self, pos: usize) -> Option<u64> {
+        self.by_pos.get(&pos).copied()
+    }
+}
+
+type BlockActive = (bool, bool);
+type BlockRects = Vec<Bounds<Points>>;
+
+#[derive(Default)]
+pub(crate) struct ActiveBlocks {
+    signals: rustc_hash::FxHashMap<u64, Signal<BlockActive>>,
+    selected: Option<u64>,
+    focused: rustc_hash::FxHashSet<u64>,
+}
+
+#[derive(Default)]
+pub(crate) struct SelRects {
+    signals: rustc_hash::FxHashMap<u64, Signal<BlockRects>>,
+    active: rustc_hash::FxHashSet<u64>,
 }
 
 /// The content's offset from the page (content less page) and the scroll
@@ -130,6 +168,13 @@ struct Moving {
 #[derive(Debug, Default)]
 struct Sink {
     text: String,
+    /// Where the editor's caret stands in `text` (bytes), when not at its
+    /// end: the platform moved the sink's own caret (an input method that
+    /// types a pair of brackets and puts its caret between them).
+    caret: Option<usize>,
+    /// The sink's own caret as the platform last reported it (UTF-16), to
+    /// be read against the text it belongs to (`follow_sink_caret`).
+    reported: Option<u32>,
     emptied: Option<String>,
     composing: bool,
     /// The composition whose commit is still to come (its id).
@@ -145,7 +190,6 @@ pub(crate) struct Rv {
     pub(crate) session: EditorSession,
     pub(crate) props: RichEditorProps,
     pub(crate) cx: Scope<RichEditorEvent>,
-    pub(crate) owner: Owner,
     /// The state rendered last.
     pub(crate) st: Rc<RefCell<EditorState>>,
     pub(crate) node_views: Rc<RefCell<NodeViews>>,
@@ -160,13 +204,9 @@ pub(crate) struct Rv {
     pub(crate) deco_rev: Signal<u64>,
     /// A block's frame or a text's lines changed.
     pub(crate) layout_rev: Signal<u64>,
-    pub(crate) layout_notification_pending: Rc<Cell<bool>>,
-    pub(crate) visible_rows: Rc<RefCell<Option<super::visible_rows::Rows>>>,
-    pub(crate) visible_rows_rev: Signal<u64>,
-    pub(crate) wheel_target: Signal<Option<(u64, f32)>>,
-    pub(crate) wheel_generation: Rc<Cell<u64>>,
-    pub(crate) wheel_held_offset: Signal<Option<f32>>,
-    pub(crate) pending_wheel_scroll: Rc<Cell<Option<f32>>>,
+    pub(crate) block_heights: Rc<RefCell<super::block_heights::BlockHeights>>,
+    pub(crate) block_heights_rev: Signal<u64>,
+    pub(crate) block_layout: Signal<u64>,
     /// The session has a state the view has not taken yet.
     notified: Signal<u64>,
     pub(crate) focused: Signal<bool>,
@@ -176,10 +216,16 @@ pub(crate) struct Rv {
     sink: Rc<RefCell<Sink>>,
     next_composition: Rc<Cell<i64>>,
     drag: Rc<RefCell<Option<Drag>>>,
+    /// Pastes waiting for the app's JS paste hooks, in order (text, HTML).
+    pastes: Rc<RefCell<VecDeque<(String, String)>>>,
+    /// A task is pasting the waiting pastes.
+    pasting: Rc<Cell<bool>>,
     /// The content point less the page point of the last pointer over the
     /// content, and the scroll offset then: how a drag the app starts
     /// from a page point (a drag handle's) maps into the content.
     pointer: Rc<Cell<Option<PageOffset>>>,
+    /// A [`Rv::place`] measurement is in flight.
+    placing: Rc<Cell<bool>>,
     /// Where a drag that moves the selection would drop it (the drop
     /// cursor).
     pub(crate) drop_at: Signal<Option<usize>>,
@@ -191,25 +237,40 @@ pub(crate) struct Rv {
     pub(crate) scroll: ElementRef,
     pub(crate) content: ElementRef,
     pub(crate) scroll_y: Signal<Points>,
+    pub(super) thumb: Rc<super::thumb::ThumbScroll>,
     /// `scroll_y` outside the reactive graph, for the page queries JS
     /// asks (`pageCoordsAtPos`, `posAtPageCoords`).
     pub(crate) scrolled: Rc<Cell<Points>>,
     pub(crate) viewport: Signal<Size<Points>>,
     /// The content box's height, how far the scroll view scrolls.
     pub(crate) content_height: Signal<Points>,
+    /// Intrinsic flow extent, without the content box's minimum viewport height.
+    pub(crate) document_size: Signal<Size<Points>>,
     /// A drag scrolling on its own past the viewport's edge.
     autoscroll: Rc<RefCell<AutoScroll>>,
-    /// The state's scroll request was not carried out yet.
-    scroll_pending: Rc<Cell<bool>>,
+    /// A scroll request can arrive without moving the selection (e.g. Home
+    /// when the caret is already at the start of a scrolled-away document).
+    scroll_pending: Signal<bool>,
     selection_viewport_top: Rc<Cell<Option<f32>>>,
+    pub(super) owner: Owner,
     blink_task: Rc<RefCell<Option<Spawned<()>>>>,
     base_keymap: Rc<Keymap>,
     /// A press on a table's handle or grip being dragged.
     pub(crate) table_gesture: Rc<RefCell<Option<TableGesture>>>,
     /// What that drag shows: a column's or row's new size, a drop line.
     pub(crate) table_preview: Signal<Option<TablePreview>>,
+    pub(crate) hovered_table_cell: Signal<Option<u64>>,
     /// The selection a touch made, its handles and edit menu.
     pub(crate) touch: super::touch::Touch,
+    /// Per-block `(selected, focused)` state, notified only for changed blocks.
+    active_blocks: Rc<RefCell<ActiveBlocks>>,
+    /// Per-textblock range selection rectangles, notified only for overlapped blocks.
+    sel_rects: Rc<RefCell<SelRects>>,
+    /// Per-table layout revisions, of the tables whose controls are drawn
+    /// (`Rv::watch_table`), moved only for the tables a layout changes.
+    pub(crate) table_revs: Rc<RefCell<rustc_hash::FxHashMap<u64, Signal<u64>>>>,
+    /// Position of the current `NodeSelection`, `None` for any other selection.
+    pub(crate) node_sel_pos: Signal<Option<usize>>,
 }
 
 impl Rv {
@@ -227,26 +288,17 @@ impl Rv {
             session,
             props,
             cx,
-            owner: Owner::current(),
             st: Rc::new(RefCell::new(state.clone())),
             tree: Rc::default(),
-            geo: Rc::new(RefCell::new(Geometry {
-                font: "16px sans-serif".into(),
-                measure: Some(Rc::new(nsh_core::element::text_measurer())),
-                ..Geometry::default()
-            })),
+            geo: Rc::default(),
             decorations: Rc::default(),
             doc_rev: signal(0),
             sel_rev: signal(0),
             deco_rev: signal(0),
             layout_rev: signal(0),
-            layout_notification_pending: Rc::default(),
-            visible_rows: Rc::default(),
-            visible_rows_rev: signal(0),
-            wheel_target: signal(None),
-            wheel_generation: Rc::default(),
-            wheel_held_offset: signal(None),
-            pending_wheel_scroll: Rc::default(),
+            block_heights: Rc::default(),
+            block_heights_rev: signal(0),
+            block_layout: signal(0),
             notified: signal(0),
             focused: signal(false),
             blink: signal(true),
@@ -255,7 +307,10 @@ impl Rv {
             sink: Rc::default(),
             next_composition: Rc::new(Cell::new(1)),
             drag: Rc::default(),
+            pastes: Rc::default(),
+            pasting: Rc::default(),
             pointer: Rc::default(),
+            placing: Rc::default(),
             drop_at: signal(None),
             goal_x: Rc::default(),
             selected: Rc::default(),
@@ -263,26 +318,48 @@ impl Rv {
             scroll: element_ref(),
             content: element_ref(),
             scroll_y: signal(px(0.0)),
+            thumb: super::thumb::ThumbScroll::new(),
             scrolled: Rc::default(),
             viewport: signal(Size::default()),
             content_height: signal(px(0.0)),
+            document_size: signal(Size::default()),
             autoscroll: Rc::default(),
-            scroll_pending: Rc::default(),
+            scroll_pending: signal(false),
             selection_viewport_top: Rc::default(),
+            owner: Owner::current(),
             blink_task: Rc::default(),
             base_keymap: Rc::new(base_keymap),
             table_gesture: Rc::default(),
             table_preview: signal(None),
+            hovered_table_cell: signal(None),
             touch: super::touch::Touch::new(),
+            active_blocks: Rc::default(),
+            sel_rects: Rc::default(),
+            table_revs: Rc::default(),
+            node_sel_pos: signal(None),
         };
         rv.sync_tree(&state);
         rv.sync_decorations(&state);
+        rv.sync_active_blocks();
         rv.connect();
         rv
     }
 
     /// Subscribes to the session and binds the keys while focused.
     fn connect(&self) {
+        let viewport = self.viewport;
+        let width = computed(move || viewport.get().width);
+        let rv = self.clone();
+        effect(move || {
+            width.get();
+            let pixel_ratio = nsh_core::element::pixel_ratio();
+            nsh_core::element::font_scale();
+            rv.props.classes.with(|_| ());
+            rv.props.styles.with(|_| ());
+            rv.block_heights.borrow_mut().reset_layout(pixel_ratio);
+            rv.block_layout.update(|epoch| *epoch += 1);
+            rv.block_heights_rev.update(|rev| *rev += 1);
+        });
         // Sessions change inside JS's calls (`run`), on other threads and
         // in the view's own handlers, where the components' graph may not
         // be entered: subscribers only mark the change and wake a task,
@@ -349,22 +426,9 @@ impl Rv {
             if !rv.focused.get() {
                 return;
             }
-            let apple = apple_keys();
-            let application_shortcuts: HashSet<_> = rv
-                .props
-                .application_shortcuts
-                .get()
-                .iter()
-                .filter_map(|stroke| Keystroke::parse_with(stroke.as_str(), apple).ok())
-                .collect();
-            for spec in keys::key_table() {
-                // The host handles these outside the rich callback. Leaving
-                // them unbound also avoids disposing this focused view from
-                // inside one of its own key handlers.
-                if !application_shortcuts.is_empty()
-                    && Keystroke::parse_with(&spec.keystroke, apple)
-                        .is_ok_and(|stroke| application_shortcuts.contains(&stroke))
-                {
+            let host_keys = rv.application_keys();
+            for spec in keys::key_table().into_iter().filter(|spec| !spec.copy) {
+                if rv.host_owns(&host_keys, &spec.keystroke) {
                     continue;
                 }
                 let rv = rv.clone();
@@ -374,19 +438,46 @@ impl Rv {
                     KeyOptions {
                         when: When::Always,
                         repeat: spec.repeat,
+                        for_focus: true,
                         ..Default::default()
                     },
                     move |_| rv.key(&event),
                 );
             }
         });
+        // Copy, bound again as the selection empties or fills: with nothing
+        // selected in the editor the key also goes on to the platform, whose
+        // Copy takes what is selected around it (a chat's messages above its
+        // composer, which keeps the focus while they are selected), as an
+        // `Input`'s does. Plugins still hear it.
         let rv = self.clone();
+        let copy_keys: Vec<keys::KeySpec> = keys::key_table()
+            .into_iter()
+            .filter(|spec| spec.copy)
+            .collect();
         effect(move || {
-            if rv.props.auto_focus.get() {
-                // After this commit: the input it focuses is not mounted yet
-                // when the view connects.
+            if !rv.focused.get() {
+                return;
+            }
+            rv.sel_rev.get();
+            let empty = untracked(|| rv.session.state().selection().empty());
+            let host_keys = rv.application_keys();
+            for spec in &copy_keys {
+                if rv.host_owns(&host_keys, &spec.keystroke) {
+                    continue;
+                }
                 let rv = rv.clone();
-                spawn(async move { rv.focus() });
+                let event = spec.event.clone();
+                on_key_with(
+                    &spec.keystroke,
+                    KeyOptions {
+                        when: When::Always,
+                        for_focus: true,
+                        pass_through: empty,
+                        ..Default::default()
+                    },
+                    move |_| rv.key(&event),
+                );
             }
         });
         // Scrolls the selection into view once its place is known.
@@ -396,8 +487,45 @@ impl Rv {
             rv.sel_rev.get();
             rv.viewport.get();
             if rv.scroll_pending.get() {
+                rv.content_height.get();
+                rv.block_heights_rev.get();
                 untracked(|| rv.scroll_into_view());
             }
+        });
+        let rv = self.clone();
+        effect(move || {
+            rv.focused.get();
+            rv.props.editable.get();
+            rv.props.focus_mode.get();
+            untracked(|| rv.sync_active_blocks());
+        });
+        // Native layout reports many block/text frames in one commit. Apps
+        // need a settled size, not an event per paragraph: the change is
+        // reported once a frame, and only when the size differs from the
+        // last one reported. The owner cancels the pending frame on unmount.
+        let rv = self.clone();
+        let pending = Rc::new(Cell::new(false));
+        let reported = Rc::new(Cell::new(Size::<Points>::default()));
+        let owner = Owner::current();
+        effect(move || {
+            rv.document_size.get();
+            if pending.replace(true) {
+                return;
+            }
+            let (rv, pending, reported) = (rv.clone(), pending.clone(), reported.clone());
+            owner.run(|| {
+                spawn(async move {
+                    next_frame().await;
+                    pending.set(false);
+                    let size = rv.document_size.get_untracked();
+                    if size.width.0 <= 0.0 || size.height.0 <= 0.0 || reported.replace(size) == size
+                    {
+                        return;
+                    }
+                    rv.cx
+                        .emit(RichEditorEvent::ContentSizeChange { content_size: size });
+                })
+            });
         });
     }
 
@@ -420,6 +548,8 @@ impl Rv {
             || old.selection().affinity() != state.selection().affinity();
         if selection_changed {
             self.sel_rev.update(|r| *r += 1);
+            self.sync_active_blocks();
+            self.sync_selection_rects();
             self.sync_node_selection(&state);
             self.touch_follow();
         }
@@ -451,8 +581,18 @@ impl Rv {
         let mut tree = self.tree.borrow_mut();
         let mut geo = self.geo.borrow_mut();
         let views = self.node_views.borrow();
-        let mut alive = HashSet::new();
-        let mut texts = HashMap::new();
+        let prev_blocks = tree.positions.len();
+        let prev_texts = geo.texts.len();
+        tree.positions.clear();
+        tree.by_pos.clear();
+        tree.tables.clear();
+        tree.table_holders.clear();
+        tree.path.clear();
+        tree.path.push(DOC);
+        tree.changed_roots.clear();
+        geo.text_order.clear();
+        let mut alive = HashSet::with_capacity(prev_blocks);
+        let mut texts = HashMap::with_capacity(prev_texts);
         let mut atoms = HashMap::new();
         walk(
             &mut tree,
@@ -463,14 +603,14 @@ impl Rv {
             0,
             &mut alive,
             &mut texts,
+            &mut geo.text_order,
             &mut atoms,
         );
+        tree.path.clear();
         tree.children
             .retain(|id, _| *id == DOC || alive.contains(id));
-        geo.frames.retain(|id, _| {
-            *id == super::visible_rows::ROWS_ROOT
-                || alive.contains(&(id & !(super::visible_rows::ROW_BIT | (1 << 62))))
-        });
+        geo.frames
+            .retain(|id, _| alive.contains(&(id & !(1 << 62))));
         let mut old_texts = std::mem::take(&mut geo.texts);
         for (id, start) in texts {
             let mut entry = old_texts.remove(&id).unwrap_or_default();
@@ -478,6 +618,235 @@ impl Rv {
             geo.texts.insert(id, entry);
         }
         geo.atoms = atoms;
+        for id in &tree.changed_roots {
+            let mut heights = self.block_heights.borrow_mut();
+            if heights.index(*id).is_some() {
+                heights.invalidate(*id);
+                geo.frames.remove(id);
+            }
+        }
+        self.sync_block_heights(&tree);
+    }
+
+    pub(crate) fn block_pos(&self, id: u64) -> Option<usize> {
+        self.tree.borrow().pos(id)
+    }
+
+    pub(crate) fn watch_block(&self, id: u64) -> ReadSignal<(bool, bool)> {
+        let sig = {
+            let mut ab = self.active_blocks.borrow_mut();
+            let init = (ab.selected == Some(id), ab.focused.contains(&id));
+            let sig = signal(init);
+            ab.signals.insert(id, sig);
+            sig
+        };
+        let active = self.active_blocks.clone();
+        let geometry = self.geo.clone();
+        cleanup(move || {
+            active.borrow_mut().signals.remove(&id);
+            // Estimated heights survive virtualization. Actual coordinates
+            // and glyph layouts belong only to the mounted view.
+            let mut geo = geometry.borrow_mut();
+            geo.frames.remove(&id);
+            geo.frames.remove(&slot_id(id));
+            geo.row_origins.remove(&id);
+            geo.insets.remove(&id);
+            geo.table_scroll.remove(&id);
+            geo.table_scroll_handles.remove(&id);
+            if let Some(text) = geo.texts.get_mut(&id) {
+                text.lines.clear();
+                text.geometry = None;
+                text.owner = None;
+            }
+        });
+        sig.read_only()
+    }
+
+    pub(crate) fn sync_active_blocks(&self) {
+        let (new_selected, new_focused, sel_pos) = {
+            let state = self.st.borrow();
+            let tree = self.tree.borrow();
+            let sel = state.selection();
+            let sel_pos = sel.as_node().map(|_| sel.from());
+            let new_selected = sel_pos.and_then(|pos| tree.id_at(pos));
+            let mut new_focused = rustc_hash::FxHashSet::default();
+            if self.focused.get_untracked() && self.props.editable.get_untracked() {
+                let (from, to) = (sel.from(), sel.to());
+                let doc = state.doc();
+                let mode = self.props.focus_mode.get_untracked();
+                if from == to {
+                    if let Ok(rp) = doc.resolve(from) {
+                        let deepest = rp.depth.max(1);
+                        for d in 1..=rp.depth {
+                            let keep = match mode.as_deref() {
+                                Some("shallowest") => d == 1,
+                                Some("deepest") => d == deepest,
+                                _ => true,
+                            };
+                            if keep && let Some(id) = tree.id_at(rp.before(d)) {
+                                new_focused.insert(id);
+                            }
+                        }
+                    }
+                } else {
+                    let depth = |pos: usize| doc.resolve(pos).map(|r| r.depth).unwrap_or(0);
+                    let from_depth = depth(from).max(1);
+                    doc.nodes_between(from, to, &mut |n, pos, _, _| {
+                        if n.is_inline() {
+                            return false;
+                        }
+                        if let Some(id) = tree.id_at(pos) {
+                            let keep = match mode.as_deref() {
+                                Some("shallowest") => depth(pos) == 0,
+                                Some("deepest") => depth(pos) + 1 == from_depth,
+                                _ => true,
+                            };
+                            if keep {
+                                new_focused.insert(id);
+                            }
+                        }
+                        true
+                    });
+                }
+            }
+            (new_selected, new_focused, sel_pos)
+        };
+        self.node_sel_pos.set(sel_pos);
+        let updates: Vec<(Signal<BlockActive>, BlockActive)> = {
+            let mut ab = self.active_blocks.borrow_mut();
+            if ab.selected == new_selected && ab.focused == new_focused {
+                return;
+            }
+            let mut dirty = rustc_hash::FxHashSet::default();
+            if ab.selected != new_selected {
+                dirty.extend(ab.selected);
+                dirty.extend(new_selected);
+            }
+            for &id in ab.focused.symmetric_difference(&new_focused) {
+                dirty.insert(id);
+            }
+            ab.selected = new_selected;
+            ab.focused = new_focused;
+            dirty
+                .into_iter()
+                .filter_map(|id| {
+                    let sig = *ab.signals.get(&id)?;
+                    Some((sig, (ab.selected == Some(id), ab.focused.contains(&id))))
+                })
+                .collect()
+        };
+        for (sig, state) in updates {
+            sig.set(state);
+        }
+    }
+
+    pub(crate) fn text_selection_range(&self) -> Option<(usize, usize)> {
+        let state = self.st.borrow();
+        let s = state.selection();
+        let (from, to) = (s.from(), s.to());
+        (from < to && s.as_node().is_none() && s.as_custom::<CellSelection>().is_none())
+            .then_some((from, to))
+    }
+
+    pub(crate) fn watch_selection_rects(&self, id: u64) -> ReadSignal<Vec<Bounds<Points>>> {
+        let init = self
+            .text_selection_range()
+            .map(|(from, to)| self.geo.borrow().text_range_rects(id, from, to))
+            .unwrap_or_default();
+        let sig = signal(init.clone());
+        {
+            let mut sr = self.sel_rects.borrow_mut();
+            if !init.is_empty() {
+                sr.active.insert(id);
+            }
+            sr.signals.insert(id, sig);
+        }
+        let rects = self.sel_rects.clone();
+        cleanup(move || {
+            let mut sr = rects.borrow_mut();
+            sr.signals.remove(&id);
+            sr.active.remove(&id);
+        });
+        sig.read_only()
+    }
+
+    pub(crate) fn sync_selection_rects(&self) {
+        let Some((from, to)) = self.text_selection_range() else {
+            let cleared: Vec<Signal<Vec<Bounds<Points>>>> = {
+                let mut sr = self.sel_rects.borrow_mut();
+                if sr.active.is_empty() {
+                    return;
+                }
+                let active = std::mem::take(&mut sr.active);
+                active
+                    .into_iter()
+                    .filter_map(|id| sr.signals.get(&id).copied())
+                    .collect()
+            };
+            for sig in cleared {
+                sig.set(Vec::new());
+            }
+            return;
+        };
+        let computed: Vec<(u64, Vec<Bounds<Points>>)> = {
+            let geo = self.geo.borrow();
+            geo.text_ids_in(from, to)
+                .into_iter()
+                .map(|id| (id, geo.text_range_rects(id, from, to)))
+                .collect()
+        };
+        let updates: Vec<(Signal<BlockRects>, BlockRects)> = {
+            let mut sr = self.sel_rects.borrow_mut();
+            let mut next_active = rustc_hash::FxHashSet::default();
+            let mut seen = rustc_hash::FxHashSet::default();
+            let mut out = Vec::new();
+            for (id, rects) in computed {
+                seen.insert(id);
+                if !rects.is_empty() {
+                    next_active.insert(id);
+                }
+                if (!rects.is_empty() || sr.active.contains(&id))
+                    && let Some(&sig) = sr.signals.get(&id)
+                {
+                    out.push((sig, rects));
+                }
+            }
+            for &old_id in &sr.active {
+                if !seen.contains(&old_id)
+                    && let Some(&sig) = sr.signals.get(&old_id)
+                {
+                    out.push((sig, Vec::new()));
+                }
+            }
+            sr.active = next_active;
+            out
+        };
+        for (sig, rects) in updates {
+            sig.set(rects);
+        }
+    }
+
+    pub(crate) fn refresh_block_selection_rects(&self, id: u64) {
+        let Some((from, to)) = self.text_selection_range() else {
+            return;
+        };
+        let rects = self.geo.borrow().text_range_rects(id, from, to);
+        let sig = {
+            let mut sr = self.sel_rects.borrow_mut();
+            let was_active = sr.active.contains(&id);
+            if rects.is_empty() && !was_active {
+                return;
+            }
+            if rects.is_empty() {
+                sr.active.remove(&id);
+            } else {
+                sr.active.insert(id);
+            }
+            sr.signals.get(&id).copied()
+        };
+        if let Some(sig) = sig {
+            sig.set(rects);
+        }
     }
 
     /// The plugins' decorations of `state`: whether they changed.
@@ -638,11 +1007,12 @@ impl Rv {
         self.sink_edited(text);
     }
 
-    /// Applies the sink's `text`: what was deleted and typed since.
+    /// Applies the sink's `text`: what was deleted and typed since, at the
+    /// place in it the editor's caret stands for.
     fn sink_edited(&self, text: &str) {
-        let (deleted, inserted, composed) = {
+        let (edit, composed) = {
             let mut sink = self.sink.borrow_mut();
-            let base = match sink.emptied.take() {
+            let (base, caret) = match sink.emptied.take() {
                 // The platform dropped the empty value: the text still extends
                 // what it held. A text equal to what it held was typed again
                 // into the emptied sink: platforms report each edit, so an
@@ -650,21 +1020,32 @@ impl Rv {
                 // the edits made before it is idle as one: there, the text
                 // deleted and typed again before the empty value arrives reads
                 // the same, and is inserted a second time.
-                Some(old) if text != old && text.starts_with(old.as_str()) => old,
-                Some(_) => String::new(),
-                None => std::mem::take(&mut sink.text),
+                Some(old) if text != old && text.starts_with(old.as_str()) => {
+                    let len = old.len();
+                    (old, len)
+                }
+                Some(_) => (String::new(), 0),
+                None => {
+                    let caret = sink.caret.take();
+                    let old = std::mem::take(&mut sink.text);
+                    let caret = caret.unwrap_or(old.len());
+                    (old, caret)
+                }
             };
-            let prefix = common_prefix(&base, text);
-            let deleted = base[prefix..].chars().count();
-            let inserted = text[prefix..].to_owned();
+            let edit = sink_edit(&base, caret, text);
+            sink.reported = None;
             sink.text = text.to_owned();
-            (deleted, inserted, sink.composition.is_some())
+            sink.caret = (edit.caret < text.len()).then_some(edit.caret);
+            (edit, sink.composition.is_some())
         };
         self.sink_value.set(text.to_owned());
-        for _ in 0..deleted {
+        for _ in 0..edit.backspaces {
             self.key(&KeyEvent::new("Backspace"));
         }
-        let mut parts = inserted.split('\n').peekable();
+        for _ in 0..edit.deletes {
+            self.key(&KeyEvent::new("Delete"));
+        }
+        let mut parts = edit.inserted.split('\n').peekable();
         while let Some(part) = parts.next() {
             for piece in typed_pieces(part, composed) {
                 self.text_input(piece, composed);
@@ -684,12 +1065,122 @@ impl Rv {
         }
     }
 
+    /// The sink's own caret moved to `selection` (UTF-16 offsets in its
+    /// text): one the platform placed itself, without a key the editor
+    /// hears (an input method that types "（）" and puts its caret between
+    /// them). The editor's caret moves by as much, so what is typed next
+    /// goes in where the caret is drawn. While an input method composes
+    /// its caret is the composition's; a selection in the sink, a move past
+    /// what the sink is known to hold (its text is reported after it) or
+    /// across text the document does not show the same way is left alone.
+    pub(crate) fn sink_selection(&self, selection: &nsh_core::element::Selection) {
+        let forward = {
+            let mut sink = self.sink.borrow_mut();
+            sink.reported = None;
+            if sink.composing || selection.start != selection.end {
+                return;
+            }
+            // Where the editor's caret already stands for (typing at it), or
+            // past what the sink holds: nothing to follow.
+            let Some(to) = utf16_to_byte(&sink.text, selection.end as usize) else {
+                return;
+            };
+            let from = sink.caret.unwrap_or(sink.text.len());
+            if to == from {
+                return;
+            }
+            sink.reported = Some(selection.end);
+            to > from
+        };
+        // AppKit reports the caret an insertion leaves before the insertion's
+        // text, which may come a turn later: a change of the text drops the
+        // report (it puts the caret there itself), and a move forward, as an
+        // insertion's report reads, waits for one. A move back (an input
+        // method stepping into the pair it typed) is read next turn.
+        let delay = if forward {
+            SINK_TEXT_WAIT
+        } else {
+            Duration::ZERO
+        };
+        let rv = self.clone();
+        drop(set_timeout(delay, move || rv.follow_sink_caret()));
+    }
+
+    /// Moves the editor's caret to where the sink's own caret was last
+    /// reported, read against the text the sink holds now.
+    fn follow_sink_caret(&self) {
+        let (from, to) = {
+            let mut sink = self.sink.borrow_mut();
+            let Some(reported) = sink.reported.take() else {
+                return;
+            };
+            if sink.composing {
+                return;
+            }
+            let Some(to) = utf16_to_byte(&sink.text, reported as usize) else {
+                return;
+            };
+            (sink.caret.unwrap_or(sink.text.len()), to)
+        };
+        if from == to {
+            return;
+        }
+        let moved = {
+            let sink = self.sink.borrow();
+            let (a, b) = (from.min(to), from.max(to));
+            sink.text[a..b].to_owned()
+        };
+        if moved.contains('\n') {
+            return;
+        }
+        let state = self.session.state();
+        if state.selection().as_text().is_none() || !state.selection().empty() {
+            return;
+        }
+        let head = state.selection().head();
+        let units = utf16_len(&moved);
+        let Ok(at) = state.doc().resolve(head) else {
+            return;
+        };
+        if !at.parent().inline_content() {
+            return;
+        }
+        let start = at.start(at.depth);
+        let off = head - start;
+        let line = inline_text(at.parent());
+        let (target, shown) = if to < from {
+            if units > off {
+                return;
+            }
+            (head - units, utf16_slice(&line, off - units, off))
+        } else {
+            if off + units > utf16_len(&line) {
+                return;
+            }
+            (head + units, utf16_slice(&line, off, off + units))
+        };
+        if shown != moved {
+            return;
+        }
+        let Ok(target) = state.doc().resolve(target) else {
+            return;
+        };
+        let mut tr = state.tr();
+        tr.set_selection(TextSelection::new(target.clone(), target).into());
+        tr.set_origin(TransactionOrigin::Input);
+        self.dispatch(tr);
+        let mut sink = self.sink.borrow_mut();
+        sink.caret = (to < sink.text.len()).then_some(to);
+    }
+
     /// Empties the sink, unless an input method is composing there.
     fn empty_sink(&self) {
         let mut sink = self.sink.borrow_mut();
         if sink.composing || sink.text.is_empty() {
             return;
         }
+        sink.caret = None;
+        sink.reported = None;
         sink.emptied = Some(std::mem::take(&mut sink.text));
         drop(sink);
         self.sink_value.set(String::new());
@@ -699,15 +1190,16 @@ impl Rv {
     /// shows at the caret, the document waits for the commit (one
     /// transaction, grouped in the history with the composition's).
     pub(crate) fn composition_changed(&self, composing: bool, text: &str) {
-        let held = {
+        let (held, changed) = {
             let mut sink = self.sink.borrow_mut();
+            let changed = sink.composing != composing;
             if composing && sink.composition.is_none() {
                 let id = self.next_composition.get();
                 self.next_composition.set(id + 1);
                 sink.composition = Some(id);
             }
             sink.composing = composing;
-            if composing { None } else { sink.held.take() }
+            (if composing { None } else { sink.held.take() }, changed)
         };
         self.session.set_composing(composing);
         if let Some(held) = held {
@@ -715,6 +1207,11 @@ impl Rv {
         }
         self.composition
             .set((composing && !text.is_empty()).then(|| text.to_owned()));
+        // Observers can unmount the editor, so publish the transition only
+        // after its sink and composition state have reached their final values.
+        if changed {
+            self.cx.emit(RichEditorEvent::CompositionChange(composing));
+        }
     }
 
     /// A key the sink reports itself (soft keyboards: Backspace in an
@@ -729,6 +1226,21 @@ impl Rv {
 
     /// A key: the selected node's view, the plugins' `handle_key_down`
     /// (keymaps), the base keymap, the clipboard keys, then the view's
+    fn application_keys(&self) -> HashSet<Keystroke> {
+        self.props
+            .application_shortcuts
+            .get()
+            .iter()
+            .filter_map(|stroke| Keystroke::parse_with(stroke.as_str(), apple_keys()).ok())
+            .collect()
+    }
+
+    fn host_owns(&self, keys: &HashSet<Keystroke>, stroke: &str) -> bool {
+        !keys.is_empty()
+            && Keystroke::parse_with(stroke, apple_keys())
+                .is_ok_and(|stroke| keys.contains(&stroke))
+    }
+
     /// caret movement.
     pub(crate) fn key(&self, event: &KeyEvent) {
         if self.sink.borrow().composing {
@@ -942,9 +1454,7 @@ impl Rv {
         let affinity = sel.affinity();
         if (vertical || m.unit == Unit::LineEdge)
             && sel.as_text().is_some()
-            && self.visible_rows.borrow().is_some()
-            && self.geo.borrow().caret_rect(head, affinity).is_none()
-            && self.reveal_unmounted_row(head)
+            && super::render::reveal_unmounted_block(self, head)
         {
             // The scroll may have removed the current caret's view. Resume
             // the key after the row has had time to report its geometry.
@@ -1261,11 +1771,24 @@ impl Rv {
 
     /// Selects `selection` (a move: it scrolls into view).
     pub(crate) fn set_selection(&self, selection: Selection, scroll: bool) {
+        self.select(selection, scroll, false);
+    }
+
+    /// Selects `selection`, which the pointer made: with the `pointer`
+    /// meta.
+    pub(crate) fn set_pointer_selection(&self, selection: Selection, scroll: bool) {
+        self.select(selection, scroll, true);
+    }
+
+    fn select(&self, selection: Selection, scroll: bool, pointer: bool) {
         let state = self.session.state();
         let mut tr = state.tr();
         tr.set_selection(selection);
         if scroll {
             tr.scroll_into_view();
+        }
+        if pointer {
+            tr.set_meta(POINTER_META, Value::Bool(true));
         }
         self.dispatch(tr);
         self.empty_sink();
@@ -1320,16 +1843,30 @@ impl Rv {
 
     // The clipboard.
 
+    /// A copy of the selection (ProseMirror's), also what a cut and the
+    /// touch edit menu's Copy and Cut put on the clipboard: through the
+    /// plugins' `transform_copied`, as plain text (the
+    /// `clipboard_text_serializer`'s, else the slice's text) and, in the
+    /// same write, as HTML (the schema's `to_dom`), marked with the
+    /// slice's open depths so a paste into an editor gets the same nodes
+    /// back.
     pub(crate) fn copy(&self) {
         let state = self.session.state();
         if state.selection().empty() {
             return;
         }
-        let slice = state.selection().content();
+        let mut slice = state.selection().content();
+        for plugin in state.plugins() {
+            slice = plugin.transform_copied(&state, slice);
+        }
         let text = state
             .some_prop(|p| p.clipboard_text_serializer(&state, &slice))
             .unwrap_or_else(|| slice_to_text(&slice));
-        set_clipboard(text);
+        let mut item = ClipboardItem::default();
+        item.text = text;
+        item.html =
+            Some(DomSerializer::from_schema(state.schema()).serialize_for_clipboard(&slice));
+        drop(set_clipboard_item(item));
     }
 
     /// A paste of `text` and, when the clipboard had it, the same content as
@@ -1367,34 +1904,20 @@ impl Rv {
             return;
         }
         let state = self.session.state();
-        let from = state.selection().resolved_from().clone();
-        let in_code = from.parent().ty().spec().code;
-        let mut slice = None;
-        if !html.is_empty() && !in_code {
-            let mut html = html.to_owned();
-            for plugin in state.plugins() {
-                html = plugin.transform_pasted_html(&state, html);
+        // The app's JS hooks answer in a JS turn: the pastes wait in order
+        // and go in one after another once they did.
+        if state.plugins().iter().any(|p| paste_hooks(p).is_some()) {
+            self.pastes
+                .borrow_mut()
+                .push_back((text.to_owned(), html.to_owned()));
+            if !self.pasting.replace(true) {
+                let rv = self.clone();
+                spawn(async move { rv.drain_pastes().await });
             }
-            let parser = state
-                .some_prop(|p| p.clipboard_parser(&state))
-                .unwrap_or_else(|| DomParser::from_schema(state.schema()));
-            slice = Some(parser.parse_with_context(&html, &from))
-                .filter(|s: &Slice| s.content.size() > 0);
+            return;
         }
-        let mut slice = match slice {
-            Some(slice) => slice,
-            None => {
-                if text.is_empty() {
-                    return;
-                }
-                let mut text = text.to_owned();
-                for plugin in state.plugins() {
-                    text = plugin.transform_pasted_text(&state, text, false);
-                }
-                state
-                    .some_prop(|p| p.clipboard_text_parser(&state, &text, &from, false))
-                    .unwrap_or_else(|| slice_from_text(state.schema(), &text, &from))
-            }
+        let Some(mut slice) = parse_paste(&state, text, html, false) else {
+            return;
         };
         for plugin in state.plugins() {
             slice = plugin.transform_pasted(&state, slice);
@@ -1402,13 +1925,131 @@ impl Rv {
         if self.some_hook(&state, |p, d| p.handle_paste(&state, &slice, d)) {
             return;
         }
-        let mut tr = state.tr();
-        tr.replace_selection(slice);
-        tr.set_origin(TransactionOrigin::Paste);
-        tr.set_meta("paste", Value::Bool(true));
-        tr.scroll_into_view();
-        self.dispatch(tr);
+        self.insert_paste(&state, slice);
+    }
+
+    /// Text dropped on the editor at `page` (the root view's coordinates):
+    /// the caret goes where it was let go, then the text goes in as a paste
+    /// of it would (the paste hooks see it), one undo step, as editors such
+    /// as ProseMirror insert dropped text.
+    pub(crate) fn drop_text(&self, text: &str, html: &str, page: Point<Points>) {
+        if !self.editable() || (text.is_empty() && html.is_empty()) {
+            return;
+        }
+        let state = self.session.state();
+        if let Some(pos) = self.session.pos_at_page_coords(page)
+            && let Ok(at) = state.doc().resolve(pos)
+        {
+            self.set_selection(Selection::near(&at, 1), false);
+        }
+        self.focus();
+        self.paste(text, html);
+    }
+
+    /// Replaces the selection of `state` (the current one) with `slice`.
+    fn insert_paste(&self, state: &EditorState, slice: Slice) {
+        self.dispatch(paste_transaction(state, slice));
         self.empty_sink();
+    }
+
+    /// Pastes the waiting pastes in order, each once its JS hooks answered.
+    async fn drain_pastes(&self) {
+        loop {
+            let next = self.pastes.borrow_mut().pop_front();
+            let Some((text, html)) = next else { break };
+            self.paste_through_js(&text, &html).await;
+        }
+        self.pasting.set(false);
+    }
+
+    /// [`Rv::paste`] through plugins some of whose hooks are the app's JS
+    /// functions (`transformPasted`, `handlePaste`): the same steps in the
+    /// same order, each JS hook awaited (what it throws or answers wrong is
+    /// logged, and the step goes on as without it). A JS turn passes while
+    /// a hook answers: when the document or the selection changed
+    /// meanwhile (typing, another change of the app's), the content was
+    /// made for a place that is not the paste's any more, and the paste
+    /// starts over from the current state; one that keeps changing is
+    /// dropped after a few tries.
+    async fn paste_through_js(&self, text: &str, html: &str) {
+        const TRIES: usize = 3;
+        'paste: for _ in 0..TRIES {
+            let state = self.session.state();
+            if !self.editable() {
+                return;
+            }
+            let changed = |rv: &Rv| {
+                let now = rv.session.state();
+                !now.doc().ptr_eq(state.doc()) || !now.selection().eq(state.selection())
+            };
+            let schema = state.schema().clone();
+            let slice_of = |json: &Value| match Slice::from_json(&schema, json) {
+                Ok(slice) => Some(slice),
+                Err(e) => {
+                    log::warn!(
+                        "RichEditor: transformPasted's slice is not one of the schema's: {e}"
+                    );
+                    None
+                }
+            };
+            let Some(mut slice) = parse_paste(&state, text, html, false) else {
+                return;
+            };
+            let plugins: Vec<Plugin> = state.plugins().to_vec();
+            for plugin in &plugins {
+                slice = match paste_hooks(plugin).and_then(|h| h.transform) {
+                    Some(hook) => {
+                        let answered = hook.call_async(SliceJson(slice.to_json())).await;
+                        if changed(self) {
+                            continue 'paste;
+                        }
+                        answer(answered, "transformPasted")
+                            .and_then(|json| slice_of(&json.0))
+                            .unwrap_or(slice)
+                    }
+                    None => plugin.transform_pasted(&state, slice),
+                };
+            }
+            let clipboard = RichClipboardContent {
+                text: text.to_owned(),
+                html: html.to_owned(),
+            };
+            for plugin in &plugins {
+                let handled = match paste_hooks(plugin).and_then(|h| h.handle) {
+                    Some(hook) => {
+                        let answered = hook
+                            .call_async((SliceJson(slice.to_json()), clipboard.clone()))
+                            .await;
+                        let handled = answer(answered, "handlePaste").unwrap_or(false);
+                        // What a hook that handled the paste changed is its
+                        // own; one that did not leaves the paste to the
+                        // state now.
+                        if !handled && changed(self) {
+                            continue 'paste;
+                        }
+                        handled
+                    }
+                    // The state is the current one: every await above
+                    // checked it.
+                    None => {
+                        let mut trs = Vec::new();
+                        let handled = plugin.handle_paste(&state, &slice, &mut |tr| trs.push(tr));
+                        for tr in trs {
+                            self.dispatch(tr);
+                        }
+                        handled
+                    }
+                };
+                if handled {
+                    return;
+                }
+            }
+            self.insert_paste(&state, slice);
+            return;
+        }
+        log::warn!(
+            "RichEditor: a paste was dropped: the document kept changing while its hooks ran"
+        );
     }
 
     // Presses.
@@ -1433,13 +2074,22 @@ impl Rv {
             return;
         }
         let Some(hit) = self.hit(at) else { return };
-        let state = self.session.state();
-        let doc = state.doc().clone();
         let mod_key = if apple_keys() {
             modifiers.cmd
         } else {
             modifiers.ctrl
         };
+        // A press on an inline node view's own area selects its node, as one
+        // on a block's does (prosemirror-view's `selectClickedLeaf`); Shift
+        // and Mod keep their meaning (extend the selection, drag blocks).
+        let hit = match hit {
+            Hit::Text(..) if !modifiers.shift && !mod_key => {
+                self.inline_view_at(at).map_or(hit, Hit::Node)
+            }
+            hit => hit,
+        };
+        let state = self.session.state();
+        let doc = state.doc().clone();
         let click = ClickEvent {
             button: 0,
             mod_key,
@@ -1480,7 +2130,7 @@ impl Rv {
             && let Some((selection, click_sel)) = self.drag_source(&state, hit)
         {
             if !selection.eq(state.selection()) {
-                self.set_selection(selection.clone(), false);
+                self.set_pointer_selection(selection.clone(), false);
             }
             let copy = if apple_keys() {
                 modifiers.alt
@@ -1510,7 +2160,7 @@ impl Rv {
             && NodeSelection::is_selectable(&node)
             && table_role(node.ty()).is_none()
         {
-            self.set_selection(NodeSelection::create(&doc, p), false);
+            self.set_pointer_selection(NodeSelection::create(&doc, p), false);
             return;
         }
         let selection = match (hit, clicks) {
@@ -1545,7 +2195,7 @@ impl Rv {
             }
         };
         let anchor = selection.anchor();
-        self.set_selection(selection, false);
+        self.set_pointer_selection(selection, false);
         *self.drag.borrow_mut() = Some(Drag {
             anchor,
             shift,
@@ -1628,7 +2278,7 @@ impl Rv {
                             && at.y < b.origin.y + b.size.height
                             && at.x < b.origin.x
                         {
-                            return Some(item.pos);
+                            return tree.pos(item.id);
                         }
                     }
                 }
@@ -1640,7 +2290,7 @@ impl Rv {
             if !container {
                 return None;
             }
-            found = Some(item.pos);
+            found = tree.pos(item.id);
             parent = item.id;
         }
     }
@@ -1723,16 +2373,26 @@ impl Rv {
         ))
     }
 
-    /// Measures where the content is on the page (after a layout, and as a
-    /// handle drag starts): the offset page queries and handle drags map
-    /// by, before any pointer has been over the content.
+    /// Measures where the content is on the page (after a layout of the
+    /// editor or its content, after a page query, and as a handle drag
+    /// starts): the offset page queries and handle drags map by, before
+    /// any pointer has been over the content. What is around the editor
+    /// can move it (an outer scroll view, a sibling's layout) with no
+    /// layout of its own, so each page query measures again; one
+    /// measurement is in flight at a time.
     pub(crate) fn place(&self) {
+        if self.placing.replace(true) {
+            return;
+        }
         let content = self.content;
         let pointer = self.pointer.clone();
         let scroll = self.scroll_y;
         let drag = self.drag.clone();
+        let placing = self.placing.clone();
         spawn(async move {
-            if let Some(m) = content.measure().await {
+            let measured = content.measure().await;
+            placing.set(false);
+            if let Some(m) = measured {
                 let at = scroll.get_untracked();
                 let shift = Point::new(-m.page.x, -m.page.y);
                 pointer.set(Some((shift, at)));
@@ -1784,7 +2444,7 @@ impl Rv {
         // The handle owns the pointer: a table's grip under it (a row's,
         // on the table's left border) does not drag along.
         self.table_gesture.borrow_mut().take();
-        self.set_selection(selection.clone(), false);
+        self.set_pointer_selection(selection.clone(), false);
         // The press is where the pointer is now; the scroll since the
         // offset was noted moves the content under it.
         let scrolled = self.scroll_y.get_untracked() - scroll;
@@ -1910,6 +2570,7 @@ impl Rv {
         }
         let mut tr = state.tr();
         tr.set_selection(selection);
+        tr.set_meta(POINTER_META, Value::Bool(true));
         self.dispatch(tr);
     }
 
@@ -1937,10 +2598,13 @@ impl Rv {
         let mut inside: Option<(usize, usize)> = None;
         let mut nearest: Option<(Points, usize)> = None;
         for b in tree.children.values().flatten() {
+            let Some(b_pos) = tree.pos(b.id) else {
+                continue;
+            };
             let (Some(origin), Some((_, frame))) = (geo.origin(b.id), geo.frames.get(&b.id)) else {
                 continue;
             };
-            let Ok(rp) = doc.resolve(b.pos) else {
+            let Ok(rp) = doc.resolve(b_pos) else {
                 continue;
             };
             let index = rp.index(rp.depth);
@@ -1958,9 +2622,9 @@ impl Rv {
             }
             let (top, bottom) = (origin.y, origin.y + frame.size.height);
             let boundary = if at.y < top + frame.size.height * 0.5 {
-                b.pos
+                b_pos
             } else {
-                b.pos + b.node.node_size()
+                b_pos + b.node.node_size()
             };
             if at.y >= top && at.y < bottom {
                 if inside.is_none_or(|(depth, _)| rp.depth > depth) {
@@ -2015,7 +2679,7 @@ impl Rv {
             Some(target) => self.drop(&moving.slice, target, moving.moved, moving.source),
             None => {
                 if let Some(click) = moving.click {
-                    self.set_selection(click, false);
+                    self.set_pointer_selection(click, false);
                 }
             }
         }
@@ -2027,6 +2691,7 @@ impl Rv {
         if let Some(selection) = blocks_selection(state.doc(), state.selection()) {
             let mut tr = state.tr();
             tr.set_selection(selection);
+            tr.set_meta(POINTER_META, Value::Bool(true));
             self.dispatch(tr);
         }
     }
@@ -2073,9 +2738,6 @@ impl Rv {
         let from = self.scroll_y.get_untracked();
         let to = (from + speed.y).min(max).max(px(0.0));
         if to != from {
-            if self.pending_wheel_scroll.get().is_some() {
-                self.pending_wheel_scroll.set(Some(to.0));
-            }
             self.scroll_y.set(to);
             self.scrolled.set(to);
             self.scroll.scroll_to(Point::new(px(0.0), to), false);
@@ -2112,17 +2774,24 @@ impl Rv {
     pub(crate) fn block_edge_rect(&self, pos: usize) -> Option<Bounds<Points>> {
         let tree = self.tree.borrow();
         let geo = self.geo.borrow();
-        let blocks = || tree.children.values().flatten();
         let place = |id: u64| -> Option<Bounds<Points>> {
             let origin = geo.origin(id)?;
             let (_, frame) = geo.frames.get(&id)?;
             Some(Bounds::new(origin, frame.size))
         };
-        if let Some(b) = blocks().filter(|b| b.pos == pos).find_map(|b| place(b.id)) {
+        if let Some(id) = tree.id_at(pos)
+            && let Some(b) = place(id)
+        {
             return Some(Bounds::new(b.origin, Size::new(b.size.width, px(0.0))));
         }
-        let b = blocks()
-            .filter(|b| b.pos + b.node.node_size() == pos)
+        let b = tree
+            .children
+            .values()
+            .flatten()
+            .filter(|b| {
+                tree.pos(b.id)
+                    .is_some_and(|p| p + b.node.node_size() == pos)
+            })
             .find_map(|b| place(b.id))?;
         Some(Bounds::new(
             Point::new(b.origin.x, b.origin.y + b.size.height),
@@ -2133,14 +2802,40 @@ impl Rv {
     /// Block `pos`'s top left in the content box.
     fn node_origin(&self, pos: usize) -> Point<Points> {
         let tree = self.tree.borrow();
-        let id = tree
-            .children
-            .values()
-            .flatten()
-            .find(|b| b.pos == pos)
-            .map(|b| b.id);
-        id.and_then(|id| self.geo.borrow().origin(id))
+        let id = tree.id_at(pos);
+        let geo = self.geo.borrow();
+        // An inline node's box is where its one position is drawn.
+        id.and_then(|id| geo.origin(id))
+            .or_else(|| geo.range_rects(pos, pos + 1).first().map(|b| b.origin))
             .unwrap_or_default()
+    }
+
+    /// The inline node view whose box holds the content point `at`: its
+    /// node's position.
+    pub(crate) fn inline_view_at(&self, at: Point<Points>) -> Option<usize> {
+        let Some(Hit::Text(p, _)) = self.hit(at) else {
+            return None;
+        };
+        let state = self.session.state();
+        let doc = state.doc();
+        [p.checked_sub(1), Some(p)]
+            .into_iter()
+            .flatten()
+            .find(|&q| {
+                let viewed = doc.node_at(q).is_some_and(|n| {
+                    n.is_inline()
+                        && !n.is_text()
+                        && NodeSelection::is_selectable(&n)
+                        && self.node_view(n.ty().name()).is_some()
+                });
+                viewed
+                    && self.geo.borrow().range_rects(q, q + 1).iter().any(|b| {
+                        at.x >= b.origin.x
+                            && at.x < b.origin.x + b.size.width
+                            && at.y >= b.origin.y
+                            && at.y < b.origin.y + b.size.height
+                    })
+            })
     }
 
     // Focus and the caret.
@@ -2204,10 +2899,14 @@ impl Rv {
     }
 
     /// The box around the selection in the content box: its cells' (a
-    /// cell selection), its text's lines, else the caret's box.
+    /// cell selection), its node's (a node selection), its text's lines,
+    /// else the caret's box.
     pub(crate) fn selection_box(&self) -> Option<Bounds<Points>> {
         if let Some(cells) = self.cells_box() {
             return Some(cells);
+        }
+        if let Some(node) = self.node_selection_box() {
+            return Some(node);
         }
         let state = self.st.borrow();
         let sel = state.selection();
@@ -2216,6 +2915,78 @@ impl Rv {
             .into_iter()
             .reduce(|a, b| a.union(&b))
             .or_else(|| geo.caret_rect(sel.head(), sel.affinity()))
+    }
+
+    /// The box of the node at `pos` in the content box: a block's, else an
+    /// inline leaf's (image, node view, mention) on its line.
+    pub(crate) fn node_box(&self, pos: usize) -> Option<Bounds<Points>> {
+        node_box(
+            &self.tree.borrow(),
+            &self.geo.borrow(),
+            &self.st.borrow(),
+            pos,
+        )
+    }
+
+    /// The selected node's box in the content box, for a node selection:
+    /// a block atom has no text and no caret to place things by.
+    pub(crate) fn node_selection_box(&self) -> Option<Bounds<Points>> {
+        let pos = {
+            let state = self.st.borrow();
+            let sel = state.selection();
+            sel.as_node()?;
+            sel.from()
+        };
+        self.node_box(pos)
+    }
+
+    fn scroll_selected_cell(&self, state: &EditorState, caret: Bounds<Points>) {
+        let Some(cell) = cell_around(state.selection().resolved_head()) else {
+            return;
+        };
+        let tree = self.tree.borrow();
+        let geo = self.geo.borrow();
+        let Some(table_id) = tree.id_at(cell.before(cell.depth - 1)) else {
+            return;
+        };
+        let (Some(viewport), Some((offset, _)), Some(handle)) = (
+            geo.table_viewport(table_id),
+            geo.table_scroll.get(&table_id),
+            geo.table_scroll_handles.get(&table_id),
+        ) else {
+            return;
+        };
+        let selection = state.selection();
+        let mut visible = caret;
+        if !selection.empty()
+            && selection
+                .resolved_anchor()
+                .same_parent(selection.resolved_head())
+            && let Some(anchor) = geo.caret_rect(selection.anchor(), Affinity::Downstream)
+        {
+            let both = anchor.union(&caret);
+            if both.size.width <= viewport.size.width {
+                visible = both;
+            }
+        }
+        if visible.origin.x >= viewport.origin.x
+            && visible.origin.x + visible.size.width <= viewport.origin.x + viewport.size.width
+        {
+            return;
+        }
+        let target = node_box(&tree, &geo, state, cell.pos)
+            .filter(|cell| cell.size.width <= viewport.size.width)
+            .unwrap_or(visible);
+        let left = target.origin.x - viewport.origin.x;
+        let right = left + target.size.width - viewport.size.width;
+        let delta = if left < px(0.) {
+            left
+        } else if right > px(0.) {
+            right
+        } else {
+            return;
+        };
+        handle.scroll_to(Point::new((*offset + delta).max(px(0.)), px(0.)), false);
     }
 
     pub(crate) fn viewport_caret_top(&self) -> Option<f32> {
@@ -2233,7 +3004,21 @@ impl Rv {
         self.scroll_into_view();
     }
 
-    /// Scrolls the head into view, once it is laid out.
+    pub(crate) fn set_viewport_scroll(&self, y: f32) {
+        self.cancel_thumb();
+        let max = (self.content_height.get_untracked() - self.viewport.get_untracked().height)
+            .0
+            .max(0.0);
+        let to = px(y.clamp(0.0, max));
+        if (self.scroll_y.get_untracked() - to).0.abs() > 0.5 {
+            self.scroll_y.set(to);
+            self.scrolled.set(to);
+            self.scroll.scroll_to(Point::new(px(0.0), to), false);
+        }
+    }
+
+    /// Scrolls the head into view, once it is laid out: a selected node
+    /// whole, as ProseMirror scrolls its DOM node, else the caret.
     fn scroll_into_view(&self) {
         let state = self.session.state();
         let height = self.viewport.get_untracked().height;
@@ -2249,16 +3034,19 @@ impl Rv {
             self.scroll_pending.set(false);
             return;
         }
-        let Some(caret) = self.caret_rect() else {
-            self.reveal_unmounted_row(state.selection().head());
+        // A previously visited block can still have cached geometry after
+        // unmounting. Materialize the destination before trusting its rectangle.
+        if super::render::reveal_unmounted_block(self, state.selection().head()) {
+            return;
+        }
+        let Some(caret) = self.node_selection_box().or_else(|| self.caret_rect()) else {
             return;
         };
         self.scroll_pending.set(false);
+        self.scroll_selected_cell(&state, caret);
         if let Some(offset) = self.selection_viewport_top.take() {
             let room = (height - caret.size.height).0.max(0.0);
-            let max_scroll = (self.content_height.get_untracked() - height).0.max(0.0);
-            let y = (caret.origin.y.0 - offset.clamp(0.0, room)).clamp(0.0, max_scroll);
-            self.move_visible_row_scroll(y);
+            self.set_viewport_scroll(caret.origin.y.0 - offset.clamp(0.0, room));
             return;
         }
         let top = self.scroll_y.get_untracked();
@@ -2271,18 +3059,6 @@ impl Rv {
         };
         self.scroll
             .scroll_to(Point::new(px(0.0), y.max(px(0.0))), false);
-    }
-
-    pub(crate) fn move_visible_row_scroll(&self, to: f32) {
-        let to = px(to.max(0.0));
-        if (self.scroll_y.get_untracked().0 - to.0).abs() > 0.5 {
-            if self.pending_wheel_scroll.get().is_some() {
-                self.pending_wheel_scroll.set(Some(to.0));
-            }
-            self.scroll_y.set(to);
-            self.scrolled.set(to);
-            self.scroll.scroll_to(Point::new(px(0.0), to), false);
-        }
     }
 }
 
@@ -2298,10 +3074,12 @@ fn walk(
     start: usize,
     alive: &mut HashSet<u64>,
     texts: &mut HashMap<u64, usize>,
+    text_order: &mut Vec<(usize, u64)>,
     atoms: &mut HashMap<u64, usize>,
 ) {
     let old = tree.children.remove(&id).unwrap_or_default();
     let mut used = vec![false; old.len()];
+    let mut by_ptr: Option<rustc_hash::FxHashMap<usize, VecDeque<usize>>> = None;
     // A table's children are its cells, row after row: rows have no view,
     // the table is the grid its cells are placed in.
     let children: Vec<(Node, usize)> = if is_table(node) {
@@ -2330,17 +3108,38 @@ fn walk(
     let mut items = Vec::with_capacity(children.len());
     for (index, (child, pos)) in children.iter().enumerate() {
         let (child, pos) = (child, *pos);
-        // The same node first, then the node at its index with its type.
-        let matched = old
-            .iter()
-            .enumerate()
-            .find(|(i, b)| !used[*i] && b.node.ptr_eq(child))
-            .map(|(i, _)| i)
-            .or_else(|| {
-                old.get(index)
-                    .filter(|b| !used[index] && b.node.ty() == child.ty())
-                    .map(|_| index)
+        // The same node first (at the same index in O(1), else indexed by
+        // pointer), then the node at its index with its type.
+        let same_ptr = if old
+            .get(index)
+            .is_some_and(|b| !used[index] && b.node.ptr_eq(child))
+        {
+            Some(index)
+        } else {
+            let map = by_ptr.get_or_insert_with(|| {
+                let mut m: rustc_hash::FxHashMap<usize, VecDeque<usize>> =
+                    rustc_hash::FxHashMap::default();
+                for (i, b) in old.iter().enumerate() {
+                    if !used[i] {
+                        m.entry(b.node.as_ptr()).or_default().push_back(i);
+                    }
+                }
+                m
             });
+            map.get_mut(&child.as_ptr()).and_then(|q| {
+                while let Some(i) = q.pop_front() {
+                    if !used[i] {
+                        return Some(i);
+                    }
+                }
+                None
+            })
+        };
+        let matched = same_ptr.or_else(|| {
+            old.get(index)
+                .filter(|b| !used[index] && b.node.ty() == child.ty())
+                .map(|_| index)
+        });
         let child_id = match matched {
             Some(i) => {
                 used[i] = true;
@@ -2351,14 +3150,29 @@ fn walk(
                 tree.next
             }
         };
+        if parent == DOC && matched.is_some() && same_ptr.is_none() {
+            tree.changed_roots.push(child_id);
+        }
         alive.insert(child_id);
+        tree.positions.insert(child_id, pos);
+        tree.by_pos.insert(pos, child_id);
         items.push(BlockItem {
             id: child_id,
             node: child.clone(),
-            pos,
             parent,
         });
         let view = views.get(child.ty().name());
+        if is_table(child) && view.is_none() {
+            tree.tables.push((child_id, child.clone()));
+            let Tree {
+                path,
+                table_holders,
+                ..
+            } = &mut *tree;
+            for holder in path.iter() {
+                table_holders.entry(*holder).or_default().push(child_id);
+            }
+        }
         let atom = match view {
             Some(v) => !v.editable_content_slot(),
             None => child.is_leaf() || child.is_atom() && !child.is_textblock(),
@@ -2367,12 +3181,18 @@ fn walk(
             atoms.insert(child_id, pos);
         } else if child.is_textblock() {
             texts.insert(child_id, pos + 1);
+            text_order.push((pos + 1, child_id));
         } else {
             let box_id = if view.is_some() {
                 slot_id(child_id)
             } else {
                 child_id
             };
+            let depth = tree.path.len();
+            tree.path.push(child_id);
+            if box_id != child_id {
+                tree.path.push(box_id);
+            }
             walk(
                 tree,
                 views,
@@ -2382,8 +3202,10 @@ fn walk(
                 pos + 1,
                 alive,
                 texts,
+                text_order,
                 atoms,
             );
+            tree.path.truncate(depth);
         }
     }
     tree.children.insert(id, items);
@@ -2647,15 +3469,6 @@ pub(crate) fn word_at(doc: &Node, pos: usize) -> Option<(usize, usize)> {
     Some((pos, pos))
 }
 
-/// The bytes `a` and `b` start with alike, on a char boundary.
-fn common_prefix(a: &str, b: &str) -> usize {
-    a.char_indices()
-        .zip(b.chars())
-        .find(|((_, x), y)| x != y)
-        .map(|((i, _), _)| i)
-        .unwrap_or_else(|| a.len().min(b.len()))
-}
-
 /// The insertions a change of the sink's text makes: an input method's
 /// commit as one, else each character on its own, as it was typed. A
 /// platform may coalesce a frame's keys (or a test's typed string) into one
@@ -2789,22 +3602,93 @@ mod tests {
         use crate::rich_editor::tables::test_util::{cell_pos, doc, grid, p};
         let d = doc(vec![p("x"), grid(&[&["a", "b"], &["c", "d"]])]);
         let mut tree = Tree::default();
-        let (mut alive, mut texts, mut atoms) = (HashSet::new(), HashMap::new(), HashMap::new());
+        let (mut alive, mut texts, mut text_order, mut atoms) =
+            (HashSet::new(), HashMap::new(), Vec::new(), HashMap::new());
         let views = NodeViews::default();
         walk(
-            &mut tree, &views, DOC, DOC, &d, 0, &mut alive, &mut texts, &mut atoms,
+            &mut tree,
+            &views,
+            DOC,
+            DOC,
+            &d,
+            0,
+            &mut alive,
+            &mut texts,
+            &mut text_order,
+            &mut atoms,
         );
         let table = tree.children[&DOC][1].clone();
         let cells = &tree.children[&table.id];
         // Rows have no blocks: the cells, row after row, at their positions.
         assert_eq!(
-            cells.iter().map(|c| c.pos).collect::<Vec<_>>(),
+            cells
+                .iter()
+                .filter_map(|c| tree.pos(c.id))
+                .collect::<Vec<_>>(),
             ["a", "b", "c", "d"].map(|t| cell_pos(&d, t))
         );
         assert!(cells.iter().all(|c| c.parent == table.id));
         // Each cell's paragraph is a textblock of the cell.
         let first = &tree.children[&cells[0].id][0];
         assert_eq!(texts[&first.id], cell_pos(&d, "a") + 2);
+    }
+
+    #[test]
+    fn the_boxes_around_a_table_hold_it() {
+        use crate::rich_editor::{
+            model::Fragment,
+            tables::test_util::{doc, grid, p, schema, table, tr},
+        };
+        let s = schema();
+        let cell = s
+            .node(
+                "tableCell",
+                None,
+                Fragment::from(vec![grid(&[&["inner"]])]),
+                vec![],
+            )
+            .unwrap();
+        let quote = s
+            .node(
+                "blockquote",
+                None,
+                Fragment::from(vec![table(vec![tr(vec![cell])])]),
+                vec![],
+            )
+            .unwrap();
+        let d = doc(vec![p("x"), grid(&[&["top"]]), quote]);
+        let mut tree = Tree::default();
+        let (mut alive, mut texts, mut text_order, mut atoms) =
+            (HashSet::new(), HashMap::new(), Vec::new(), HashMap::new());
+        // As `sync_tree` starts it: in the document's box.
+        tree.path.push(DOC);
+        walk(
+            &mut tree,
+            &NodeViews::default(),
+            DOC,
+            DOC,
+            &d,
+            0,
+            &mut alive,
+            &mut texts,
+            &mut text_order,
+            &mut atoms,
+        );
+        let ids: Vec<u64> = tree.tables.iter().map(|(id, _)| *id).collect();
+        let [top, outer, inner] = ids[..] else {
+            panic!("three tables: {ids:?}")
+        };
+        let quote = tree.children[&DOC][2].id;
+        let cell = tree.children[&outer][0].id;
+        // A box's move moves the tables in it, however deep, and nothing
+        // else: a table holds only the tables in its cells.
+        assert_eq!(tree.table_holders[&DOC], [top, outer, inner]);
+        assert_eq!(tree.table_holders[&quote], [outer, inner]);
+        assert_eq!(tree.table_holders[&outer], [inner]);
+        assert_eq!(tree.table_holders[&cell], [inner]);
+        assert!(!tree.table_holders.contains_key(&top));
+        assert!(!tree.table_holders.contains_key(&inner));
+        assert_eq!(tree.table_holders.len(), 4);
     }
 }
 
@@ -2897,10 +3781,15 @@ impl ViewGeometry for GeometryHandle {
         if !self.here() {
             return None;
         }
-        let (from, to) = {
+        let (from, to, node) = {
             let state = self.state.borrow();
-            (state.selection().from(), state.selection().to())
+            let sel = state.selection();
+            (sel.from(), sel.to(), sel.as_node().is_some())
         };
+        // A node selection's box is its node's: a block atom has no text.
+        if node {
+            return self.node_rect(from);
+        }
         let geo = self.geo.borrow();
         if from == to {
             return geo.caret_rect(from, Affinity::Downstream);
@@ -2917,15 +3806,51 @@ impl ViewGeometry for GeometryHandle {
         GeometryHandle::page_shift(self)
     }
 
+    fn table_viewport(&self, pos: usize) -> Option<Bounds<Points>> {
+        if !self.here() {
+            return None;
+        }
+        let id = self.tree.borrow().id_at(pos)?;
+        self.geo.borrow().table_viewport(id)
+    }
+
     fn node_rect(&self, pos: usize) -> Option<Bounds<Points>> {
         if !self.here() {
             return None;
         }
-        let tree = self.tree.borrow();
-        let geo = self.geo.borrow();
-        let b = tree.children.values().flatten().find(|b| b.pos == pos)?;
-        let origin = geo.origin(b.id)?;
-        let (_, frame) = geo.frames.get(&b.id)?;
-        Some(Bounds::new(origin, frame.size))
+        node_box(
+            &self.tree.borrow(),
+            &self.geo.borrow(),
+            &self.state.borrow(),
+            pos,
+        )
     }
+}
+
+/// The box of the node at `pos` in the content box: a block's, else an
+/// inline leaf's (image, node view, mention) on its line.
+fn node_box(
+    tree: &Tree,
+    geo: &Geometry,
+    state: &EditorState,
+    pos: usize,
+) -> Option<Bounds<Points>> {
+    let Some(id) = tree.id_at(pos) else {
+        let node = state.doc().node_at(pos)?;
+        if !node.is_inline() || node.is_text() {
+            return None;
+        }
+        return geo.inline_rect(pos);
+    };
+    let origin = geo.origin(id)?;
+    let (_, frame) = geo.frames.get(&id)?;
+    Some(Bounds::new(origin, frame.size))
+}
+
+/// What a paste hook of the app's answered, or `None` (logged) when it
+/// threw or answered something else.
+fn answer<T>(result: Result<T, String>, hook: &str) -> Option<T> {
+    result
+        .map_err(|e| log::warn!("RichEditor: {hook} threw or answered wrong: {e}"))
+        .ok()
 }
