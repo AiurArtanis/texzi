@@ -163,10 +163,10 @@ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, name: &str, args: &
         supersede_view(surface, view);
         return;
     }
-    let (Some(ticket), Some(target)) = (args[2].as_u64(), args[3].as_f64()) else {
+    let (Some(ticket), Some(fraction)) = (args[2].as_u64(), args[3].as_f64()) else {
         return;
     };
-    if ticket <= grab.last_ticket || !target.is_finite() {
+    if ticket <= grab.last_ticket || !fraction.is_finite() {
         return;
     }
     grab.last_ticket = ticket;
@@ -174,7 +174,7 @@ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, name: &str, args: &
     let host = Host::new(surface, view);
     if let Some((actual, applied)) = host.scroll_mut(|s, size| {
         let max = s.max(size).y.0.max(0.0);
-        s.y = Points((target as f32 + s.behavior.content_inset.top.0).clamp(0.0, max));
+        s.y = Points(fraction.clamp(0.0, 1.0) as f32 * max);
         (s.reported(size), s.applied)
     }) {
         host.moved(actual);

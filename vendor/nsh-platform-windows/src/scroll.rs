@@ -759,33 +759,36 @@ mod tests {
         };
         let original = marker(3);
         let grab = |id| VirtualThumb::capture(&surface, &view, 0.0, id).unwrap();
-        let apply = |node, gesture, ticket, target| {
+        let apply = |node, gesture, ticket, fraction| {
             command(
                 &surface,
                 &view,
                 "texziApplyRichThumb",
-                &json!([node, gesture, ticket, target]),
+                &json!([node, gesture, ticket, fraction]),
             );
         };
         let pos = || view.state().scroll.as_ref().unwrap().y.0;
         let first = grab(17);
         first.finish(&surface, false);
-        apply(3, 17, 1, 9800.0);
+        apply(3, 17, 1, 1.2);
         assert_eq!(pos(), 9600.0, "the released target is clamped and applied");
-        apply(3, 17, 1, 1200.0);
+        apply(3, 17, 1, 0.12);
         assert_eq!(pos(), 9600.0, "duplicate ticket");
         let second = grab(18);
         first.finish(&surface, true);
-        apply(3, 17, 2, 800.0);
+        apply(3, 17, 2, 0.08);
         assert_eq!(
             pos(),
             9600.0,
             "a previous grab cannot take back the viewport"
         );
-        apply(3, 18, 3, 2100.0);
+        // The target mount measured shorter blocks since the grab.
+        view.state_mut().scroll.as_mut().unwrap().content.height = Points(4400.0);
+        apply(3, 18, 3, 0.5);
+        assert_eq!(pos(), 2000.0, "mid-track uses the measured native extent");
         second.finish(&surface, true);
-        apply(3, 18, 4, 4800.0);
-        assert_eq!(pos(), 2100.0, "lost capture");
+        apply(3, 18, 4, 0.8);
+        assert_eq!(pos(), 2000.0, "lost capture");
         grab(19).finish(&surface, false);
         crate::input::wheel(
             &surface,
@@ -799,18 +802,18 @@ mod tests {
                 time: 0.0,
             },
         );
-        apply(3, 19, 5, 4800.0);
+        apply(3, 19, 5, 0.8);
         assert_eq!(
             pos(),
-            2100.0,
+            2000.0,
             "wheel after release supersedes its queued target"
         );
         grab(20);
         let _new_layout = marker(4);
-        apply(original.id(), 20, 6, 6600.0);
+        apply(original.id(), 20, 6, 0.65);
         assert_eq!(
             pos(),
-            2100.0,
+            2000.0,
             "the destination was measured for an older document"
         );
         grab(21);
@@ -823,7 +826,7 @@ mod tests {
                 animated: false,
             },
         );
-        apply(4, 21, 7, 6600.0);
+        apply(4, 21, 7, 0.65);
         let state = view.state();
         let scroll = state.scroll.as_ref().unwrap();
         assert_eq!(scroll.y.0, 150.0);

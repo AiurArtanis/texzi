@@ -554,11 +554,13 @@ fn doc_blocks(rv: Rv) -> Vec<AnyElement> {
             .map(Vec::as_slice)
             .unwrap_or_default();
         let shown = doc_window(&window_rv, items, window_rv.scroll_y.get().0);
-        let next = window_rv
-            .thumb
-            .destination
-            .get()
-            .map(|y| doc_window(&window_rv, items, y.0));
+        let next = window_rv.thumb.destination_fraction.get().map(|fraction| {
+            // The thumb is a fraction of the current track. New measurements
+            // can change the estimated document length during this handoff.
+            let height = window_rv.block_heights.borrow().prefix(items.len()) as f32;
+            let max = (height - window_rv.viewport.get().height.0).max(0.0);
+            doc_window(&window_rv, items, max * fraction)
+        });
         let ranges = next
             .as_ref()
             .map(|to| (shown.start, shown.end, to.start, to.end));

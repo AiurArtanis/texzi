@@ -30,7 +30,7 @@ struct Mounted {
     rows: HashMap<NodeId, usize>,
     frames: HashMap<NodeId, Bounds<Points>>,
     content: HashMap<NodeId, Size<Points>>,
-    offsets: Vec<(NodeId, u32, u64, f32)>,
+    requests: Vec<(NodeId, u32, u64, f32)>,
 }
 
 impl Mounted {
@@ -75,7 +75,7 @@ impl Mounted {
                             id,
                             command: Command::Native { name, args },
                         } if Some(id) == self.scroll && name.as_ref() == "texziApplyRichThumb" => {
-                            self.offsets.push((
+                            self.requests.push((
                                 args[0].as_u64().unwrap() as NodeId,
                                 args[1].as_u64().unwrap() as u32,
                                 args[2].as_u64().unwrap(),
@@ -148,8 +148,7 @@ fn MixedThumbFixture() -> impl IntoElement {
         .size_full()
 }
 
-#[test]
-fn a_short_final_block_keeps_the_clamped_viewport_covered_after_heights_change() {
+fn measured_mixed_page(fraction: f64) -> (Mounted, NodeId, f32) {
     let mut core = Core::new(ApproxTextEngine, Size::new(px(800.0), px(600.0)));
     let mut environment = Environment::default();
     environment.os = Os::Windows;
@@ -159,14 +158,21 @@ fn a_short_final_block_keeps_the_clamped_viewport_covered_after_heights_change()
     mounted.flush(&mut core);
     let outer = mounted.parents[&mounted.receiver.unwrap()];
     mounted.scroll = Some(outer);
+    let initial_max = mounted.content[&outer].height.0 - mounted.frames[&outer].size.height.0;
     mounted.event(&mut core, "thumbBegin", json!([7]));
-    mounted.event(&mut core, "thumbTarget", json!([7, 1.0]));
+    mounted.event(&mut core, "thumbTarget", json!([7, fraction]));
     mounted.flush(&mut core);
     for task in core.take_main_thread_tasks() {
         task.run();
     }
     mounted.flush(&mut core);
-    let requested = mounted.offsets.last().unwrap().3;
+    (mounted, outer, initial_max)
+}
+
+#[test]
+fn a_short_final_block_keeps_the_clamped_viewport_covered_after_heights_change() {
+    let (mounted, outer, initial_max) = measured_mixed_page(1.0);
+    assert_eq!(mounted.requests.last().unwrap().3, 1.0);
     let height = mounted.frames[&outer].size.height.0;
     let bottom = mounted.content[&outer].height.0;
     let top = bottom - height;
@@ -180,10 +186,10 @@ fn a_short_final_block_keeps_the_clamped_viewport_covered_after_heights_change()
         .collect();
     visible.sort_by_key(|&(row, _)| row);
     eprintln!(
-        "clamped thumb requested={requested} max={top} viewport={height} visible={visible:?}"
+        "clamped thumb initial={initial_max} max={top} viewport={height} visible={visible:?}"
     );
     assert!(
-        requested > top + height,
+        initial_max > top + height,
         "the measured short blocks must shrink the estimated content"
     );
     assert!(
@@ -199,6 +205,30 @@ fn a_short_final_block_keeps_the_clamped_viewport_covered_after_heights_change()
 }
 
 #[test]
+fn a_released_half_track_grab_keeps_its_fraction_after_measuring_shorter_blocks() {
+    let (mounted, outer, initial_max) = measured_mixed_page(0.5);
+    let height = mounted.frames[&outer].size.height.0;
+    let max = mounted.content[&outer].height.0 - height;
+    let fraction = mounted.requests.last().unwrap().3;
+    assert_eq!(fraction, 0.5);
+    assert!(initial_max - max > height);
+    let top = max * fraction;
+    let mut rows: Vec<_> = mounted
+        .rows
+        .iter()
+        .filter_map(|(&id, &n)| {
+            let y = mounted.row_top(id, outer) - top;
+            (0.0 <= y && y < height).then_some((n, y))
+        })
+        .collect();
+    rows.sort_by_key(|&(n, _)| n);
+    eprintln!("half track initial={initial_max} max={max} actual={top} visible={rows:?}");
+    assert!(rows.first().is_some_and(|&(_, y)| y < height * 0.25));
+    assert!(rows.last().is_some_and(|&(_, y)| y > height * 0.75));
+    assert!(rows.windows(2).all(|pair| pair[0].0 + 1 == pair[1].0));
+}
+
+#[test]
 fn a_fast_thumb_keeps_both_pages_until_their_mount_and_scroll_are_acknowledged() {
     let mut core = Core::new(ApproxTextEngine, Size::new(px(800.0), px(600.0)));
     let mut environment = Environment::default();
@@ -211,7 +241,7 @@ fn a_fast_thumb_keeps_both_pages_until_their_mount_and_scroll_are_acknowledged()
     assert!(mounted.scrolls.contains(&outer));
     mounted.scroll = Some(outer);
     assert!(mounted.contains(1) && !mounted.contains(4096));
-    mounted.offsets.clear();
+    mounted.requests.clear();
 
     let receiver = mounted.receiver.unwrap();
     mounted.event(&mut core, "thumbBegin", json!([21]));
@@ -227,7 +257,7 @@ fn a_fast_thumb_keeps_both_pages_until_their_mount_and_scroll_are_acknowledged()
     );
     assert!(!mounted.contains(2048) && mounted.rows.len() < 512);
     assert!(
-        mounted.offsets.is_empty(),
+        mounted.requests.is_empty(),
         "the platform has not applied the target mount"
     );
 
@@ -237,10 +267,12 @@ fn a_fast_thumb_keeps_both_pages_until_their_mount_and_scroll_are_acknowledged()
         task.run();
     }
     mounted.flush(&mut core);
-    let [(node, 21, ticket, to)] = mounted.offsets[..] else {
-        panic!("expected one mounted target: {:?}", mounted.offsets)
+    let [(node, 21, ticket, fraction)] = mounted.requests[..] else {
+        panic!("expected one mounted target: {:?}", mounted.requests)
     };
     assert_eq!(node, receiver);
+    assert_eq!(fraction, 1.0);
+    let to = mounted.content[&outer].height.0 - mounted.frames[&outer].size.height.0;
     assert!(to > 10_000.0 && mounted.contains(1) && mounted.contains(4096));
     mounted.event(&mut core, "thumbApplied", json!([20, ticket, to]));
     mounted.event(&mut core, "thumbApplied", json!([21, ticket + 1, to]));
@@ -264,7 +296,7 @@ fn a_fast_thumb_keeps_both_pages_until_their_mount_and_scroll_are_acknowledged()
         task.run();
     }
     mounted.flush(&mut core);
-    assert_eq!(mounted.offsets.len(), 1, "stale layout issued a command");
+    assert_eq!(mounted.requests.len(), 1, "stale layout issued a command");
     assert!(!mounted.rows.values().any(|&n| (900..1150).contains(&n)));
 
     mounted.event(&mut core, "thumbBegin", json!([22]));
@@ -277,8 +309,8 @@ fn a_fast_thumb_keeps_both_pages_until_their_mount_and_scroll_are_acknowledged()
         task.run();
     }
     mounted.flush(&mut core);
-    assert_eq!(mounted.offsets.len(), 2);
-    let (new_node, new_grab, _, _) = mounted.offsets[1];
+    assert_eq!(mounted.requests.len(), 2);
+    let (new_node, new_grab, _, _) = mounted.requests[1];
     assert_eq!(Some(new_node), mounted.receiver);
     assert_eq!(new_grab, 23);
 }

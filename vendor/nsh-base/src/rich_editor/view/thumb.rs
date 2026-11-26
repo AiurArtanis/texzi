@@ -24,7 +24,7 @@ struct Grab {
 }
 
 pub(super) struct ThumbScroll {
-    pub destination: Signal<Option<Points>>,
+    pub destination_fraction: Signal<Option<f32>>,
     grab: Cell<Option<Grab>>,
     latest: Cell<Option<f32>>,
     ticket: Cell<u64>,
@@ -34,7 +34,7 @@ pub(super) struct ThumbScroll {
 impl ThumbScroll {
     pub fn new() -> Rc<Self> {
         Rc::new(Self {
-            destination: signal(None),
+            destination_fraction: signal(None),
             grab: Cell::default(),
             latest: Cell::default(),
             ticket: Cell::default(),
@@ -46,7 +46,7 @@ impl ThumbScroll {
         self.grab.set(None);
         self.latest.set(None);
         self.awaiting_offset.set(false);
-        self.destination.try_set(None);
+        self.destination_fraction.try_set(None);
     }
 }
 
@@ -141,15 +141,16 @@ impl Rv {
     }
 
     fn request_thumb(&self, grab: Grab, fraction: f32) {
+        let fraction = fraction.clamp(0.0, 1.0);
         // Coalesce samples but let the page already mounting finish.
-        if self.thumb.destination.get_untracked().is_some() {
+        if self.thumb.destination_fraction.get_untracked().is_some() {
             self.thumb.latest.set(Some(fraction));
             return;
         }
         let max = (self.content_height.get_untracked() - self.viewport.get_untracked().height)
             .0
             .max(0.0);
-        let target = px(max * fraction.clamp(0.0, 1.0));
+        let target = px(max * fraction);
         if tracing() {
             eprintln!(
                 "TEXZI_THUMB {:?} request node={} gesture={} shown={} target={} max={max}",
@@ -165,7 +166,7 @@ impl Rv {
         }
         let ticket = self.thumb.ticket.get().wrapping_add(1);
         self.thumb.ticket.set(ticket);
-        self.thumb.destination.set(Some(target));
+        self.thumb.destination_fraction.set(Some(fraction));
         let mounted = run_on_main_thread(|| ());
         let rv = self.clone();
         self.owner.run(|| {
@@ -180,10 +181,10 @@ impl Rv {
                 }
                 rv.thumb.awaiting_offset.set(true);
                 if tracing() {
-                    eprintln!("TEXZI_THUMB {:?} mount-applied node={} gesture={} ticket={ticket} target={}",
-                        Instant::now(), grab.receiver, grab.gesture, target.0);
+                    eprintln!("TEXZI_THUMB {:?} mount-applied node={} gesture={} ticket={ticket} fraction={fraction}",
+                        Instant::now(), grab.receiver, grab.gesture);
                 }
-                rv.scroll.command("texziApplyRichThumb", json!([grab.receiver, grab.gesture, ticket, target.0]));
+                rv.scroll.command("texziApplyRichThumb", json!([grab.receiver, grab.gesture, ticket, fraction]));
             })
         });
     }
@@ -205,7 +206,7 @@ impl Rv {
             self.scroll_y.set(actual);
             self.scrolled.set(actual);
             self.thumb.awaiting_offset.set(false);
-            self.thumb.destination.set(None);
+            self.thumb.destination_fraction.set(None);
             if let Some(fraction) = self.thumb.latest.take() {
                 self.request_thumb(grab, fraction);
             }
