@@ -72,8 +72,9 @@ The event does not allocate another document snapshot or introduce a
 scroll listener when feedback is disabled.
 
 When Texzi's source editor reflows wrapped rows, it retains the first
-visible source position and its vertical offset. The source minimap can
-change the available width while retaining this position.
+visible source position and its vertical offset. The source minimap and
+indent width can change the layout while retaining this position. Font
+changes prefer to anchor a visible caret and otherwise use the top row.
 
 `RichEditorApi::set_scroll_top` restores a saved vertical position through
 the existing visible-row scroll path when a session view mounts.

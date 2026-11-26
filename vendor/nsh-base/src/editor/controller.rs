@@ -303,11 +303,12 @@ impl Ed {
             let relayout = options.tab_size != st.options.tab_size;
             st.options = options;
             if relayout {
-                let tab = st.options.tab_size;
-                st.display.set_tab_size(tab);
-                st.relayout();
+                let offset = ed.reflow_position(&mut st, false, |st| {
+                    st.display.set_tab_size(st.options.tab_size);
+                    st.relayout();
+                });
                 drop(st);
-                ed.bump_text();
+                ed.finish_reflow(offset);
             }
         });
         let ed = self.clone();
@@ -365,42 +366,25 @@ impl Ed {
             let mut st = ed.st.borrow_mut();
             st.display.set_cells(crate::terminal::is_terminal());
             if st.font != font {
-                st.display.set_measure(measurer(&font));
-                st.font = font;
-                st.relayout();
+                let offset = ed.reflow_position(&mut st, true, |st| {
+                    st.display.set_measure(measurer(&font));
+                    st.font = font;
+                    st.relayout();
+                });
                 drop(st);
-                ed.bump_text();
+                ed.finish_reflow(offset);
             }
         });
         let ed = self.clone();
         effect(move || {
             let wrap = ed.props.soft_wrap.get();
             let width = ed.text_width.get();
-            let offset = {
-                let mut st = ed.st.borrow_mut();
-                let st = &mut *st;
-                let y = ed.scroll_y.get_untracked();
-                let top = ed.rows_top.get_untracked();
-                let anchor = if ed.props.anchor_wrap_reflow.get_untracked() && y > top {
-                    let height = st.line_height().0.max(1.0);
-                    let row =
-                        (((y - top).0 / height).floor() as usize).min(st.display.row_count() - 1);
-                    Some((
-                        st.display.row(row).range.start,
-                        ((y - top).0 - row as f32 * height).clamp(0.0, height),
-                    ))
-                } else {
-                    None
-                };
+            let offset = ed.reflow_position(&mut ed.st.borrow_mut(), false, |st| {
                 let wrap_width = (wrap && width.0 > 0.0).then_some(width);
                 st.display.set_wrap_width(wrap_width);
                 st.display.rebuild(&st.buffer);
-                anchor.map(|(byte, intra_row)| st.caret_point(byte).y + top + px(intra_row))
-            };
-            ed.bump_text();
-            if let Some(offset) = offset {
-                ed.set_scroll_offset(Point::new(ed.scroll_x.get_untracked(), offset));
-            }
+            });
+            ed.finish_reflow(offset);
         });
         let ed = self.clone();
         effect(move || {
@@ -1525,6 +1509,47 @@ impl Ed {
         if let Some(target) = target_x {
             self.scroll_x.set(target);
             self.hscroll.scroll_to(Point::new(target, px(0.0)), false);
+        }
+    }
+
+    fn reflow_position(
+        &self,
+        state: &mut State,
+        keep_visible_caret: bool,
+        reflow: impl FnOnce(&mut State),
+    ) -> Option<Points> {
+        let top = self.rows_top.get_untracked();
+        let y = self.scroll_y.get_untracked();
+        let anchor = if self.props.anchor_wrap_reflow.get_untracked() && y > top {
+            let line_height = state.line_height().0.max(1.0);
+            let caret = keep_visible_caret
+                .then(|| {
+                    let byte = state.primary_head();
+                    (byte, state.caret_point(byte).y + top)
+                })
+                .filter(|(_, caret_top)| {
+                    *caret_top >= y
+                        && *caret_top + px(line_height) <= y + self.viewport.get_untracked().height
+                });
+            if let Some((byte, caret_top)) = caret {
+                Some((byte, y - caret_top))
+            } else {
+                let row = (((y - top).0 / line_height).floor() as usize)
+                    .min(state.display.row_count() - 1);
+                let delta = ((y - top).0 - row as f32 * line_height).clamp(0.0, line_height);
+                Some((state.display.row(row).range.start, px(delta)))
+            }
+        } else {
+            None
+        };
+        reflow(state);
+        anchor.map(|(byte, offset)| state.caret_point(byte).y + top + offset)
+    }
+
+    fn finish_reflow(&self, offset: Option<Points>) {
+        self.bump_text();
+        if let Some(offset) = offset {
+            self.set_scroll_offset(Point::new(self.scroll_x.get_untracked(), offset));
         }
     }
 
