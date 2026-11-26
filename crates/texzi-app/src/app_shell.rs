@@ -3229,7 +3229,7 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                                 run.owner.run(|| {
                                     spawn(async move {
                                         // The native editor consumes the external selection at commit.
-                                        wait_for_editor_frame(doc.body).await;
+                                        let _ = next_frame().await;
                                         if shell.second_active.get() == second
                                             && shell
                                                 .current()

@@ -74,9 +74,10 @@ fn cancellation_stops_decode_and_model_build_before_registration() {
         assert_eq!(checks.get(), at);
         assert_eq!(Arc::strong_count(&text), 1);
     }
+    let mut fresh = Store::new(HistoryBudget::default());
     assert_eq!(
         store.open_decoded("small", format).unwrap().token,
-        StateToken(1)
+        fresh.open_decoded("small", format).unwrap().token
     );
 }
 #[test]
