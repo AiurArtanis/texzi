@@ -1068,7 +1068,14 @@ mod tests {
             "the validated nested request still gets a frame"
         );
         assert!(!take_wake(), "repeated requests coalesce into one wake");
-        removed(surface, &view);
+        assert!(removed(surface, &view));
+        drop(window);
+        drop(view);
+        // SAFETY: destroy the hidden host on its owning test thread.
+        unsafe { DestroyWindow(app.hwnd()).unwrap() };
+        // Release the test thread's Direct3D device before Windows tears it down.
+        drop(app);
+        crate::gfx::lost();
     }
 
     /// A window's hidden title bar is known when the window is made, not
