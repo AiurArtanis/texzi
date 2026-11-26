@@ -51,6 +51,7 @@ pub enum Error {
     InvalidEolPlan,
     InvalidProfile,
     Cancelled,
+    LineLimit,
     CounterExhausted,
     HistoryBudget,
     NoHistory,

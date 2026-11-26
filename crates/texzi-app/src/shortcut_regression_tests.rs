@@ -110,12 +110,25 @@ fn SettingsRoutingFixture() -> impl IntoElement {
     );
     let source = shell.current().unwrap();
     assert!(!source.displayed_rich());
+    let mid_sized_markdown = std::path::Path::new("notes.md");
+    assert!(!shell.initial_markdown_rich(Some(mid_sized_markdown), super::LARGE_BYTES, None));
+    assert!(shell.initial_markdown_rich(Some(mid_sized_markdown), super::LARGE_BYTES, Some(true)));
+    assert!(!shell.initial_markdown_rich(
+        Some(mid_sized_markdown),
+        super::large_file::SOURCE_ONLY_BYTES + 1,
+        Some(true)
+    ));
     assert!(
         shell
             .settings
             .apply(super::settings::MARKDOWN_VIEW, None, Some("wysiwyg".into()))
     );
     assert!(!source.displayed_rich());
+    assert!(!shell.initial_markdown_rich(
+        Some(mid_sized_markdown),
+        super::LARGE_BYTES,
+        Some(false)
+    ));
     shell.add(
         NativeView::fixture("# Rich"),
         Some(r"C:\texzi-test\rich.md".into()),

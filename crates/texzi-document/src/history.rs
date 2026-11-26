@@ -502,10 +502,15 @@ impl Store {
         profile: Profile,
         backed_by_disk: bool,
     ) -> Result<Snapshot, Error> {
-        if profile.version != 1 {
+        if profile.version != 1 || !profile.valid() {
             return Err(Error::InvalidProfile);
         }
-        self.open_import(raw, profile, backed_by_disk, false, None)
+        self.open_import(
+            Body::import_utf8(raw, profile),
+            raw.is_empty(),
+            backed_by_disk,
+            None,
+        )
     }
     pub fn open_decoded(
         &mut self,
@@ -521,52 +526,82 @@ impl Store {
         format: crate::files::Format,
         default_eol: Eol,
     ) -> Result<Snapshot, Error> {
-        self.open_decoded_import(text, format, default_eol, None)
+        let empty = text.is_empty();
+        let body = Self::decoded_body(Arc::from(text), format, default_eol, usize::MAX, &|| false)?;
+        self.open_import(body, empty, false, None)
     }
 
     /// Imports an unsaved session body. Its initial content remains dirty
     /// even if subsequent edits undo back to this recovered state.
-    pub fn open_recovered(
+    pub fn open_recovered_cancellable(
         &mut self,
-        text: &str,
+        text: Arc<str>,
         format: crate::files::Format,
         default_eol: Eol,
+        max_lines: usize,
+        cancelled: impl Fn() -> bool,
     ) -> Result<Snapshot, Error> {
+        let empty = text.is_empty();
+        let body = Self::decoded_body(text, format, default_eol, max_lines, &cancelled)?;
         let baseline = self.allocate_token()?;
-        self.open_decoded_import(text, format, default_eol, Some(baseline))
+        self.open_import(body, empty, false, Some(baseline))
     }
-
-    fn open_decoded_import(
+    pub fn open_decoded_cancellable(
         &mut self,
-        text: &str,
+        text: Arc<str>,
+        format: crate::files::Format,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Snapshot, Error> {
+        self.open_decoded_with_line_limit(text, format, usize::MAX, cancelled)
+    }
+    /// Enforce the full editor's logical line budget while normalizing the decoded input.
+    /// The empty document and the empty line following a final newline each count as a line.
+    pub fn open_decoded_with_line_limit(
+        &mut self,
+        text: Arc<str>,
+        format: crate::files::Format,
+        max_lines: usize,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Snapshot, Error> {
+        let empty = text.is_empty();
+        let body = Self::decoded_body(
+            text,
+            format,
+            Profile::default().default_eol,
+            max_lines,
+            &cancelled,
+        )?;
+        self.open_import(body, empty, false, None)
+    }
+    fn decoded_body(
+        text: Arc<str>,
         format: crate::files::Format,
         default_eol: Eol,
-        baseline: Option<StateToken>,
-    ) -> Result<Snapshot, Error> {
-        self.open_import(
-            text,
-            Profile {
-                version: 2,
-                file_format: Some(format),
-                default_eol,
-                ..Profile::default()
-            },
-            false,
-            true,
-            baseline,
-        )
-    }
-    fn open_import(
-        &mut self,
-        raw: &str,
-        profile: Profile,
-        backed_by_disk: bool,
-        decoded: bool,
-        baseline: Option<StateToken>,
-    ) -> Result<Snapshot, Error> {
+        max_lines: usize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Body, Error> {
+        let profile = Profile {
+            version: 2,
+            file_format: Some(format),
+            default_eol,
+            ..Profile::default()
+        };
         if !profile.valid() {
             return Err(Error::InvalidProfile);
         }
+        let body = Body::import_cancellable(text, profile, max_lines, cancelled)?;
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        Ok(body)
+    }
+    fn open_import(
+        &mut self,
+        body: Body,
+        empty: bool,
+        backed_by_disk: bool,
+        baseline: Option<StateToken>,
+    ) -> Result<Snapshot, Error> {
         let id = NEXT_DOC
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| x.checked_add(1))
             .map_err(|_| Error::CounterExhausted)?;
@@ -575,11 +610,7 @@ impl Store {
             doc: DocId(id),
             revision: Revision(0),
             token,
-            body: Arc::new(if decoded {
-                Body::import_decoded(raw, profile)
-            } else {
-                Body::import_utf8(raw, profile)
-            }),
+            body: Arc::new(body),
         };
         self.docs.insert(
             current.doc,
@@ -590,7 +621,7 @@ impl Store {
                 closed_views: std::collections::BTreeMap::new(),
                 baseline_kind: if backed_by_disk {
                     BaselineKind::ExternalLoadClaim
-                } else if raw.is_empty() {
+                } else if empty {
                     BaselineKind::InitialEmpty
                 } else {
                     BaselineKind::MemoryImport

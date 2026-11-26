@@ -8,6 +8,7 @@ use std::{
 };
 
 const EDIT_DELAY: Duration = Duration::from_millis(1000);
+const FOCUS_SETTLE: Duration = Duration::from_millis(60);
 const WAIT_FOR_SAVE: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -24,6 +25,7 @@ struct Target {
 }
 
 pub(super) struct State {
+    focused_editor: Cell<Option<(bool, bool)>>,
     blurred: Signal<bool>,
     paused: Signal<bool>,
     restored_revision: Cell<Option<u64>>,
@@ -34,6 +36,7 @@ pub(super) struct State {
 impl State {
     pub(super) fn new() -> Self {
         Self {
+            focused_editor: Cell::new(None),
             blurred: signal(false),
             paused: signal(false),
             restored_revision: Cell::new(None),
@@ -42,8 +45,21 @@ impl State {
         }
     }
 
-    pub(super) fn focus_changed(&self, focused: bool) {
-        self.blurred.set(!focused);
+    pub(super) fn focus_editor(&self, second: bool, rich: bool) {
+        self.focused_editor.set(Some((second, rich)));
+        self.blurred.set(false);
+    }
+
+    pub(super) fn blur_editor(&self, second: bool, rich: bool, same_document_switch: bool) {
+        if self.focused_editor.get() == Some((second, rich)) && !same_document_switch {
+            self.leave_document();
+        }
+    }
+
+    pub(super) fn leave_document(&self) {
+        if self.focused_editor.take().is_some() {
+            self.blurred.set(true);
+        }
     }
 
     pub(super) fn after_explicit_save(&self) {
@@ -83,7 +99,7 @@ fn target(shell: &Shell, doc: &Document, mode: Option<Mode>) -> Option<Target> {
     }
     let mode = mode?;
     let path = doc.path.get()?;
-    if state.paused.get() || !doc.editable_body_ready() {
+    if state.paused.get() || !doc.editable_body_ready() || !doc.source.has_disk_baseline() {
         return None;
     }
     if mode == Mode::Blur && !state.blurred.get() {
@@ -126,7 +142,7 @@ pub(super) fn install(shell: &Rc<Shell>) {
                 let delay = if when == Mode::Delay {
                     EDIT_DELAY
                 } else {
-                    Duration::ZERO
+                    FOCUS_SETTLE
                 };
                 schedule(&shell, &doc, generation, delay);
             }

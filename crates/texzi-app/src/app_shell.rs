@@ -1,8 +1,10 @@
 //! Application shell. Native menus and the palette share command identities.
+mod large_file;
 use crate::editor_owner::SaveError;
 use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
 use crate::settings;
 use crate::{editor_owner::NativeView, rich_owner::ModeGate};
+use large_file::{LARGE_BYTES, LargeFile};
 use nsh_base::{
     editor::{Editor, EditorApi, EditorCommand, ExternalDocument},
     rich_editor::view::RichEditorApi,
@@ -80,12 +82,13 @@ struct Document {
     path: Signal<Option<PathBuf>>,
     source: Rc<NativeView>,
     gate: Rc<ModeGate>,
+    large: Option<Rc<LargeFile>>,
     reference: ComponentRef<Editor>,
     rich_reference: ComponentRef<nsh_base::rich_editor::view::RichEditor>,
     controls: RichControlSet,
     wrap: Signal<Option<bool>>,
     tab_size: Signal<Option<u32>>,
-    retained_scroll: Signal<Option<(f32, f32)>>,
+    retained_scroll: Signal<Option<(bool, f32, f32)>>,
     auto_save: Rc<auto_save::State>,
     pending_mode: Signal<Option<bool>>,
     progress: ElementRef,
@@ -93,7 +96,23 @@ struct Document {
 }
 impl Document {
     fn editable_body_ready(&self) -> bool {
-        self.path.get().is_none() || self.source.has_disk_baseline()
+        self.large.is_none()
+    }
+
+    fn needs_close_confirmation(&self) -> bool {
+        self.large.as_ref().map_or_else(
+            || self.source.is_dirty().unwrap_or(true),
+            |large| large.restored_draft.get().is_some(),
+        )
+    }
+
+    fn source_wrap_limited(&self) -> bool {
+        self.source.track();
+        self.source.disk_len() > large_file::SOURCE_ONLY_BYTES
+            || self
+                .source
+                .current_body()
+                .is_some_and(|body| body.len_bytes() as u64 > large_file::SOURCE_ONLY_BYTES)
     }
 
     fn displayed_rich(&self) -> bool {
@@ -313,8 +332,10 @@ struct Shell {
     settings_view: Rc<settings_view::SettingsView>,
     settings_tab: Signal<SettingsTab>,
     session: RefCell<Option<Rc<session_recovery::Session>>>,
+    recovery_split: RefCell<Option<(u64, session_recovery::Split)>>,
     next: Cell<u64>,
-    closed: RefCell<Vec<Rc<Document>>>,
+    closed: RefCell<Vec<ClosedTab>>,
+    imports: large_file::ImportQueue,
     root: Signal<Option<PathBuf>>,
     sidebar: Signal<bool>,
     sidebar_width: Signal<f32>,
@@ -345,6 +366,10 @@ struct Shell {
     quick_notice: Signal<String>,
     quick_scanning: Signal<bool>,
     quick_cancel: RefCell<Option<Arc<AtomicBool>>>,
+}
+enum ClosedTab {
+    Document(Rc<Document>),
+    File(PathBuf),
 }
 pub(crate) fn foreground() -> Hsla {
     if dark() {
@@ -410,6 +435,7 @@ impl Shell {
         self.zen_exit.reset();
         self.cancel_quick(false);
         self.panel.set(String::new());
+        self.leave_editor_document(None);
         self.settings_tab.set(SettingsTab::Active);
         self.restore_editor_focus();
     }
@@ -433,12 +459,51 @@ impl Shell {
     }
 
     fn activate_primary(&self, id: u64) {
+        self.leave_editor_document(Some(id));
         if let Some(previous) = self.primary().filter(|previous| previous.id != id) {
             session_recovery::keep_scroll(&previous);
         }
         self.active.set(id);
         self.second_active.set(false);
         self.show_documents();
+    }
+
+    fn leave_editor_document(&self, next: Option<u64>) {
+        if let Some(previous) = self.current().filter(|doc| Some(doc.id) != next) {
+            previous.auto_save.leave_document();
+        }
+    }
+
+    fn body_blurred(&self, doc: &Document, second: bool, rich: bool) {
+        let same_document_switch = self.current().is_some_and(|current| {
+            current.id == doc.id
+                && (self.second_active.get() != second || current.displayed_rich() != rich)
+        });
+        doc.auto_save
+            .blur_editor(second, rich, same_document_switch);
+    }
+
+    fn body_focused(&self, doc: &Rc<Document>, second: bool, rich: bool) {
+        let shown = if second {
+            self.split.get()
+        } else {
+            self.primary()
+        };
+        if !self.settings_active()
+            && shown.is_some_and(|shown| Rc::ptr_eq(&shown, doc))
+            && doc.displayed_rich() == rich
+        {
+            self.leave_editor_document(Some(doc.id));
+            self.second_active.set(second);
+            doc.auto_save.focus_editor(second, rich);
+        }
+    }
+
+    fn leave_second_group(&self) {
+        self.leave_editor_document(self.primary().map(|doc| doc.id));
+        self.split.set(None);
+        self.recovery_split.borrow_mut().take();
+        self.second_active.set(false);
     }
 
     fn step_document_tab(self: &Rc<Self>, forward: bool) {
@@ -470,6 +535,10 @@ impl Shell {
     }
 
     fn source_wrap(&self, doc: &Document) -> bool {
+        !doc.source_wrap_limited() && self.source_wrap_preference(doc)
+    }
+
+    fn source_wrap_preference(&self, doc: &Document) -> bool {
         doc.wrap.get().unwrap_or_else(|| {
             let id = if doc.is_markdown() {
                 settings::WRAP_MARKDOWN
@@ -516,8 +585,10 @@ impl Shell {
             settings_view: Rc::new(settings_view::SettingsView::new(CHORDS)),
             settings_tab: signal(SettingsTab::Closed),
             session: RefCell::new(None),
+            recovery_split: RefCell::new(None),
             next: Cell::new(1),
             closed: RefCell::new(vec![]),
+            imports: Default::default(),
             root: signal(None),
             sidebar: signal(true),
             sidebar_width: signal(232.0),
@@ -747,16 +818,36 @@ impl Shell {
         source: Rc<NativeView>,
         path: Option<PathBuf>,
         restored_mode: Option<bool>,
-    ) {
+    ) -> Rc<Document> {
         let id = self.next.get();
         self.next.set(id + 1);
+        let start_rich =
+            self.initial_markdown_rich(path.as_deref(), source.disk_len(), restored_mode);
+        let doc = self.make_document(id, source, path, None, start_rich);
+        self.show_new(doc.clone());
+        doc
+    }
+    fn initial_markdown_rich(
+        &self,
+        path: Option<&Path>,
+        bytes: u64,
+        restored: Option<bool>,
+    ) -> bool {
+        path.is_some_and(is_markdown)
+            && bytes <= large_file::SOURCE_ONLY_BYTES
+            && restored.unwrap_or_else(|| self.preference(settings::MARKDOWN_VIEW) == "wysiwyg")
+    }
+    fn make_document(
+        &self,
+        id: u64,
+        source: Rc<NativeView>,
+        path: Option<PathBuf>,
+        large: Option<Rc<LargeFile>>,
+        start_rich: bool,
+    ) -> Rc<Document> {
         let rich = self.owner.run(|| source.sibling().expect("rich view"));
         let gate = self.owner.run(|| ModeGate::new(source.clone(), rich));
-        if path.as_deref().is_some_and(is_markdown)
-            && source.disk_len() <= settings::MARKDOWN_SOURCE_ONLY_BYTES
-            && restored_mode
-                .unwrap_or_else(|| self.preference(settings::MARKDOWN_VIEW) == "wysiwyg")
-        {
+        if start_rich {
             self.owner.run(|| gate.to_rich());
         }
         let reference = self.owner.run(component_ref::<Editor>);
@@ -766,24 +857,27 @@ impl Shell {
         let controls = self.owner.run(|| RichControlSet::new(&gate, &source));
         let wrap = self.owner.run(|| signal(None));
         let path = self.owner.run(|| signal(path));
-        self.docs.update(|ds| {
-            ds.push(Rc::new(Document {
-                id,
-                path,
-                source,
-                gate,
-                reference,
-                rich_reference,
-                controls,
-                wrap,
-                tab_size: self.owner.run(|| signal(None)),
-                retained_scroll: self.owner.run(|| signal(None)),
-                auto_save: self.owner.run(|| Rc::new(auto_save::State::new())),
-                pending_mode: self.owner.run(|| signal(None)),
-                progress: self.owner.run(element_ref),
-                body: self.owner.run(element_ref),
-            }))
-        });
+        Rc::new(Document {
+            id,
+            path,
+            source,
+            gate,
+            large,
+            reference,
+            rich_reference,
+            controls,
+            wrap,
+            tab_size: self.owner.run(|| signal(None)),
+            retained_scroll: self.owner.run(|| signal(None)),
+            auto_save: self.owner.run(|| Rc::new(auto_save::State::new())),
+            pending_mode: self.owner.run(|| signal(None)),
+            progress: self.owner.run(element_ref),
+            body: self.owner.run(element_ref),
+        })
+    }
+    fn show_new(&self, doc: Rc<Document>) {
+        let id = doc.id;
+        self.docs.update(|ds| ds.push(doc));
         self.activate_primary(id);
         self.panel.set(String::new());
         self.notice.set(String::new());
@@ -791,6 +885,16 @@ impl Shell {
     fn blocked(&self, id: &str) -> Option<String> {
         if self.settings_active() && document_action(id) {
             return Some("请先切回文档".into());
+        }
+        if self.current().is_some_and(|doc| !doc.editable_body_ready())
+            && large_file::requires_editable(id)
+        {
+            return Some("此标签尚未载入完整编辑模型，分页内容仅供查看和复制。".into());
+        }
+        if id == "texzi.editor.toggleWrap"
+            && self.current().is_some_and(|doc| doc.source_wrap_limited())
+        {
+            return Some("大文档已暂时关闭自动换行，设置保持原值。".into());
         }
         if self.current().is_some_and(|d| d.gate.busy()) {
             return Some("请先完成或取消中文组合".into());
@@ -940,6 +1044,14 @@ impl Shell {
     }
 
     fn open_canonical_file(self: &Rc<Self>, path: PathBuf) -> Result<(), String> {
+        self.open_canonical_with_view(path, None).map(|_| ())
+    }
+
+    fn open_canonical_with_view(
+        self: &Rc<Self>,
+        path: PathBuf,
+        restored_view: Option<session_recovery::EditorView>,
+    ) -> Result<Rc<Document>, String> {
         if let Some(doc) = self.docs.with(|ds| {
             ds.iter()
                 .find(|d| {
@@ -953,15 +1065,45 @@ impl Shell {
             self.remember(&path);
             self.activate_primary(doc.id);
             self.restore_editor_focus();
-            return Ok(());
+            return Ok(doc);
         }
-        let source = self.load_recovery_target(&path)?;
+        let file =
+            texzi_document::files::paged::FileSource::open(&path).map_err(|e| e.to_string())?;
+        if file.len >= LARGE_BYTES {
+            return Ok(self.open_large(path, Arc::new(file), None, restored_view, None));
+        }
+        let prepared = match crate::editor_owner::PreparedFile::from_source(
+            &file,
+            LARGE_BYTES - 1,
+            &AtomicBool::new(false),
+            None,
+        ) {
+            Ok(prepared) => prepared,
+            Err(crate::editor_owner::PrepareError::LineLimit(encoding)) => {
+                return Ok(self.open_large(
+                    path,
+                    Arc::new(file),
+                    Some(encoding),
+                    restored_view,
+                    None,
+                ));
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        let source = self.owner.run(|| prepared.attach())?;
+        if let Some(view) = &restored_view {
+            view.restore_source(&source);
+        }
         self.remember(&path);
-        self.add(source, Some(path));
-        Ok(())
-    }
-    fn load_recovery_target(&self, path: &Path) -> Result<Rc<NativeView>, String> {
-        self.owner.run(|| NativeView::open_file(path))
+        let doc = self.add_with_mode(
+            source,
+            Some(path),
+            restored_view.as_ref().map(|view| view.rich),
+        );
+        if let Some(view) = restored_view {
+            view.restore_view(&doc);
+        }
+        Ok(doc)
     }
     fn open_folder(self: &Rc<Self>, path: &Path) {
         match path.canonicalize() {
@@ -1058,7 +1200,10 @@ impl Shell {
                     .collect::<Vec<_>>()
             })
         } else {
-            self.current().into_iter().collect()
+            self.current()
+                .into_iter()
+                .filter(|doc| doc.editable_body_ready())
+                .collect()
         };
         if targets.is_empty() {
             self.notice.set("没有待保存的文档".into());
@@ -1092,6 +1237,9 @@ impl Shell {
     ) -> Result<(), String> {
         let mut saved = 0;
         for doc in targets {
+            if doc.large.is_some() {
+                return Err("只读分页或尚在加载的文件不能保存".into());
+            }
             let original = doc.path.get();
             let mut choose_path = save_as || original.is_none();
             let mut use_utf8 = false;
@@ -1211,7 +1359,7 @@ impl Shell {
         }
         let dirty = self.docs.with(|ds| {
             ds.iter()
-                .filter(|d| d.source.is_dirty().unwrap_or(true))
+                .filter(|d| d.needs_close_confirmation())
                 .map(|d| d.name())
                 .collect::<Vec<_>>()
         });
@@ -1282,7 +1430,7 @@ impl Shell {
             self.active.set(id);
             return;
         }
-        if doc.source.is_dirty().unwrap_or(true) {
+        if doc.needs_close_confirmation() {
             let s = self.clone();
             await_shell_modal(
                 &self.owner,
@@ -1315,13 +1463,35 @@ impl Shell {
         }
     }
     fn remove(&self, id: u64) {
+        if self
+            .recovery_split
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, split)| split.id == id)
+        {
+            self.recovery_split.borrow_mut().take();
+        }
         if self.split.with(|d| d.as_ref().is_some_and(|d| d.id == id)) {
             self.split.set(None);
             self.second_active.set(false);
         }
         self.docs.update(|ds| {
             if let Some(at) = ds.iter().position(|d| d.id == id) {
-                self.closed.borrow_mut().push(ds.remove(at));
+                let doc = ds.remove(at);
+                if let Some(large) = &doc.large {
+                    large.close();
+                }
+                let reopen = if doc.large.is_some()
+                    || (doc.source.disk_len() >= LARGE_BYTES
+                        && !doc.source.is_dirty().unwrap_or(true))
+                {
+                    doc.path.get().map(ClosedTab::File)
+                } else {
+                    None
+                };
+                self.closed
+                    .borrow_mut()
+                    .push(reopen.unwrap_or(ClosedTab::Document(doc)));
             }
         });
         if self.active.get() == id {
@@ -1421,18 +1591,30 @@ impl Shell {
                 return;
             }
         }
+        if self.mount_split(&doc, down).is_some() {
+            self.recovery_split.borrow_mut().take();
+            self.second_active.set(true);
+            self.notice
+                .set("同一文档已拆分为两个独立视图，共享正文与撤销历史".into());
+        }
+    }
+
+    fn mount_split(self: &Rc<Self>, doc: &Rc<Document>, down: bool) -> Option<Rc<Document>> {
+        if !doc.editable_body_ready() || self.split.get().is_some() {
+            return None;
+        }
         let source = match doc.source.sibling_source() {
             Ok(v) => v,
             Err(e) => {
                 self.explain("无法拆分", &e);
-                return;
+                return None;
             }
         };
         let rich = match source.sibling() {
             Ok(v) => v,
             Err(e) => {
                 self.explain("无法拆分", &e);
-                return;
+                return None;
             }
         };
         let gate = ModeGate::new(source.clone(), rich);
@@ -1440,11 +1622,12 @@ impl Shell {
         let rich_reference = component_ref::<nsh_base::rich_editor::view::RichEditor>();
         let controls = RichControlSet::new(&gate, &source);
         let wrap = signal(doc.wrap.get());
-        self.split.set(Some(Rc::new(Document {
+        let second = Rc::new(Document {
             id: doc.id,
             path: doc.path,
             source,
             gate,
+            large: None,
             reference,
             rich_reference,
             controls,
@@ -1455,11 +1638,10 @@ impl Shell {
             pending_mode: signal(None),
             progress: element_ref(),
             body: element_ref(),
-        })));
+        });
+        self.split.set(Some(second.clone()));
         self.split_down.set(down);
-        self.second_active.set(true);
-        self.notice
-            .set("同一文档已拆分为两个独立视图，共享正文与撤销历史".into());
+        Some(second)
     }
     fn focus_group(&self, index: u8) {
         self.zen_exit.reset();
@@ -1472,6 +1654,12 @@ impl Shell {
             self.notice.set("编辑组 2 不存在，未创建新文档".into());
             return;
         }
+        let next = if index == 2 {
+            self.split.get()
+        } else {
+            self.primary()
+        };
+        self.leave_editor_document(next.map(|doc| doc.id));
         self.show_documents();
         self.second_active.set(index == 2);
         if let Some(doc) = self.current() {
@@ -1642,11 +1830,11 @@ impl Shell {
             "texzi.file.saveAs" => self.save(false,true),
             "texzi.file.saveAll" => self.save(true,false),
             "texzi.folder.close"=>{self.root.set(None);self.notice.set("已关闭文件夹，已打开标签保持不变".into());},
-            "texzi.window.close"=>self.close_window(),"texzi.tab.close"=>if self.settings_active(){self.dismiss_settings(true);}else if self.second_active.get(){self.split.set(None);self.second_active.set(false);}else{self.close_tab(self.active.get());},
+            "texzi.window.close"=>self.close_window(),"texzi.tab.close"=>if self.settings_active(){self.dismiss_settings(true);}else if self.second_active.get(){self.leave_second_group();}else{self.close_tab(self.active.get());},
             "texzi.window.new"=>match session_recovery::spawn_blank_window(){Ok(())=>self.notice.set("已启动新的 texzi 窗口".into()),Err(e)=>self.explain("新建窗口失败",&e.to_string())},
             "texzi.group.splitRight"|"texzi.group.splitDown"=>self.split_editor(id.ends_with("Down")),
-            "texzi.group.joinAll"=>{self.split.set(None);self.second_active.set(false);self.notice.set("已合并为单组；同一文档内容与历史保持不变".into());},
-            "texzi.tab.reopenClosed"=>{let doc=self.closed.borrow_mut().pop();if let Some(doc)=doc{let id=doc.id;self.docs.update(|ds|ds.push(doc));self.activate_primary(id);self.restore_editor_focus();}else{self.notice.set("没有已关闭标签".into());}},
+            "texzi.group.joinAll"=>{self.leave_second_group();self.notice.set("已合并为单组；同一文档内容与历史保持不变".into());},
+            "texzi.tab.reopenClosed"=>{let doc=self.closed.borrow_mut().pop();match doc{Some(ClosedTab::Document(doc))=>{let id=doc.id;self.docs.update(|ds|ds.push(doc));self.activate_primary(id);self.restore_editor_focus();},Some(ClosedTab::File(path))=>self.open(&path),None=>self.notice.set("没有已关闭标签".into())}},
             "texzi.tab.next"|"texzi.tab.previous" => self.step_document_tab(id.ends_with("next")),
             "texzi.sidebar.toggle"=>self.sidebar.update(|v|*v=!*v),"texzi.editor.toggleWrap"=>if let Some(doc)=self.current(){let wrap=!self.source_wrap(&doc);doc.wrap.set(Some(wrap));self.notice.set(if wrap{"当前源码视图：自动换行已开启"}else{"当前源码视图：自动换行已关闭"}.into());},
             "texzi.view.toggleZen"|"texzi.view.exitZen"=>{if id.ends_with("exitZen"){self.zen.set(false);}else{self.zen.update(|v|*v=!*v);}if self.notice.get()=="再按一次 Esc 退出 Zen"{self.notice.set(String::new());}},
@@ -1665,6 +1853,20 @@ impl Shell {
         }
     }
     fn request_mode(self: &Rc<Self>, doc: Rc<Document>, target_rich: bool) {
+        self.request_mode_with_position(doc, target_rich, false);
+    }
+
+    fn request_mode_with_position(
+        self: &Rc<Self>,
+        doc: Rc<Document>,
+        target_rich: bool,
+        restore_position: bool,
+    ) {
+        if target_rich && doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES {
+            self.notice
+                .set("此大文件使用源码模式，已关闭语法高亮".into());
+            return;
+        }
         if doc.pending_mode.get().is_some() || doc.gate.rich_mode.get() == target_rich {
             return;
         }
@@ -1704,7 +1906,11 @@ impl Shell {
                             .is_some_and(|current| Rc::ptr_eq(&current, &doc));
                         if target_rich {
                             if let Some(api) = doc.rich_reference.api::<RichEditorApi>() {
-                                api.reveal_primary_caret(viewport_top);
+                                if restore_position {
+                                    session_recovery::apply_scroll(&doc, true);
+                                } else {
+                                    api.reveal_primary_caret(viewport_top);
+                                }
                                 if active {
                                     api.focus();
                                 }
@@ -2213,8 +2419,10 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let body = doc.body;
     let source_focus = s.second_active;
     let rich_focus = s.second_active;
-    let source_auto_save = doc.auto_save.clone();
-    let rich_auto_save = doc.auto_save.clone();
+    let rich_focus_shell = s.clone();
+    let rich_focus_doc = doc.clone();
+    let source_focus_shell = s.clone();
+    let source_focus_doc = doc.clone();
     let rich_restore = doc.clone();
     let source_restore = doc.clone();
     let settings_tab = s.settings_tab;
@@ -2233,6 +2441,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let format_doc = doc.clone();
     let format_shell = s.clone();
     let markdown = move || path.with(|value| value.as_deref().is_some_and(is_markdown));
+    let large_source = doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES;
 
     let content = view()
         .relative()
@@ -2246,8 +2455,10 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 effect(move || crate::rich_images::install(&session, image_document_path.get()));
                 let shell = controls_shell.clone();
                 let escape = shell.clone();
-                let focus_save = rich_auto_save.clone();
-                let blur_save = rich_auto_save.clone();
+                let focus_shell = rich_focus_shell.clone();
+                let focus_doc = rich_focus_doc.clone();
+                let blur_shell = focus_shell.clone();
+                let blur_doc = focus_doc.clone();
                 let focus: Rc<dyn Fn()> =
                     Rc::new(move || shell.focus_group(if second { 2 } else { 1 }));
                 let raw_focus = focus.clone();
@@ -2293,10 +2504,9 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                                     && rich_focus.get() == second
                             })
                             .on_focus(move |_: &()| {
-                                rich_focus.set(second);
-                                focus_save.focus_changed(true);
+                                focus_shell.body_focused(&focus_doc, second, true)
                             })
-                            .on_blur(move |_: &()| blur_save.focus_changed(false))
+                            .on_blur(move |_: &()| blur_shell.body_blurred(&blur_doc, second, true))
                             .on_unhandled_escape(move |_: &()| {
                                 escape.handle_rich_escape(document, second)
                             })
@@ -2313,11 +2523,15 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 let size_shell = size_shell.clone();
                 let height_shell = height_shell.clone();
                 let font_shell = font_shell.clone();
-                let focus_save = source_auto_save.clone();
-                let blur_save = source_auto_save.clone();
+                let focus_shell = source_focus_shell.clone();
+                let focus_doc = source_focus_doc.clone();
+                let blur_shell = focus_shell.clone();
+                let blur_doc = focus_doc.clone();
                 let lines_shell = lines_shell.clone();
                 let wrap_shell = wrap_shell.clone();
                 let wrap_doc = wrap_doc.clone();
+                let wrap_limit_doc = wrap_doc.clone();
+                let wrap_limited = computed(move || wrap_limit_doc.source_wrap_limited());
                 let map_shell = map_shell.clone();
                 let map_source = map_source.clone();
                 let map_document = map_document.clone();
@@ -2337,11 +2551,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .auto_focus(move || {
                         settings_tab.get() != SettingsTab::Active && source_focus.get() == second
                     })
-                    .on_focus(move |_: &()| {
-                        source_focus.set(second);
-                        focus_save.focus_changed(true);
-                    })
-                    .on_blur(move |_: &()| blur_save.focus_changed(false))
+                    .on_focus(move |_: &()| focus_shell.body_focused(&focus_doc, second, false))
+                    .on_blur(move |_: &()| blur_shell.body_blurred(&blur_doc, second, false))
                     .language(move || {
                         Some(SharedString::from(if markdown() {
                             "markdown"
@@ -2351,7 +2562,10 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     })
                     .tab_size(move || Some(tab_shell.tab_size(&tab_doc)))
                     .hard_tabs(false)
-                    .soft_wrap(move || wrap_shell.source_wrap(&wrap_doc))
+                    .soft_wrap(move || {
+                        !wrap_limited.get() && wrap_shell.source_wrap_preference(&wrap_doc)
+                    })
+                    .highlighting(!large_source)
                     .font_family(move || {
                         let font = font_shell.preference(settings::FONT_FAMILY);
                         Some(SharedString::from(settings::source_font_stack(
@@ -2454,7 +2668,11 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
 }
 
 fn restore_editor_scroll(doc: Rc<Document>, rich: bool) {
-    if doc.retained_scroll.get_untracked().is_none() {
+    if !doc
+        .retained_scroll
+        .get_untracked()
+        .is_some_and(|(mode, _, _)| mode == rich)
+    {
         return;
     }
     spawn(async move {
@@ -2493,7 +2711,11 @@ fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoEl
             }))
         })
         .selected(move || !selected.displayed_rich())
-        .disabled(move || disabled.pending_mode.get().is_some())
+        .disabled(move || {
+            disabled.pending_mode.get().is_some()
+                || (!disabled.displayed_rich()
+                    && disabled.source.disk_len() > large_file::SOURCE_ONLY_BYTES)
+        })
         .on_press(move |_: &()| {
             shell.second_active.set(second);
             shell.request_mode(doc.clone(), !doc.displayed_rich());
@@ -2530,9 +2752,13 @@ fn groups(s: Rc<Shell>) -> AnyElement {
         .flex_1()
         .min_w(px(0.0))
         .child(dynamic(move || {
-            primary
-                .primary()
-                .map(|doc| editor(primary.clone(), doc, false))
+            primary.primary().map(|doc| {
+                if let Some(large) = &doc.large {
+                    large_file::viewer(primary.clone(), doc.clone(), large.clone()).into_element()
+                } else {
+                    editor(primary.clone(), doc, false).into_element()
+                }
+            })
         }))
         .child(dynamic(move || {
             second
@@ -2908,7 +3134,7 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                                     .child(when(
                                         move || {
                                             doc.source.track();
-                                            doc.source.is_dirty().unwrap_or(true)
+                                            doc.needs_close_confirmation()
                                         },
                                         || {
                                             view()
@@ -3221,7 +3447,7 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 let message = notice.get();
                 let dirty = document.current().is_some_and(|doc| {
                     doc.source.track();
-                    doc.source.is_dirty().unwrap_or(true)
+                    doc.needs_close_confirmation()
                 });
                 if dirty {
                     if message.is_empty() || message.starts_with("已保存") {
@@ -3242,6 +3468,9 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
         )
         .child(dynamic(move || {
             let doc = shell.current()?;
+            if let Some(large) = &doc.large {
+                return Some(view().child(text(large.status())).into_element());
+            }
             let rich = doc.displayed_rich();
             let markdown = doc.is_markdown();
             let position = if rich {
@@ -3270,6 +3499,12 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 let activate = shell.clone();
                 let label_shell = shell.clone();
                 let label_doc = doc.clone();
+                if doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES {
+                    fields = fields.child(text("大文件 · 无高亮").number_of_lines(1));
+                }
+                if doc.source_wrap_limited() {
+                    fields = fields.child(text("已暂停自动换行").number_of_lines(1));
+                }
                 fields = fields.child(
                     nsh_base::button()
                         .element_ref(&anchor)
@@ -3285,7 +3520,8 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 fields
                     .child(text(encoding).number_of_lines(1))
                     .child(text(newline).number_of_lines(1))
-                    .child(text(language).number_of_lines(1)),
+                    .child(text(language).number_of_lines(1))
+                    .into_element(),
             )
         }))
 }
@@ -3700,12 +3936,30 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                                 if d.gate.rich_mode.get() {
                                     return Err(d.gate.status.get());
                                 }
-                                d.source.go_to_line_column(line, column)
+                                d.source.go_to_line_column(line, column)?;
+                                Ok(d)
                             });
                         match result {
-                            Ok(()) => {
+                            Ok(doc) => {
+                                let second = run.second_active.get();
                                 run.close_panel();
                                 run.notice.set("已定位源码行列".into());
+                                let shell = run.clone();
+                                run.owner.run(|| {
+                                    spawn(async move {
+                                        // The native editor consumes the external selection at commit.
+                                        let _ = next_frame().await;
+                                        if shell.second_active.get() == second
+                                            && shell
+                                                .current()
+                                                .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                                            && !doc.displayed_rich()
+                                            && let Some(api) = doc.reference.api::<EditorApi>()
+                                        {
+                                            api.reveal_primary_caret(None);
+                                        }
+                                    })
+                                });
                             }
                             Err(e) => run.notice.set(e),
                         }

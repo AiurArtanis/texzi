@@ -1,5 +1,8 @@
-use super::{Document, Shell};
-use crate::{editor_owner::NativeView, settings};
+use super::{Document, Shell, display_path};
+use crate::{
+    editor_owner::{MAX_EDIT_BYTES, NativeView, PrepareError, PreparedFile},
+    settings,
+};
 use nsh_base::{
     editor::{EditorApi, ExternalDocument, ExternalSelections},
     rich_editor::view::RichEditorApi,
@@ -16,12 +19,12 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use texzi_document::{
     Body, Eol,
-    files::{Encoding, Format},
+    files::{Encoding, Format, paged::FileSource},
 };
 
 const INTERVAL: Duration = Duration::from_secs(2);
@@ -42,8 +45,8 @@ impl LocalPath {
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-struct EditorView {
-    rich: bool,
+pub(super) struct EditorView {
+    pub(super) rich: bool,
     wrap: Option<bool>,
     tabs: Option<u32>,
     selection: Option<(Vec<(usize, usize)>, usize)>,
@@ -52,17 +55,41 @@ struct EditorView {
 
 impl EditorView {
     fn capture(doc: &Document) -> Self {
-        let rich = doc.displayed_rich();
+        let displayed = doc.displayed_rich();
+        let rich = doc.pending_mode.get().unwrap_or(displayed)
+            && doc.source.disk_len() <= super::large_file::SOURCE_ONLY_BYTES;
         Self {
             rich,
             wrap: doc.wrap.get(),
             tabs: doc.tab_size.get(),
             selection: doc.gate.recovery_selection().map(|s| (s.ranges, s.primary)),
-            scroll: scroll_position(doc).or(doc.retained_scroll.get()),
+            scroll: (displayed == rich)
+                .then(|| scroll_position(doc))
+                .flatten()
+                .or_else(|| {
+                    doc.retained_scroll
+                        .get()
+                        .and_then(|(mode, x, y)| (mode == rich).then_some((x, y)))
+                }),
         }
     }
 
-    fn restore_source(&self, source: &NativeView) {
+    pub(super) fn for_pending(rich: bool, saved: Option<&Self>) -> Self {
+        let mut view = saved.cloned().unwrap_or(Self {
+            rich,
+            wrap: None,
+            tabs: None,
+            selection: None,
+            scroll: None,
+        });
+        if view.rich != rich {
+            view.rich = rich;
+            view.scroll = None;
+        }
+        view
+    }
+
+    pub(super) fn restore_source(&self, source: &NativeView) {
         if let Some((ranges, primary)) = &self.selection
             && let Ok(snapshot) = source.snapshot()
         {
@@ -77,11 +104,23 @@ impl EditorView {
         }
     }
 
-    fn restore_view(&self, doc: &Document) {
+    pub(super) fn restore_view(&self, doc: &Document) {
+        self.restore_in_mode(doc, doc.displayed_rich());
+    }
+
+    pub(super) fn restore_in_mode(&self, doc: &Document, rich: bool) {
         doc.wrap.set(self.wrap);
         doc.tab_size
             .set(self.tabs.filter(|width| (1..=8).contains(width)));
-        doc.retained_scroll.set(self.scroll);
+        doc.retained_scroll.set(
+            self.scroll
+                .filter(|_| self.rich == rich)
+                .map(|(x, y)| (rich, x, y)),
+        );
+    }
+
+    pub(super) fn has_scroll(&self) -> bool {
+        self.scroll.is_some()
     }
 }
 
@@ -99,17 +138,47 @@ fn scroll_position(doc: &Document) -> Option<(f32, f32)> {
 }
 
 pub(super) fn keep_scroll(doc: &Document) {
-    if let Some(position) = scroll_position(doc) {
-        doc.retained_scroll.set(Some(position));
+    if let Some((x, y)) = scroll_position(doc) {
+        doc.retained_scroll.set(Some((doc.displayed_rich(), x, y)));
     }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-struct Draft {
-    text: String,
+pub(super) struct Draft {
+    text: Arc<str>,
     #[serde(flatten)]
     format: FilePreference,
     disk_sha256: Option<[u8; 32]>,
+}
+
+impl Draft {
+    fn verified_baseline(
+        &self,
+        source: &FileSource,
+        path: &Path,
+        limit: u64,
+        cancel: &AtomicBool,
+    ) -> Option<Arc<[u8]>> {
+        let expected = self.disk_sha256?;
+        let bytes = source.complete_bytes(limit, cancel).ok()?;
+        source.verify_path(path).ok()?;
+        (digest(&bytes) == expected).then(|| Arc::from(bytes))
+    }
+
+    pub(super) fn prepare(
+        &self,
+        source: &FileSource,
+        path: &Path,
+        limit: u64,
+        cancel: &AtomicBool,
+    ) -> Result<(PreparedFile, bool), PrepareError> {
+        PreparedFile::check_recovery_size(self.text.len()).map_err(PrepareError::RecoveryLimit)?;
+        let original = self.verified_baseline(source, path, limit, cancel);
+        let named = original.is_some();
+        let (format, eol) = self.format.restore();
+        PreparedFile::from_recovery(self.text.clone(), format, eol, original, cancel)
+            .map(|prepared| (prepared, named))
+    }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -129,7 +198,8 @@ impl DraftCapture {
     fn materialize(self) -> Draft {
         Draft {
             text: String::from_utf8(self.body.to_utf8())
-                .expect("document recovery bytes are UTF-8"),
+                .expect("document recovery bytes are UTF-8")
+                .into(),
             format: FilePreference::capture(self.format, self.body.default_eol()),
             disk_sha256: self.baseline.as_deref().map(digest),
         }
@@ -186,11 +256,19 @@ struct Tab {
     view: EditorView,
     draft: Option<Draft>,
     blank: Option<FilePreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    archived: Option<ArchivedDraft>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-struct Split {
-    id: u64,
+struct ArchivedDraft {
+    preview_id: u64,
+    reason: String,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub(super) struct Split {
+    pub(super) id: u64,
     down: bool,
     active: bool,
     view: EditorView,
@@ -289,8 +367,81 @@ pub(super) struct Session {
     sequence: Cell<u64>,
     last: RefCell<Option<Signature>>,
     writing: Cell<bool>,
+    retained: RefCell<Vec<Tab>>,
 }
 
+impl Session {
+    fn new(disk: Arc<Disk>) -> Self {
+        Self {
+            disk,
+            sequence: Cell::new(0),
+            last: RefCell::new(None),
+            writing: Cell::new(false),
+            retained: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn merge_archived_drafts(&self, record: &mut WindowRecord) -> bool {
+        let mut changed = false;
+        for tab in self.retained.borrow().iter() {
+            let Some(archive) = &tab.archived else {
+                continue;
+            };
+            if record.tabs.iter().any(|entry| entry.id == tab.id) {
+                continue;
+            }
+            if let Some(preview) = record
+                .tabs
+                .iter_mut()
+                .find(|entry| entry.id == archive.preview_id)
+                && preview.draft == tab.draft
+            {
+                preview.draft = None;
+            }
+            record.tabs.push(tab.clone());
+            changed = true;
+        }
+        changed
+    }
+}
+
+pub(super) fn retain_limited_draft(shell: &Rc<Shell>, doc: &Document, reason: &str) {
+    let Some(session) = shell.session.borrow().clone() else {
+        return;
+    };
+    let Some(reader) = &doc.large else { return };
+    let Some(draft) = reader.restored_draft.get_untracked() else {
+        return;
+    };
+    let id = shell.next.get();
+    let Some(next) = id.checked_add(1) else {
+        return;
+    };
+    shell.next.set(next);
+    session.retained.borrow_mut().push(Tab {
+        id,
+        path: doc.path.get().as_deref().map(LocalPath::from_path),
+        view: reader.recovery_view(),
+        draft: Some(draft),
+        blank: None,
+        archived: Some(ArchivedDraft {
+            preview_id: doc.id,
+            reason: reason.into(),
+        }),
+    });
+    reader.restored_draft.set(None);
+    checkpoint(shell, true);
+}
+
+pub(super) fn retained_draft_message(shell: &Shell, reason: &str) -> String {
+    let path = shell
+        .session
+        .borrow()
+        .as_ref()
+        .map(|session| display_path(&session.disk.path))
+        .unwrap_or_else(|| "%LOCALAPPDATA%\\texzi\\recovery".into());
+    format!("{reason} · 草稿仍保存在恢复记录 {path}")
+}
 fn enabled(shell: &Shell) -> bool {
     shell.settings.effective(settings::RESTORE, None).0 == true
 }
@@ -367,23 +518,24 @@ pub(super) fn start(shell: &Rc<Shell>) -> io::Result<()> {
             Err(_) => {}
         }
     }
-    let disk = if let Some((disk, record)) = chosen {
-        restore(shell, record);
-        disk
+    let (disk, record) = if let Some((disk, record)) = chosen {
+        (disk, Some(record))
     } else {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
         let id = format!("{}-{now}", std::process::id());
-        Disk::claim(&directory, &id)?.ok_or_else(|| io::Error::other("无法锁定本窗口的恢复记录"))?
+        (
+            Disk::claim(&directory, &id)?
+                .ok_or_else(|| io::Error::other("无法锁定本窗口的恢复记录"))?,
+            None,
+        )
     };
-    *shell.session.borrow_mut() = Some(Rc::new(Session {
-        disk,
-        sequence: Cell::new(0),
-        last: RefCell::new(None),
-        writing: Cell::new(false),
-    }));
+    *shell.session.borrow_mut() = Some(Rc::new(Session::new(disk)));
+    if let Some(record) = record {
+        restore(shell, record);
+    }
     for id in other_windows {
         if let Err(error) = Command::new(std::env::current_exe()?)
             .arg(format!("{RESUME_WINDOW}{id}"))
@@ -412,23 +564,22 @@ fn periodic(shell: &Rc<Shell>) {
 fn collect(shell: &Shell, drafts: bool) -> (Signature, Vec<(u64, DraftCapture)>) {
     let mut revisions = Vec::new();
     let mut bodies = Vec::new();
-    let tabs = shell.docs.with(|docs| {
+    let mut tabs: Vec<_> = shell.docs.with(|docs| {
         docs.iter()
             .filter_map(|doc| {
                 let path = doc.path.get().as_deref().map(LocalPath::from_path);
-                if !doc.editable_body_ready() {
+                if let Some(large) = &doc.large {
+                    let draft = large.restored_draft.get();
+                    if !drafts && draft.is_some() {
+                        return None;
+                    }
                     return Some(Tab {
                         id: doc.id,
                         path,
-                        view: EditorView {
-                            rich: false,
-                            wrap: None,
-                            tabs: None,
-                            selection: None,
-                            scroll: None,
-                        },
-                        draft: None,
+                        view: large.recovery_view(),
+                        draft,
                         blank: None,
+                        archived: None,
                     });
                 }
                 let revision = doc.source.dirty_revision();
@@ -464,10 +615,14 @@ fn collect(shell: &Shell, drafts: bool) -> (Signature, Vec<(u64, DraftCapture)>)
                     view,
                     draft: None,
                     blank,
+                    archived: None,
                 })
             })
             .collect()
     });
+    if let Some(session) = shell.session.borrow().as_ref() {
+        tabs.extend(session.retained.borrow().iter().cloned());
+    }
     let record = WindowRecord {
         version: 1,
         folder: shell.root.get().as_deref().map(LocalPath::from_path),
@@ -476,12 +631,22 @@ fn collect(shell: &Shell, drafts: bool) -> (Signature, Vec<(u64, DraftCapture)>)
         placement: shell.window.state().map(|state| state.placement),
         tabs,
         active: shell.active.get(),
-        split: shell.split.get().map(|doc| Split {
-            id: doc.id,
-            down: shell.split_down.get(),
-            active: shell.second_active.get(),
-            view: EditorView::capture(&doc),
-        }),
+        split: shell
+            .split
+            .get()
+            .map(|doc| Split {
+                id: doc.id,
+                down: shell.split_down.get(),
+                active: shell.second_active.get(),
+                view: EditorView::capture(&doc),
+            })
+            .or_else(|| {
+                shell
+                    .recovery_split
+                    .borrow()
+                    .as_ref()
+                    .map(|(_, split)| split.clone())
+            }),
     };
     ((record, revisions), bodies)
 }
@@ -554,6 +719,7 @@ pub(super) fn saved(shell: &Rc<Shell>, doc: &Document) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
+        session.merge_archived_drafts(&mut record);
         if let Some(tab) = record.tabs.iter_mut().find(|tab| tab.id == doc.id) {
             tab.draft = None;
             tab.path = path;
@@ -580,6 +746,7 @@ pub(super) fn remove_discarded(shell: &Shell, id: u64) -> io::Result<()> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
+        session.merge_archived_drafts(&mut record);
         record.tabs.retain(|tab| tab.id != id);
         Ok(Some(record))
     })
@@ -598,10 +765,15 @@ pub(super) fn finish(shell: &Shell, discard_dirty: bool) -> io::Result<()> {
             Ok((!record.tabs.is_empty() || session.disk.path.is_file()).then_some(record))
         });
     }
-    if discard_dirty {
+    let has_archived = session
+        .retained
+        .borrow()
+        .iter()
+        .any(|tab| tab.archived.is_some());
+    if discard_dirty || has_archived {
         let discarded: Vec<_> = shell.docs.with(|docs| {
             docs.iter()
-                .filter(|doc| doc.source.is_dirty().unwrap_or(true))
+                .filter(|doc| discard_dirty && doc.needs_close_confirmation())
                 .map(|doc| doc.id)
                 .collect()
         });
@@ -611,8 +783,10 @@ pub(super) fn finish(shell: &Shell, discard_dirty: bool) -> io::Result<()> {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
                 Err(error) => return Err(error),
             };
+            let archived = session.merge_archived_drafts(&mut record);
+            let before = record.tabs.len();
             record.tabs.retain(|tab| !discarded.contains(&tab.id));
-            Ok(Some(record))
+            Ok((archived || before != record.tabs.len()).then_some(record))
         })?;
     }
     Ok(())
@@ -620,6 +794,9 @@ pub(super) fn finish(shell: &Shell, discard_dirty: bool) -> io::Result<()> {
 
 fn restore(shell: &Rc<Shell>, record: WindowRecord) {
     shell.docs.set(Vec::new());
+    shell.split.set(None);
+    shell.second_active.set(false);
+    shell.recovery_split.borrow_mut().take();
     if let Some(path) = record
         .folder
         .as_ref()
@@ -636,35 +813,27 @@ fn restore(shell: &Rc<Shell>, record: WindowRecord) {
         shell.window.set_placement(placement);
     }
     let mut unavailable = 0;
+    let mut retained = Vec::new();
+    let mut first_error = None;
     let max_id = record.tabs.iter().map(|tab| tab.id).max().unwrap_or(0);
     for tab in record.tabs {
-        if !restore_tab(shell, tab) {
-            unavailable += 1;
+        if let Some(archive) = &tab.archived {
+            first_error.get_or_insert_with(|| archive.reason.clone());
+            retained.push(tab);
+            continue;
+        }
+        match restore_tab(shell, &tab) {
+            Ok(true) => {}
+            Ok(false) => unavailable += 1,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                retained.push(tab);
+            }
         }
     }
     shell.next.set(max_id.saturating_add(1));
     if shell.docs.with(|docs| docs.is_empty()) {
         shell.add_blank();
-    }
-    if let Some(split) = record.split
-        && let Some(primary) = shell
-            .docs
-            .with(|docs| docs.iter().find(|doc| doc.id == split.id).cloned())
-    {
-        let rich = primary.displayed_rich();
-        shell.activate_primary(primary.id);
-        shell.split_editor(split.down);
-        if rich {
-            primary.gate.to_rich();
-        }
-        if let Some(second) = shell.split.get() {
-            split.view.restore_source(&second.source);
-            split.view.restore_view(&second);
-            if split.view.rich && second.source.disk_len() <= settings::MARKDOWN_SOURCE_ONLY_BYTES {
-                second.gate.to_rich();
-            }
-        }
-        shell.second_active.set(split.active);
     }
     if shell
         .docs
@@ -672,14 +841,68 @@ fn restore(shell: &Rc<Shell>, record: WindowRecord) {
     {
         shell.active.set(record.active);
     }
-    if unavailable > 0 {
+    if let Some(split) = record.split
+        && let Some(primary) = shell
+            .docs
+            .with(|docs| docs.iter().find(|doc| doc.id == split.id).cloned())
+    {
+        if primary.editable_body_ready() {
+            restore_split(shell, &primary, record.active, split);
+        } else {
+            *shell.recovery_split.borrow_mut() = Some((record.active, split));
+        }
+    }
+    let retained_count = retained.len();
+    if let Some(session) = shell.session.borrow().as_ref() {
+        *session.retained.borrow_mut() = retained;
+    }
+    if let Some(error) = first_error {
+        shell.notice.set(retained_draft_message(
+            shell,
+            &format!("有 {retained_count} 份草稿未能载入（{error}）"),
+        ));
+    } else if unavailable > 0 {
         shell.notice.set(format!(
             "会话已恢复 · {unavailable} 个文件无法重新关联，未覆盖现有文件"
         ));
     }
 }
 
-fn restore_tab(shell: &Rc<Shell>, tab: Tab) -> bool {
+fn restore_split(shell: &Rc<Shell>, primary: &Rc<Document>, expected_active: u64, split: Split) {
+    if let Some(second) = shell.mount_split(primary, split.down) {
+        split.view.restore_source(&second.source);
+        let rich = shell.initial_markdown_rich(
+            second.path.get().as_deref(),
+            second.source.disk_len(),
+            Some(split.view.rich),
+        );
+        split.view.restore_in_mode(&second, rich);
+        if rich {
+            shell.request_mode_with_position(second, true, split.view.has_scroll());
+        }
+        if split.active && shell.active.get() == expected_active && !shell.settings_active() {
+            shell.second_active.set(true);
+        }
+    }
+}
+
+pub(super) fn restore_waiting_split(shell: &Rc<Shell>, doc: &Rc<Document>) {
+    let pending = {
+        let mut pending = shell.recovery_split.borrow_mut();
+        if !pending
+            .as_ref()
+            .is_some_and(|(_, split)| split.id == doc.id)
+        {
+            return;
+        }
+        pending.take()
+    };
+    if let Some((expected_active, split)) = pending {
+        restore_split(shell, doc, expected_active, split);
+    }
+}
+
+fn restore_tab(shell: &Rc<Shell>, tab: &Tab) -> Result<bool, String> {
     let mut path = tab.path.as_ref().map(LocalPath::to_path);
     if let Some(path) = &mut path {
         if let Ok(canonical) = path.canonicalize() {
@@ -688,23 +911,36 @@ fn restore_tab(shell: &Rc<Shell>, tab: Tab) -> bool {
     }
     let named = path.is_some();
     shell.next.set(tab.id);
-    if let Some(draft) = tab.draft {
-        let baseline = path
-            .as_deref()
-            .and_then(|path| shell.load_recovery_target(path).ok())
-            .and_then(|source| source.recovery_format().1)
-            .filter(|bytes| {
-                draft
-                    .disk_sha256
-                    .is_some_and(|expected| digest(bytes) == expected)
-            });
+    if let Some(draft) = &tab.draft {
+        PreparedFile::check_recovery_size(draft.text.len())?;
+        let pinned = path.as_deref().and_then(|path| FileSource::open(path).ok());
+        let baseline = match (path.as_ref(), pinned) {
+            (Some(path), Some(file))
+                if (super::large_file::LARGE_BYTES..=MAX_EDIT_BYTES).contains(&file.len)
+                    && draft.disk_sha256.is_some() =>
+            {
+                shell.open_large(
+                    path.clone(),
+                    Arc::new(file),
+                    None,
+                    Some(tab.view.clone()),
+                    Some(draft.clone()),
+                );
+                return Ok(true);
+            }
+            (Some(path), Some(file)) => draft.verified_baseline(
+                &file,
+                path,
+                super::large_file::LARGE_BYTES - 1,
+                &AtomicBool::new(false),
+            ),
+            _ => None,
+        };
         if baseline.is_none() {
             path = None;
         }
         let (format, eol) = draft.format.restore();
-        let Ok(source) = NativeView::recover_file(&draft.text, format, eol, baseline) else {
-            return false;
-        };
+        let source = NativeView::recover_file(draft.text.clone(), format, eol, baseline)?;
         tab.view.restore_source(&source);
         let detached = named && path.is_none();
         shell.add_with_mode(source, path, Some(tab.view.rich && !detached));
@@ -712,18 +948,12 @@ fn restore_tab(shell: &Rc<Shell>, tab: Tab) -> bool {
             tab.view.restore_view(&doc);
             doc.auto_save.ignore_restored(doc.source.dirty_revision());
         }
-        !detached
+        Ok(!detached)
     } else if let Some(path) = path {
-        let Ok(source) = shell.load_recovery_target(&path) else {
-            return false;
-        };
-        tab.view.restore_source(&source);
-        shell.add_with_mode(source, Some(path), Some(tab.view.rich));
-        if let Some(doc) = shell.primary() {
-            tab.view.restore_view(&doc);
-        }
-        true
-    } else if let Some(blank) = tab.blank {
+        Ok(shell
+            .open_canonical_with_view(path, Some(tab.view.clone()))
+            .is_ok())
+    } else if let Some(blank) = &tab.blank {
         let (format, eol) = blank.restore();
         let source = shell.owner.run(|| NativeView::new_file(format, eol));
         tab.view.restore_source(&source);
@@ -731,16 +961,19 @@ fn restore_tab(shell: &Rc<Shell>, tab: Tab) -> bool {
         if let Some(doc) = shell.primary() {
             tab.view.restore_view(&doc);
         }
-        true
+        Ok(true)
     } else {
-        true
+        Ok(true)
     }
 }
 
 pub(super) fn apply_scroll(doc: &Document, rich: bool) {
-    let Some((x, y)) = doc.retained_scroll.get() else {
+    let Some((mode, x, y)) = doc.retained_scroll.get() else {
         return;
     };
+    if mode != rich {
+        return;
+    }
     if rich {
         if let Some(editor) = doc.rich_reference.api::<RichEditorApi>() {
             editor.set_scroll_top(y);
@@ -782,6 +1015,7 @@ mod tests {
                 disk_sha256: Some(digest(bytes)),
             }),
             blank: None,
+            archived: None,
         }
     }
 
@@ -888,12 +1122,9 @@ mod tests {
         );
         tab.source.set_composing(false);
 
-        *restored.session.borrow_mut() = Some(Rc::new(Session {
-            disk: disk.clone(),
-            sequence: Cell::new(1),
-            last: RefCell::new(None),
-            writing: Cell::new(false),
-        }));
+        let session = Rc::new(Session::new(disk.clone()));
+        session.sequence.set(1);
+        *restored.session.borrow_mut() = Some(session);
         assert!(
             restored
                 .settings
@@ -943,6 +1174,196 @@ mod tests {
             },
         );
         core.mount_root(&Root::new::<RecoveryFixture>(|| ()));
+        core.run_component_tasks();
+        let _ = core.commit();
+    }
+
+    #[component]
+    fn RetainedDraftFixture() -> impl IntoElement {
+        let directory = RECOVERY_PATH.with(|slot| slot.borrow_mut().take()).unwrap();
+        let path = directory.join("named.txt");
+        let disk = Disk::claim(&directory, "411").unwrap().unwrap();
+        let mut original_tab = recovery_tab(&path, b"previous disk");
+        // 2,000,000 LF boundaries add an empty final line.
+        original_tab.draft.as_mut().unwrap().text = "a\n".repeat(2_000_000).into();
+        disk.update(1, || Ok(Some(record(original_tab.clone()))))
+            .unwrap();
+        let restored = Shell::new();
+        let session = Rc::new(Session::new(disk.clone()));
+        session.sequence.set(1);
+        *restored.session.borrow_mut() = Some(session.clone());
+        restore(&restored, disk.read().unwrap());
+
+        assert!(
+            !restored
+                .docs
+                .with(|docs| docs.iter().any(|doc| doc.id == original_tab.id))
+        );
+        assert!(restored.notice.get().contains("2000000 行"));
+        assert!(restored.notice.get().contains("411.json"));
+        assert_eq!(fs::read(&path).unwrap(), b"published");
+        assert!(PreparedFile::check_recovery_size(MAX_EDIT_BYTES as usize + 1).is_err());
+
+        let doc = restored.current().unwrap();
+        doc.pending_mode.set(Some(true));
+        assert!(!doc.displayed_rich());
+        assert!(EditorView::capture(&doc).rich);
+        assert!(EditorView::for_pending(true, None).rich);
+        assert!(!EditorView::for_pending(false, Some(&EditorView::capture(&doc))).rich);
+
+        let ((checkpoint_record, _), bodies) = collect(&restored, true);
+        assert!(bodies.is_empty());
+        assert!(checkpoint_record.tabs == vec![original_tab.clone()]);
+        disk.update(2, || Ok(Some(checkpoint_record))).unwrap();
+        session.sequence.set(2);
+        finish(&restored, false).unwrap();
+        assert!(disk.read().unwrap().tabs == vec![original_tab]);
+        assert_eq!(fs::read(&path).unwrap(), b"published");
+
+        *restored.session.borrow_mut() = None;
+        drop(session);
+        drop(disk);
+        fs::remove_file(path).unwrap();
+        fs::remove_file(directory.join("411.json")).unwrap();
+        fs::remove_file(directory.join("411.lock")).unwrap();
+        fs::remove_dir(directory).unwrap();
+        text("")
+    }
+
+    #[test]
+    fn an_over_limit_draft_is_kept_by_checkpoint_and_graceful_close() {
+        let directory =
+            std::env::temp_dir().join(format!("texzi-recovery-over-limit-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("named.txt"), b"published").unwrap();
+        RECOVERY_PATH.with(|slot| *slot.borrow_mut() = Some(directory));
+        let mut core = Core::new(
+            ApproxTextEngine,
+            Size {
+                width: px(800.0),
+                height: px(600.0),
+            },
+        );
+        core.mount_root(&Root::new::<RetainedDraftFixture>(|| ()));
+        core.run_component_tasks();
+        let _ = core.commit();
+    }
+
+    #[component]
+    fn AsyncArchiveFixture() -> impl IntoElement {
+        let dir = RECOVERY_PATH.with(|slot| slot.borrow_mut().take()).unwrap();
+        let path = dir.join("named.txt");
+        let disk = Disk::claim(&dir, "412").unwrap().unwrap();
+        let mut original = recovery_tab(&path, b"published");
+        original.draft.as_mut().unwrap().text = "a\n".repeat(2_000_000).into();
+        disk.update(1, || Ok(Some(record(original.clone()))))
+            .unwrap();
+        let shell = Shell::new();
+        let session = Rc::new(Session::new(disk.clone()));
+        session.sequence.set(1);
+        *shell.session.borrow_mut() = Some(session.clone());
+        shell.next.set(original.id + 1);
+
+        let file = Arc::new(FileSource::open(&path).unwrap());
+        let draft = original.draft.clone().unwrap();
+        let Err(PrepareError::RecoveryLimit(reason)) =
+            draft.prepare(&file, &path, MAX_EDIT_BYTES, &AtomicBool::new(false))
+        else {
+            panic!("the async worker must report a typed recovery limit");
+        };
+        let reader = super::super::large_file::LargeFile::new(
+            path.clone(),
+            file,
+            false,
+            Some(original.view.clone()),
+            Some(draft.clone()),
+        );
+        let preview = shell.make_document(
+            original.id,
+            NativeView::reader_placeholder(),
+            Some(path.clone()),
+            Some(reader.clone()),
+            false,
+        );
+        shell.show_new(preview.clone());
+        assert!(preview.needs_close_confirmation());
+        assert!(
+            shell
+                .settings
+                .apply(settings::RESTORE, None, Some(false.into()))
+        );
+        reader.finish_recovery_limit(&shell, &preview, &reason);
+        reader.finish_recovery_limit(&shell, &preview, &reason);
+        assert!(!preview.needs_close_confirmation());
+        assert!(!preview.editable_body_ready());
+        assert!(reader.restored_draft.get().is_none());
+        assert_eq!(session.retained.borrow().len(), 1);
+        let ((checkpoint_record, _), bodies) = collect(&shell, false);
+        assert!(bodies.is_empty());
+        assert_eq!(checkpoint_record.tabs.len(), 2);
+        assert!(
+            checkpoint_record
+                .tabs
+                .iter()
+                .any(|tab| tab.archived.is_some() && tab.draft.as_ref() == Some(&draft))
+        );
+
+        finish(&shell, false).unwrap();
+        let saved = disk.read().unwrap();
+        assert_eq!(saved.tabs.len(), 2);
+        assert!(
+            saved
+                .tabs
+                .iter()
+                .any(|tab| tab.id == original.id && tab.draft.is_none())
+        );
+        let archive = saved
+            .tabs
+            .iter()
+            .find(|tab| tab.archived.is_some())
+            .unwrap();
+        assert_ne!(archive.id, original.id);
+        assert!(archive.draft.as_ref() == Some(&draft));
+
+        restore(&shell, saved);
+        assert_eq!(shell.docs.with(Vec::len), 1);
+        assert_eq!(shell.current().unwrap().id, original.id);
+        assert_eq!(session.retained.borrow().len(), 1);
+        assert_eq!(fs::read(&path).unwrap(), b"published");
+        remove_discarded(&shell, original.id).unwrap();
+        let remaining = disk.read().unwrap().tabs;
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining[0].draft.as_ref() == Some(&draft));
+
+        *shell.session.borrow_mut() = None;
+        drop(session);
+        drop(preview);
+        drop(reader);
+        drop(disk);
+        fs::remove_file(path).unwrap();
+        fs::remove_file(dir.join("412.json")).unwrap();
+        fs::remove_file(dir.join("412.lock")).unwrap();
+        fs::remove_dir(dir).unwrap();
+        text("")
+    }
+
+    #[test]
+    fn async_recovery_limit_archives_draft_without_marking_the_reader_dirty() {
+        let dir = std::env::temp_dir().join(format!(
+            "texzi-recovery-async-archive-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("named.txt"), b"published").unwrap();
+        RECOVERY_PATH.with(|slot| *slot.borrow_mut() = Some(dir));
+        let mut core = Core::new(
+            ApproxTextEngine,
+            Size {
+                width: px(800.0),
+                height: px(600.0),
+            },
+        );
+        core.mount_root(&Root::new::<AsyncArchiveFixture>(|| ()));
         core.run_component_tasks();
         let _ = core.commit();
     }

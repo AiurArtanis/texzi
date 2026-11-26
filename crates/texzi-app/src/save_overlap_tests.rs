@@ -470,6 +470,46 @@ fn named_auto_save_uses_the_configured_trigger_and_protects_external_changes() {
 }
 
 #[test]
+fn leaving_a_document_by_keyboard_saves_when_the_editor_is_unmounted() {
+    let directory =
+        std::env::temp_dir().join(format!("texzi-autosave-tab-blur-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let first = directory.join("other.txt");
+    let second = directory.join("named.txt");
+    std::fs::write(&first, "other").unwrap();
+    std::fs::write(&second, "before").unwrap();
+    let probe = Rc::new(Probe {
+        pause: RefCell::new(None),
+        states: RefCell::new(Vec::new()),
+        auto_save: Some((first.clone(), "onFocusChange")),
+        next_file: Some(second.clone()),
+    });
+    let (_runtime, mut core, mut harness) = open_shell(&probe);
+    harness.key(&mut core, "f6");
+    assert!(core.component_event(
+        harness.source_input.unwrap(),
+        EventKind::Focus,
+        &EventPayload::None
+    ));
+    harness.change_input(&mut core, "!");
+    assert_eq!(harness.sample(&mut core, &probe).bytes, b"!before");
+    assert_eq!(std::fs::read(&second).unwrap(), b"before");
+
+    // The real tab-navigation route replaces the mounted editor. No native Blur is injected.
+    harness.key(&mut core, "ctrl+pageup");
+    let saved = harness
+        .wait_for_notice(&mut core, &probe, "已保存 named.txt")
+        .pop()
+        .unwrap();
+    assert!(!saved.dirty);
+    assert_eq!(std::fs::read(&second).unwrap(), b"!before");
+    assert_eq!(std::fs::read(&first).unwrap(), b"other");
+    std::fs::remove_file(first).unwrap();
+    std::fs::remove_file(second).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[test]
 fn delayed_auto_save_survives_other_tabs_and_an_edit_during_publication() {
     let root = std::env::temp_dir().join(format!("texzi-auto-save-overlap-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();

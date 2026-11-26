@@ -292,6 +292,15 @@ fn control(
         .into_element()
 }
 
+fn setting_description(id: &str) -> &'static str {
+    match id {
+        settings::RESTORE => {
+            "下次启动恢复窗口、标签和未保存的临时文本。关闭此设置会保留已有恢复记录。"
+        }
+        _ => settings::definition(id)["description"].as_str().unwrap(),
+    }
+}
+
 fn row(
     settings: Rc<settings::Settings>,
     id: &'static str,
@@ -322,7 +331,7 @@ fn row(
                 .gap(px(4.0))
                 .child(text(spec["name"].as_str().unwrap()))
                 .child(
-                    text(spec["description"].as_str().unwrap())
+                    text(setting_description(id))
                         .text_size(px(12.0))
                         .text_color(secondary_foreground),
                 )
@@ -527,13 +536,9 @@ pub(super) fn content(
                                 spec["category"] == category
                             };
                         }
-                        [
-                            *id,
-                            spec["name"].as_str().unwrap(),
-                            spec["description"].as_str().unwrap(),
-                        ]
-                        .iter()
-                        .any(|part| part.to_lowercase().contains(&term))
+                        [*id, spec["name"].as_str().unwrap(), setting_description(id)]
+                            .iter()
+                            .any(|part| part.to_lowercase().contains(&term))
                     })
                     .collect::<Vec<_>>();
                 if selected.is_empty() {

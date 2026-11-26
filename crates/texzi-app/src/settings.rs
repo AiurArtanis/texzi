@@ -27,7 +27,6 @@ pub const TAB_CLOSE: &str = "workbench.tabCloseButton";
 pub const AUTO_SAVE: &str = "files.autoSave";
 pub const MINIMAP: &str = "editor.minimap";
 pub const RESTORE: &str = "session.restoreOnStartup";
-pub const MARKDOWN_SOURCE_ONLY_BYTES: u64 = 50_000_000;
 
 pub const ENABLED: &[&str] = &[
     THEME,
