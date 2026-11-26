@@ -15,6 +15,7 @@ The source baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78ea
 - `extensions/extension.rs` and `input_rules.rs` let an external history owner preflight the original typed text and its automatic formatting together. Texzi publishes the typing and conversion as separate undo entries. Other NSH editors use the upstream two-callback input rule.
 - `view/controller.rs` and `render.rs` expose scroll restoration, visible caret position and caret reveal across mode changes. A distant selection is brought into the upstream block window using the same measured or estimated heights as its spacers. The local sink-width adjustment keeps the Windows candidate window on the caret row.
 - The upstream block window uses `view/block_heights.rs` to index measured heights and neighboring gaps. Scroll, resize and selection locate the visible blocks with prefix sums and binary search. Reordering preserves the measurements of surviving blocks. Native scrolling and incremental Markdown use v0.7.1.
+- Width, text scale, DPI and rich-style changes invalidate measured heights by generation. Content replacement invalidates its own block. Mounted blocks report fresh geometry, including the grid and clip for a scrollable table. A distant caret waits for its target's layout. Unmounting releases the old positional and text geometry.
 
 ## Reproducing checks
 

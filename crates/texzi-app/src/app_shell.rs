@@ -1953,7 +1953,7 @@ impl Shell {
                 let Some(bounds) = anchor.measure().await else {
                     return;
                 };
-                let can_return_to_document = || {
+                let can_open = || {
                     !shell.settings_active()
                         && shell.second_active.get() == second
                         && shell
@@ -1961,10 +1961,9 @@ impl Shell {
                             .is_some_and(|current| Rc::ptr_eq(&current, &doc))
                         && doc.displayed_rich()
                         && doc.pending_mode.get().is_none()
-                        && shell.panel.get().is_empty()
                         && !shell.escape_blocked()
                 };
-                if !can_return_to_document() {
+                if !can_open() {
                     return;
                 }
                 let items = FORMAT_ACTIONS
@@ -1982,7 +1981,8 @@ impl Shell {
                 )
                 .await;
                 if button_focused.get()
-                    && can_return_to_document()
+                    && can_open()
+                    && shell.panel.get().is_empty()
                     && shell.window.state().is_some_and(|state| state.focused)
                     && let Some(editor) = doc.rich_reference.api::<RichEditorApi>()
                 {
@@ -2763,6 +2763,10 @@ fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl Into
         .element_ref(&anchor)
         .role(AccessibilityRole::Button)
         .label("格式命令")
+        .accessibility_state(nsh_core::AccessibilityState {
+            has_popup: true,
+            ..Default::default()
+        })
         .items_center()
         .justify_center()
         .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")

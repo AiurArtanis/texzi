@@ -94,6 +94,8 @@ pub(crate) struct Tree {
     /// slots it is in, and the document's box, [`DOC`]): what a move of
     /// the box moves.
     pub(crate) table_holders: rustc_hash::FxHashMap<u64, Vec<u64>>,
+    /// Top-level views reused for different content during the current walk.
+    changed_roots: Vec<u64>,
     /// The boxes the walk is in, outermost first.
     path: Vec<u64>,
     next: u64,
@@ -204,6 +206,7 @@ pub(crate) struct Rv {
     pub(crate) layout_rev: Signal<u64>,
     pub(crate) block_heights: Rc<RefCell<super::block_heights::BlockHeights>>,
     pub(crate) block_heights_rev: Signal<u64>,
+    pub(crate) block_layout: Signal<u64>,
     /// The session has a state the view has not taken yet.
     notified: Signal<u64>,
     pub(crate) focused: Signal<bool>,
@@ -293,6 +296,7 @@ impl Rv {
             layout_rev: signal(0),
             block_heights: Rc::default(),
             block_heights_rev: signal(0),
+            block_layout: signal(0),
             notified: signal(0),
             focused: signal(false),
             blink: signal(true),
@@ -340,6 +344,19 @@ impl Rv {
 
     /// Subscribes to the session and binds the keys while focused.
     fn connect(&self) {
+        let viewport = self.viewport;
+        let width = computed(move || viewport.get().width);
+        let rv = self.clone();
+        effect(move || {
+            width.get();
+            nsh_core::element::pixel_ratio();
+            nsh_core::element::font_scale();
+            rv.props.classes.with(|_| ());
+            rv.props.styles.with(|_| ());
+            rv.block_heights.borrow_mut().reset_layout();
+            rv.block_layout.update(|epoch| *epoch += 1);
+            rv.block_heights_rev.update(|rev| *rev += 1);
+        });
         // Sessions change inside JS's calls (`run`), on other threads and
         // in the view's own handlers, where the components' graph may not
         // be entered: subscribers only mark the change and wake a task,
@@ -467,6 +484,8 @@ impl Rv {
             rv.sel_rev.get();
             rv.viewport.get();
             if rv.scroll_pending.get() {
+                rv.content_height.get();
+                rv.block_heights_rev.get();
                 untracked(|| rv.scroll_into_view());
             }
         });
@@ -567,6 +586,7 @@ impl Rv {
         tree.table_holders.clear();
         tree.path.clear();
         tree.path.push(DOC);
+        tree.changed_roots.clear();
         geo.text_order.clear();
         let mut alive = HashSet::with_capacity(prev_blocks);
         let mut texts = HashMap::with_capacity(prev_texts);
@@ -595,7 +615,14 @@ impl Rv {
             geo.texts.insert(id, entry);
         }
         geo.atoms = atoms;
-        self.sync_block_heights(&tree, &geo);
+        for id in &tree.changed_roots {
+            let mut heights = self.block_heights.borrow_mut();
+            if heights.index(*id).is_some() {
+                heights.invalidate(*id);
+                geo.frames.remove(id);
+            }
+        }
+        self.sync_block_heights(&tree);
     }
 
     pub(crate) fn block_pos(&self, id: u64) -> Option<usize> {
@@ -611,8 +638,22 @@ impl Rv {
             sig
         };
         let active = self.active_blocks.clone();
+        let geometry = self.geo.clone();
         cleanup(move || {
             active.borrow_mut().signals.remove(&id);
+            // Estimated heights survive virtualization. Actual coordinates
+            // and glyph layouts belong only to the mounted view.
+            let mut geo = geometry.borrow_mut();
+            geo.frames.remove(&id);
+            geo.frames.remove(&slot_id(id));
+            geo.insets.remove(&id);
+            geo.table_scroll.remove(&id);
+            geo.table_scroll_handles.remove(&id);
+            if let Some(text) = geo.texts.get_mut(&id) {
+                text.lines.clear();
+                text.geometry = None;
+                text.owner = None;
+            }
         });
         sig.read_only()
     }
@@ -3104,6 +3145,9 @@ fn walk(
                 tree.next
             }
         };
+        if parent == DOC && matched.is_some() && same_ptr.is_none() {
+            tree.changed_roots.push(child_id);
+        }
         alive.insert(child_id);
         tree.positions.insert(child_id, pos);
         tree.by_pos.insert(pos, child_id);

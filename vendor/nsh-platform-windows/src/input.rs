@@ -1639,6 +1639,21 @@ fn inside_menu_bar(view: &NshView) -> bool {
     false
 }
 
+/// A menu tracked by the OS has no expanded state in the view tree. Keep
+/// the field under that menu as its edit target, including a Find input.
+/// In-tree popups own their expanded state and use normal focus routing.
+fn native_menu_over_field(surface: &Surface, trigger: &NshView) -> bool {
+    let state = trigger.state();
+    let a = &state.props.accessibility;
+    a.role == nsh_core::AccessibilityRole::Button
+        && a.state.has_popup
+        && a.state.expanded.is_none()
+        && crate::text_input::focused(surface).is_some_and(|field| {
+            crate::app_window::window_of(surface, &field)
+                == crate::app_window::window_of(surface, trigger)
+        })
+}
+
 fn down(
     surface: &Rc<Surface>,
     key: Key,
@@ -1742,7 +1757,9 @@ fn down(
         }
         _ => {
             if let Some(target) = crate::keyboard::focus_target(surface, &hit.view) {
-                crate::keyboard::focus_pointer(surface, &target);
+                if !native_menu_over_field(surface, &target) {
+                    crate::keyboard::focus_pointer(surface, &target);
+                }
             } else if !matches!(item, Some(Item::Text(_) | Item::Area(..)))
                 && let Some(field) = crate::text_input::focused(surface)
                 && crate::app_window::window_of(surface, &field)

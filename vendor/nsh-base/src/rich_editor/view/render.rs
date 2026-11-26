@@ -404,7 +404,13 @@ pub(super) fn reveal_unmounted_block(rv: &Rv, position: usize) -> bool {
         }
         let window = doc_window(rv, items);
         if (window.start..window.end).contains(&at) {
-            return false;
+            let geo = rv.geo.borrow();
+            return !rv.block_heights.borrow().measured(at)
+                || !geo.frames.contains_key(&items[at].id)
+                || geo
+                    .text_at(position)
+                    .and_then(|id| geo.texts.get(&id))
+                    .is_some_and(|t| t.map.size > 0 && t.geometry.is_none() && t.lines.is_empty());
         }
         rv.block_heights.borrow().prefix(at) as f32
     };
@@ -570,18 +576,56 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
             px(0.),
         ))
     });
-    let wrapper = match slotted {
-        Some((block_ref, _)) => view().element_ref(&block_ref),
-        None => view(),
+    let report_frame = move |rv: &Rv, bounds: Bounds<Points>| {
+        if let Some(frame) = scroll_frame {
+            frame.update(|parts| parts.1 = bounds);
+            update_scrolled_table(rv, id, parent, frame);
+        } else {
+            rv.set_frame(id, Some(parent), bounds);
+        }
     };
+    let mut wrapper = view();
+    if parent == DOC || slotted.is_some() {
+        let block_ref = slotted.map(|(r, _)| r).unwrap_or_else(element_ref);
+        wrapper = wrapper.element_ref(&block_ref);
+        if parent == DOC {
+            let measured = rv.clone();
+            effect(move || {
+                let epoch = measured.block_layout.get();
+                let node = item.get().node;
+                let index = measured.block_heights.borrow();
+                let Some(at) = index.index(id) else {
+                    return;
+                };
+                if index.measured(at) && measured.geo.borrow().frames.contains_key(&id) {
+                    return;
+                }
+                let measured = measured.clone();
+                spawn(async move {
+                    let Some(bounds) = block_ref.measure().await else {
+                        return;
+                    };
+                    if block_ref.node().is_some()
+                        && measured.block_layout.get_untracked() == epoch
+                        && measured.block_heights.borrow().index(id).is_some_and(|at| {
+                            measured
+                                .tree
+                                .borrow()
+                                .children
+                                .get(&DOC)
+                                .and_then(|items| items.get(at))
+                                .is_some_and(|it| it.node.ptr_eq(&node))
+                        })
+                    {
+                        report_frame(&measured, bounds.frame);
+                    }
+                });
+            });
+        }
+    }
     let wrapper = wrapper
         .on_layout(move |b: &Bounds<Points>| {
-            if let Some(frame) = scroll_frame {
-                frame.update(|parts| parts.1 = *b);
-                update_scrolled_table(&layout_rv, id, parent, frame);
-            } else {
-                layout_rv.set_frame(id, Some(parent), *b);
-            }
+            report_frame(&layout_rv, *b);
             if let Some((_, size)) = slotted
                 && size.get_untracked() != b.size
             {
@@ -2003,11 +2047,7 @@ impl Rv {
 
     /// Refresh the index when document membership changes. Stored frame IDs
     /// are the same stable keys used by the upstream renderer.
-    pub(crate) fn sync_block_heights(
-        &self,
-        tree: &super::controller::Tree,
-        geo: &super::geometry::Geometry,
-    ) {
+    pub(crate) fn sync_block_heights(&self, tree: &super::controller::Tree) {
         let items = tree
             .children
             .get(&DOC)
@@ -2016,26 +2056,12 @@ impl Rv {
             .unwrap_or_default();
         self.block_heights
             .borrow_mut()
-            .sync(items.iter().map(|it| it.id), |id| {
-                geo.frames
-                    .get(&id)
-                    .filter(|(parent, _)| *parent == Some(DOC))
-                    .map(|(_, b)| super::block_heights::Frame {
-                        top: b.origin.y.0,
-                        height: b.size.height.0,
-                    })
-            });
+            .sync(items.iter().map(|it| it.id));
     }
 
     /// Block (or slot) `id`'s frame in box `parent` (`None`: the content
     /// box).
     pub(crate) fn set_frame(&self, id: u64, parent: Option<u64>, frame: Bounds<Points>) {
-        let mut geo = self.geo.borrow_mut();
-        if geo.frames.get(&id) == Some(&(parent, frame)) {
-            return;
-        }
-        geo.frames.insert(id, (parent, frame));
-        drop(geo);
         let pitch_changed = parent == Some(DOC)
             && self.block_heights.borrow_mut().measure(
                 id,
@@ -2047,6 +2073,12 @@ impl Rv {
         if pitch_changed {
             self.block_heights_rev.update(|r| *r += 1);
         }
+        let mut geo = self.geo.borrow_mut();
+        if geo.frames.get(&id) == Some(&(parent, frame)) {
+            return;
+        }
+        geo.frames.insert(id, (parent, frame));
+        drop(geo);
         self.table_moved(id, parent);
         self.layout_rev.update(|r| *r += 1);
     }
