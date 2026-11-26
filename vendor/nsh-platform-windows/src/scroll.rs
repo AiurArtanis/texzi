@@ -20,8 +20,8 @@
 use std::rc::Rc;
 
 use nsh_core::{
-    Color, Command, EventKind, EventPayload, Point, Points, ScrollBehavior, Size, StickyCell,
-    ViewKind,
+    Color, Command, EventKind, EventPayload, NodeId, Point, Points, ScrollBehavior, Size,
+    StickyCell, ViewKind,
     geometry::{Percentage, Radians, point},
     scroll::{self as shared, INDICATOR_THICK, KeyMove, ScrollHost, ScrollState},
 };
@@ -330,6 +330,41 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
 
 /// `scrollTo` and `scrollToEnd`.
 pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) {
+    if let Command::ScrollTo {
+        y, animated: false, ..
+    } = command
+        && let Some(receiver) = thumb_receiver(view)
+    {
+        if crate::input::dragging_virtual_thumb(surface, view) {
+            let state = view.state();
+            let s = state.scroll.as_ref().expect("scroll view");
+            let max = s.max(state.frame.size).y.0.max(0.0);
+            let delta = (y.0 + s.behavior.content_inset.top.0).clamp(0.0, max) - s.y.0;
+            drop(state);
+            // ScrollBy retains the indicator, pointer capture and drag phase.
+            scroll_by(surface, view, 0.0, delta);
+        } else {
+            shared::command(&Host::new(surface, view), command);
+        }
+        let state = view.state();
+        let actual = state
+            .scroll
+            .as_ref()
+            .expect("scroll view")
+            .reported(state.frame.size)
+            .y
+            .0;
+        drop(state);
+        surface.event(
+            receiver,
+            EventKind::NativeEvent,
+            EventPayload::Native {
+                name: "thumbApplied".into(),
+                data: serde_json::json!([y.0, actual]),
+            },
+        );
+        return;
+    }
     shared::command(&Host::new(surface, view), command);
 }
 
@@ -409,6 +444,66 @@ pub(crate) fn hovered(surface: &Rc<Surface>, view: &NshView, x: f32, y: f32) {
 /// The mouse grabbed `view`'s indicator ([`grabs_thumb`]).
 pub(crate) fn thumb_begin(surface: &Rc<Surface>, view: &NshView) {
     shared::thumb_begin(&Host::new(surface, view));
+}
+
+/// The rich editor appends this receiver only while its block list is virtual.
+fn thumb_receiver(view: &NshView) -> Option<NodeId> {
+    view.with_children(|children| {
+        children
+            .last()
+            .filter(|child| {
+                child.state().props.test_id.as_deref() == Some("texzi.rich.thumb-target")
+            })
+            .map(NshView::id)
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct VirtualThumb {
+    receiver: NodeId,
+    origin: f32,
+    start: f32,
+    travel: f32,
+    last: f32,
+}
+
+impl VirtualThumb {
+    pub(crate) fn capture(view: &NshView, origin: f32) -> Option<Self> {
+        let receiver = thumb_receiver(view)?;
+        let visible = view.visible_bounds();
+        let state = view.state();
+        let scroll = state.scroll.as_ref()?;
+        let max = scroll.max(state.frame.size).y.0;
+        let (_, travel) = scroll.thumb_within(state.frame.size, visible)?;
+        if scroll.horizontal || max <= 0.0 || travel.0 <= 0.0 {
+            return None;
+        }
+        let start = (scroll.y.0 / max).clamp(0.0, 1.0);
+        Some(Self {
+            receiver,
+            origin,
+            start,
+            travel: travel.0,
+            last: start,
+        })
+    }
+
+    pub(crate) fn move_to(&mut self, surface: &Rc<Surface>, y: f32) {
+        // Each sample is absolute relative to the original grab. Collapsing
+        // intermediate events never loses distance or changes the release point.
+        let target = (self.start + (y - self.origin) / self.travel).clamp(0.0, 1.0);
+        if target != self.last {
+            self.last = target;
+            surface.event(
+                self.receiver,
+                EventKind::NativeEvent,
+                EventPayload::Native {
+                    name: "thumbTarget".into(),
+                    data: target.into(),
+                },
+            );
+        }
+    }
 }
 
 /// The grabbed indicator was dragged by `(dx, dy)` points since it was

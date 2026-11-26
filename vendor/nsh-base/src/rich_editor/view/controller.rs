@@ -237,6 +237,7 @@ pub(crate) struct Rv {
     pub(crate) scroll: ElementRef,
     pub(crate) content: ElementRef,
     pub(crate) scroll_y: Signal<Points>,
+    pub(super) thumb: Rc<super::thumb::ThumbScroll>,
     /// `scroll_y` outside the reactive graph, for the page queries JS
     /// asks (`pageCoordsAtPos`, `posAtPageCoords`).
     pub(crate) scrolled: Rc<Cell<Points>>,
@@ -250,7 +251,7 @@ pub(crate) struct Rv {
     /// The state's scroll request was not carried out yet.
     scroll_pending: Rc<Cell<bool>>,
     selection_viewport_top: Rc<Cell<Option<f32>>>,
-    owner: Owner,
+    pub(super) owner: Owner,
     blink_task: Rc<RefCell<Option<Spawned<()>>>>,
     base_keymap: Rc<Keymap>,
     /// A press on a table's handle or grip being dragged.
@@ -316,6 +317,7 @@ impl Rv {
             scroll: element_ref(),
             content: element_ref(),
             scroll_y: signal(px(0.0)),
+            thumb: super::thumb::ThumbScroll::new(),
             scrolled: Rc::default(),
             viewport: signal(Size::default()),
             content_height: signal(px(0.0)),
@@ -3001,6 +3003,9 @@ impl Rv {
     }
 
     pub(crate) fn set_viewport_scroll(&self, y: f32) {
+        if self.thumb.destination.get_untracked().is_some() {
+            self.thumb.cancel();
+        }
         let max = (self.content_height.get_untracked() - self.viewport.get_untracked().height)
             .0
             .max(0.0);

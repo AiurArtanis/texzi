@@ -64,6 +64,8 @@ mod rich_images;
 mod rich_owner;
 #[cfg(windows)]
 mod rich_projection;
+#[cfg(all(test, windows))]
+mod rich_thumb_tests;
 #[cfg(windows)]
 mod startup_fault;
 #[cfg(windows)]

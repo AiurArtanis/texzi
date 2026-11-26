@@ -362,6 +362,8 @@ enum Mode {
     /// Dragging a scroll view's indicator as a scroll bar's thumb (the
     /// mouse), from where the drag began.
     Thumb(NshView, (f32, f32)),
+    /// A windowed document mounts the requested body before moving its offset.
+    VirtualThumb(NshView, crate::scroll::VirtualThumb),
     /// One of two fingers pinching / rotating.
     TwoFinger,
 }
@@ -1720,7 +1722,10 @@ fn down(
             gate: None,
             pinch: None,
             pressed: Vec::new(),
-            mode: Mode::Thumb(view.clone(), (x, y)),
+            mode: crate::scroll::VirtualThumb::capture(&view, y).map_or_else(
+                || Mode::Thumb(view.clone(), (x, y)),
+                |drag| Mode::VirtualThumb(view.clone(), drag),
+            ),
             moved: false,
         };
         p.velocity.add(time, point(Points(x), Points(y)));
@@ -1989,6 +1994,7 @@ fn motion(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64) {
             let view = view.clone();
             crate::scroll::thumb_move(surface, &view, x - origin.0, y - origin.1);
         }
+        Mode::VirtualThumb(_, drag) => drag.move_to(surface, y),
         _ => {}
     }
     put(surface, p);
@@ -2012,6 +2018,9 @@ fn up(surface: &Rc<Surface>, key: Key, at: Option<(f32, f32)>, time: f64, cancel
         if let Mode::Thumb(view, origin) = &p.mode {
             let view = view.clone();
             crate::scroll::thumb_move(surface, &view, x - origin.0, y - origin.1);
+        }
+        if let Mode::VirtualThumb(_, drag) = &mut p.mode {
+            drag.move_to(surface, y);
         }
         p.x = x;
         p.y = y;
@@ -2051,7 +2060,9 @@ fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
             let (vx, vy) = p.velocity.velocity();
             crate::scroll::drag_end(surface, &view, vx, vy);
         }
-        Mode::Thumb(view, _) => crate::scroll::thumb_end(surface, &view),
+        Mode::Thumb(view, _) | Mode::VirtualThumb(view, _) => {
+            crate::scroll::thumb_end(surface, &view)
+        }
         Mode::Idle | Mode::Free => {
             if let Some(mut press) = p.press.take() {
                 let at = (p.x, p.y);
@@ -2066,6 +2077,16 @@ fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
             }
         }
     }
+}
+
+/// A mounted destination is applied without ending a captured indicator drag.
+pub(crate) fn dragging_virtual_thumb(surface: &Surface, target: &NshView) -> bool {
+    surface
+        .input
+        .pointers
+        .borrow()
+        .iter()
+        .any(|p| matches!(&p.mode, Mode::VirtualThumb(view, _) if view.id() == target.id()))
 }
 
 /// Sends the touches of the reporting pointers, `changed` being the one

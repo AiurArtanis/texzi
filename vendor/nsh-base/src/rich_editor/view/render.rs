@@ -93,6 +93,8 @@ fn rect(b: Bounds<Points>) -> View {
 /// The editor.
 pub(crate) fn render(rv: Rv) -> impl IntoElement {
     let (scroll_rv, layout_rv) = (rv.clone(), rv.clone());
+    let thumb =
+        (os() == nsh_core::platform::Os::Windows).then(|| super::thumb::receiver(rv.clone()));
     let root = part(
         view()
             .relative()
@@ -128,7 +130,8 @@ pub(crate) fn render(rv: Rv) -> impl IntoElement {
                         // with no layout of the content's own.
                         layout_rv.place();
                     })
-                    .child(content(rv.clone())),
+                    .child(content(rv.clone()))
+                    .children(thumb),
             )
             .child(sink(rv)),
     )
@@ -250,22 +253,7 @@ fn content(rv: Rv) -> impl IntoElement {
     // min-height fills the viewport. In particular, a parent must be able
     // to shrink an overestimated height and discover offscreen blocks
     // without progressively enlarging the editor.
-    .child(
-        view()
-            .flex_shrink_0()
-            .on_layout({
-                let extent = rv.clone();
-                move |bounds: &Bounds<Points>| {
-                    // Root blocks are now relative to this wrapper, including
-                    // padding on Part::Content, rather than directly to content.
-                    extent.set_inset(DOC, bounds.origin);
-                    if extent.document_size.get_untracked() != bounds.size {
-                        extent.document_size.set(bounds.size);
-                    }
-                }
-            })
-            .children(doc_blocks(rv.clone())),
-    )
+    .child(document_flow(rv.clone()))
     .child(table::controls(rv.clone()))
     .child(table::drop_line(rv.clone()))
     .child(gap_cursor(rv.clone()))
@@ -275,6 +263,51 @@ fn content(rv: Rv) -> impl IntoElement {
     .child(super::touch::handles(rv.clone()))
     .child(content_layer(rv.clone()))
     .child(bubble_menu(rv))
+}
+
+pub(super) fn has_block_window(rv: &Rv) -> bool {
+    rv.doc_rev.get();
+    rv.tree
+        .borrow()
+        .children
+        .get(&DOC)
+        .is_some_and(|items| items.len() > WINDOWED_BLOCKS)
+}
+
+fn document_flow(rv: Rv) -> AnyElement {
+    fn layout(root: impl ParentElement + Interactive + Styled, rv: Rv) -> AnyElement {
+        let extent = rv.clone();
+        root.flex_shrink_0()
+            .on_layout(move |bounds: &Bounds<Points>| {
+                extent.set_inset(DOC, bounds.origin);
+                if extent.document_size.get_untracked() != bounds.size {
+                    extent.document_size.set(bounds.size);
+                }
+            })
+            .children(doc_blocks(rv))
+            .into_element()
+    }
+    if os() != nsh_core::platform::Os::Windows {
+        return layout(view(), rv);
+    }
+    let doc = rv.clone();
+    let windowed = computed(move || has_block_window(&doc));
+    dynamic(move || {
+        if windowed.get() {
+            // The outer scroll handles all input. This intrinsic-height scope
+            // contains the editor's bounded pages. Its native culler can make
+            // both pages, even before the outer viewport moves to the second.
+            layout(
+                scroll()
+                    .scrollable(false)
+                    .scrollbar(false)
+                    .keyboard_taps(KeyboardTaps::Always),
+                rv.clone(),
+            )
+        } else {
+            layout(view(), rv.clone())
+        }
+    })
 }
 
 /// The app's layer over the document (`contentLayer`): a box over the
@@ -402,7 +435,7 @@ pub(super) fn reveal_unmounted_block(rv: &Rv, position: usize) -> bool {
         if at == items.len() {
             return false;
         }
-        let window = doc_window(rv, items);
+        let window = doc_window(rv, items, rv.scroll_y.get_untracked().0);
         if (window.start..window.end).contains(&at) {
             let geo = rv.geo.borrow();
             return !rv.block_heights.borrow().measured(at)
@@ -422,7 +455,7 @@ pub(super) fn reveal_unmounted_block(rv: &Rv, position: usize) -> bool {
 /// (estimated from the measured ones where never mounted): the window of
 /// those within [`OVERSCAN`] viewports of the visible part, and the
 /// selection's blocks, so the caret's geometry is always there.
-fn doc_window(rv: &Rv, items: &[BlockItem]) -> Window {
+fn doc_window(rv: &Rv, items: &[BlockItem], y: f32) -> Window {
     let n = items.len();
     if n <= WINDOWED_BLOCKS {
         return Window {
@@ -435,7 +468,6 @@ fn doc_window(rv: &Rv, items: &[BlockItem]) -> Window {
     let heights = rv.block_heights.borrow();
     let viewport = rv.viewport.get().height.0;
     let viewport = if viewport > 0.0 { viewport } else { 1000.0 };
-    let y = rv.scroll_y.get().0;
     let top = y - viewport * OVERSCAN;
     let bottom = y + viewport * (1.0 + OVERSCAN);
     let start = heights.preceding(f64::from(top), false).min(n - 1);
@@ -466,10 +498,46 @@ fn doc_window(rv: &Rv, items: &[BlockItem]) -> Window {
     }
 }
 
+/// During a Windows thumb handoff, two distant ranges share the same
+/// document flow. Represent the blocks between them by one spacer.
+#[derive(Clone, PartialEq)]
+struct MountedWindows {
+    first: Window,
+    second: Option<Window>,
+    middle: Option<(u64, f32)>,
+}
+
+impl MountedWindows {
+    fn new(mut first: Window, other: Option<Window>, items: &[BlockItem], rv: &Rv) -> Self {
+        let mut second = None;
+        let mut middle = None;
+        if let Some(mut next) = other {
+            if next.start < first.start {
+                std::mem::swap(&mut first, &mut next);
+            }
+            if next.start > first.end {
+                let end_y = rv.block_heights.borrow().prefix(first.end) as f32;
+                middle = Some((items[next.start].id, (next.above - end_y).max(0.0)));
+                second = Some(next);
+            } else if next.end > first.end {
+                first.end = next.end;
+                first.below = next.below;
+            }
+        }
+        Self {
+            first,
+            second,
+            middle,
+        }
+    }
+}
+
 /// The document's blocks: every one, or, in a long document, those near
 /// the viewport between two spacers ([`doc_window`]).
 fn doc_blocks(rv: Rv) -> Vec<AnyElement> {
     let window_rv = rv.clone();
+    let trace = super::thumb::tracing();
+    let traced_ranges = Cell::new(None);
     let window = computed(move || {
         window_rv.doc_rev.get();
         window_rv.block_heights_rev.get();
@@ -480,7 +548,31 @@ fn doc_blocks(rv: Rv) -> Vec<AnyElement> {
             .get(&DOC)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        doc_window(&window_rv, items)
+        let shown = doc_window(&window_rv, items, window_rv.scroll_y.get().0);
+        let next = window_rv
+            .thumb
+            .destination
+            .get()
+            .map(|y| doc_window(&window_rv, items, y.0));
+        let ranges = next
+            .as_ref()
+            .map(|to| (shown.start, shown.end, to.start, to.end));
+        if trace
+            && traced_ranges.replace(ranges) != ranges
+            && let Some(to) = &next
+        {
+            eprintln!(
+                "TEXZI_THUMB {:?} ranges node={:?} displayed={}..{} target={}..{} of={}",
+                std::time::Instant::now(),
+                window_rv.scroll.node(),
+                shown.start,
+                shown.end,
+                to.start,
+                to.end,
+                items.len()
+            );
+        }
+        MountedWindows::new(shown, next, items, &window_rv)
     });
     let list_rv = rv.clone();
     let list = computed(move || {
@@ -492,14 +584,23 @@ fn doc_blocks(rv: Rv) -> Vec<AnyElement> {
             .get(&DOC)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        items[w.start.min(items.len())..w.end.min(items.len())].to_vec()
+        let part = |span: &Window| &items[span.start.min(items.len())..span.end.min(items.len())];
+        let mut rows = part(&w.first).to_vec();
+        if let Some(next) = &w.second {
+            rows.extend_from_slice(part(next));
+        }
+        rows
     });
     // A spacer is there only while it stands for blocks, so a short
     // document's box has its blocks alone, as before.
     let spacer = move |above: bool| {
         let height = move || {
             let w = window.get();
-            if above { w.above } else { w.below }
+            if above {
+                w.first.above
+            } else {
+                w.second.as_ref().unwrap_or(&w.first).below
+            }
         };
         let shown = computed(move || height() > 0.0);
         dynamic(move || {
@@ -511,12 +612,29 @@ fn doc_blocks(rv: Rv) -> Vec<AnyElement> {
             })
         })
     };
+    let middle = computed(move || window.with(|w| w.middle));
     vec![
         spacer(true),
         each(
             list,
             |b: &BlockItem| b.id,
-            move |item, _| block(rv.clone(), item),
+            move |item, _| {
+                let id = item.get_untracked().id;
+                let gap = move || {
+                    middle
+                        .get()
+                        .filter(|(before, _)| *before == id)
+                        .map_or(0.0, |(_, h)| h)
+                };
+                [
+                    when(
+                        move || gap() > 0.0,
+                        move || view().flex_shrink_0().h(move || px(gap())),
+                    )
+                    .into_element(),
+                    block(rv.clone(), item),
+                ]
+            },
         ),
         spacer(false),
     ]
