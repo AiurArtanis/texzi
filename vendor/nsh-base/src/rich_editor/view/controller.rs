@@ -351,11 +351,11 @@ impl Rv {
         let rv = self.clone();
         effect(move || {
             width.get();
-            nsh_core::element::pixel_ratio();
+            let pixel_ratio = nsh_core::element::pixel_ratio();
             nsh_core::element::font_scale();
             rv.props.classes.with(|_| ());
             rv.props.styles.with(|_| ());
-            rv.block_heights.borrow_mut().reset_layout();
+            rv.block_heights.borrow_mut().reset_layout(pixel_ratio);
             rv.block_layout.update(|epoch| *epoch += 1);
             rv.block_heights_rev.update(|rev| *rev += 1);
         });
