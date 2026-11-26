@@ -45,11 +45,11 @@ fn title_icon(frame: &[u8]) -> Vec<u8> {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=assets/ink-z.ico");
+    println!("cargo:rerun-if-changed=assets/app.ico");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
-    let ico = fs::read("assets/ink-z.ico").expect("read Ink Z icon");
+    let ico = fs::read("assets/app.ico").expect("read application icon");
     assert_eq!(&ico[..4], &[0, 0, 1, 0], "expected ICO file");
     let count = u16::from_le_bytes([ico[4], ico[5]]);
     let mut res = Vec::new();
@@ -72,11 +72,11 @@ fn main() {
     resource(&mut res, 14, 1, &group); // RT_GROUP_ICON, NSH's expected ID.
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     fs::write(
-        out.join("ink-z.rgba"),
-        title_pixels.expect("Ink Z 32 px frame"),
+        out.join("app-icon.rgba"),
+        title_pixels.expect("32 px application icon frame"),
     )
-    .expect("write Ink Z title icon");
-    let path = out.join("ink-z.res");
-    fs::write(&path, res).expect("write Ink Z resources");
+    .expect("write title icon");
+    let path = out.join("app-icon.res");
+    fs::write(&path, res).expect("write application icon resources");
     println!("cargo:rustc-link-arg-bin=texzi-app={}", path.display());
 }

@@ -13,6 +13,7 @@ use nsh_base::{
 use nsh_core::{
     ApproxTextEngine, Command, Core, EventKind, EventPayload, MountItem, NodeId, Op, PayloadValue,
     ROOT_ID, Size, ViewKind,
+    desktop::DesktopCommand,
     element::{Environment, Root, RustCall, RustOp, ToJs, input, view},
     file_dialog::{FileRequest, OpenDialog, OpenDialogKind},
     geometry::px,
@@ -213,13 +214,23 @@ fn FocusedRichZenFixture() -> impl IntoElement {
     *probe.rich_session.borrow_mut() = Some(session.clone());
     probe.observe_zen(shell.clone());
     let document = doc.id;
-    nsh_base::rich_editor::view::rich_editor()
-        .editor(session)
-        .component_ref(&doc.rich_reference)
-        .application_shortcuts(crate::native_menu::application_shortcuts())
-        .auto_focus(true)
-        .on_focus(move |_: &()| probe.focus_events.set(probe.focus_events.get() + 1))
-        .on_unhandled_escape(move |_: &()| shell.handle_rich_escape(document, false))
+    view()
+        .relative()
+        .size_full()
+        .child(
+            nsh_base::rich_editor::view::rich_editor()
+                .editor(session)
+                .component_ref(&doc.rich_reference)
+                .application_shortcuts(crate::native_menu::application_shortcuts())
+                .auto_focus(true)
+                .on_focus(move |_: &()| probe.focus_events.set(probe.focus_events.get() + 1))
+                .on_unhandled_escape({
+                    let shell = shell.clone();
+                    move |_: &()| shell.handle_rich_escape(document, false)
+                })
+                .size_full(),
+        )
+        .child(super::format_button(shell, doc, false))
 }
 
 fn bind_fixture_shortcuts(probe: Rc<Probe>) {
@@ -267,6 +278,8 @@ struct Harness {
     keys: Option<Arc<Keymap>>,
     input: Option<NodeId>,
     requests: Vec<(u32, OpenDialogKind, bool)>,
+    format_button: Option<NodeId>,
+    popup_requests: usize,
 }
 
 impl Drop for Harness {
@@ -307,6 +320,8 @@ impl Harness {
             keys: None,
             input: None,
             requests: Vec::new(),
+            format_button: None,
+            popup_requests: 0,
         };
         fixture.flush();
         let input = fixture.input.expect("a real NSH Input was mounted");
@@ -355,6 +370,17 @@ impl Harness {
                             id,
                             kind: ViewKind::Input,
                         } => self.input = Some(id),
+                        MountItem::ViewProps { id, props }
+                            if props.accessibility.label.as_deref() == Some("格式命令") =>
+                        {
+                            self.format_button = Some(id)
+                        }
+                        MountItem::Command {
+                            command: Command::Desktop(command),
+                            ..
+                        } if matches!(*command, DesktopCommand::PopupMenu { .. }) => {
+                            self.popup_requests += 1;
+                        }
                         MountItem::Command {
                             command: Command::FileRequest { id, request },
                             ..
@@ -595,6 +621,8 @@ impl Harness {
             keys: None,
             input: None,
             requests: Vec::new(),
+            format_button: None,
+            popup_requests: 0,
         };
         fixture.flush();
         let root_open = fixture.matched("ctrl+o", false);
@@ -944,6 +972,43 @@ fn zen_rich_escape_defers_to_the_editor_before_counting_an_empty_text_caret() {
     assert_eq!(fixture.press("escape", false), escape);
     assert!(!fixture.probe.zen.get());
     assert!(session.state().selection().is_gap_cursor());
+}
+
+#[test]
+fn native_format_popup_breaks_the_zen_escape_sequence() {
+    let mut fixture = Harness::with_root(false, Root::new::<FocusedRichZenFixture>(|| ()));
+    fixture.focus_window();
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("z", false).consumed());
+    let escape = fixture.press("escape", false);
+    assert!(fixture.probe.zen_armed.get());
+
+    assert!(fixture.core.component_event(
+        fixture.format_button.expect("mounted format button"),
+        EventKind::Press,
+        &EventPayload::None,
+    ));
+    fixture.flush();
+    assert_eq!(fixture.popup_requests, 1);
+    assert!(fixture.probe.zen.get());
+    assert!(!fixture.probe.zen_armed.get());
+
+    // Win32 sends only the close notification. Core settles the popup and
+    // returns false so that a JS observer could still see the notification.
+    assert!(!fixture.core.component_event(
+        ROOT_ID,
+        EventKind::Menu,
+        &EventPayload::Map(vec![
+            ("id", PayloadValue::Number(0.0)),
+            ("closed", PayloadValue::Bool(true)),
+        ]),
+    ));
+    fixture.flush();
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(fixture.probe.zen.get());
+    assert!(fixture.probe.zen_armed.get());
+    assert_eq!(fixture.press("escape", false), escape);
+    assert!(!fixture.probe.zen.get());
 }
 
 #[test]
