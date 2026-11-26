@@ -60,7 +60,7 @@ pub use highlighter::{
     EditorHighlighter, EditorText, EditorTextEdit, EditorTextPoint, EditorTokens,
 };
 pub use hooks::{EditorBounds, EditorHoverEvent, EditorTextPressEvent};
-pub use languages::{EditorLanguage, register_highlighter, register_language};
+pub use languages::{EditorLanguage, known_language, register_highlighter, register_language};
 pub use layout::EditorScrollBeyond;
 use nsh_core::prelude::*;
 pub use parts::{EditorClasses, EditorPart, EditorStyles};

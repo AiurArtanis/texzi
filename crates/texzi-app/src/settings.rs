@@ -11,19 +11,32 @@ use std::{
 };
 
 pub const THEME: &str = "appearance.theme";
+pub const FONT_FAMILY: &str = "editor.fontFamily";
 pub const FONT_SIZE: &str = "editor.fontSize";
 pub const LINE_NUMBERS: &str = "editor.lineNumbers";
 pub const TAB_SIZE: &str = "editor.tabSize";
 pub const WRAP_TEXT: &str = "editor.wordWrap.text";
 pub const WRAP_MARKDOWN: &str = "editor.wordWrap.markdown";
+pub const WRAP_CODE: &str = "editor.wordWrap.code";
+pub const DEFAULT_ENCODING: &str = "files.defaultEncoding";
+pub const DEFAULT_EOL: &str = "files.defaultEol";
+pub const MARKDOWN_VIEW: &str = "markdown.defaultView";
+pub const TAB_CLOSE: &str = "workbench.tabCloseButton";
+pub const MARKDOWN_SOURCE_ONLY_BYTES: u64 = 50_000_000;
 
 pub const ENABLED: &[&str] = &[
     THEME,
+    FONT_FAMILY,
     FONT_SIZE,
     WRAP_TEXT,
     WRAP_MARKDOWN,
+    WRAP_CODE,
     LINE_NUMBERS,
     TAB_SIZE,
+    DEFAULT_ENCODING,
+    DEFAULT_EOL,
+    MARKDOWN_VIEW,
+    TAB_CLOSE,
 ];
 
 pub fn definition(id: &str) -> &'static Value {
@@ -40,6 +53,12 @@ pub fn definition(id: &str) -> &'static Value {
         .expect("implemented setting is in the registry")
 }
 
+pub fn folder_supported(id: &str) -> bool {
+    definition(id)["scope"]
+        .as_array()
+        .is_some_and(|scopes| scopes.iter().any(|scope| scope == "workspaceLocal"))
+}
+
 fn validate(id: &str, value: &Value) -> bool {
     let spec = definition(id);
     match spec["type"].as_str() {
@@ -47,10 +66,44 @@ fn validate(id: &str, value: &Value) -> bool {
             n >= spec["min"].as_i64().unwrap() && n <= spec["max"].as_i64().unwrap()
         }),
         Some("boolean") => value.is_boolean(),
+        Some("string") => value.as_str().is_some_and(|value| {
+            value
+                .split(',')
+                .all(|family| !family.trim().is_empty() && !family.chars().any(char::is_control))
+        }),
         Some("enum") => spec["options"]
             .as_array()
             .is_some_and(|options| options.iter().any(|option| &option["value"] == value)),
         _ => false,
+    }
+}
+
+pub fn new_document_format(
+    encoding: &str,
+    eol: &str,
+) -> (texzi_document::files::Format, texzi_document::Eol) {
+    use texzi_document::{
+        Eol,
+        files::{Encoding, Format},
+    };
+    let (encoding, bom) = match encoding {
+        "utf-8-bom" => (Encoding::Utf8, true),
+        "utf-16le" => (Encoding::Utf16Le, true),
+        "utf-16be" => (Encoding::Utf16Be, true),
+        "gbk" => (Encoding::GbkWebEncodingRs0844, false),
+        "gb18030" => (Encoding::Gb18030WebEncodingRs0844, false),
+        "windows-1252" => (Encoding::Windows1252, false),
+        _ => (Encoding::Utf8, false),
+    };
+    let eol = if eol == "LF" { Eol::Lf } else { Eol::CrLf };
+    (Format { encoding, bom }, eol)
+}
+
+pub fn source_font_stack(value: &str) -> String {
+    if value.eq_ignore_ascii_case("system") {
+        "system-ui".into()
+    } else {
+        format!("{value}, Consolas, system-ui")
     }
 }
 
@@ -94,7 +147,7 @@ fn folder_key(path: &Path) -> String {
 }
 
 fn effective(data: &Value, id: &str, root: Option<&Path>) -> (Value, &'static str) {
-    if id != THEME
+    if folder_supported(id)
         && let Some(root) = root
     {
         let selected = &data["folders"][folder_key(root)][id];
@@ -245,18 +298,19 @@ impl Settings {
     }
 
     pub fn apply(&self, id: &str, root: Option<&Path>, value: Option<Value>) -> bool {
-        if root.is_some() && id == THEME {
-            self.error.set(Some("主题只支持用户范围".into()));
+        let spec = definition(id);
+        let name = spec["name"].as_str().unwrap();
+        if root.is_some() && !folder_supported(id) {
+            self.error.set(Some(format!("{name}只支持用户范围")));
             return false;
         }
         if value.as_ref().is_some_and(|value| !validate(id, value)) {
-            let spec = definition(id);
-            self.error.set(Some(format!(
-                "{}：请输入 {}–{} 之间的整数",
-                spec["name"].as_str().unwrap(),
-                spec["min"],
-                spec["max"]
-            )));
+            let instruction = match spec["type"].as_str() {
+                Some("integer") => format!("请输入 {}–{} 之间的整数", spec["min"], spec["max"]),
+                Some("string") => "请输入字体名称、以逗号分隔的字体列表或 system".into(),
+                _ => "请选择支持的值".into(),
+            };
+            self.error.set(Some(format!("{name}：{instruction}")));
             return false;
         }
         let result = match &self.path {

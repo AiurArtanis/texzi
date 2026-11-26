@@ -512,11 +512,21 @@ impl Store {
         text: &str,
         format: crate::files::Format,
     ) -> Result<Snapshot, Error> {
+        self.open_decoded_with_eol(text, format, Profile::default().default_eol)
+    }
+
+    pub fn open_decoded_with_eol(
+        &mut self,
+        text: &str,
+        format: crate::files::Format,
+        default_eol: Eol,
+    ) -> Result<Snapshot, Error> {
         self.open_import(
             text,
             Profile {
                 version: 2,
                 file_format: Some(format),
+                default_eol,
                 ..Profile::default()
             },
             false,

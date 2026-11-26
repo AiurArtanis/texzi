@@ -99,6 +99,44 @@ fn SettingsRoutingFixture() -> impl IntoElement {
     shell.show_settings();
     shell.run("texzi.tab.reopenClosed");
     assert_eq!(shell.current().unwrap().id, 1);
+    assert!(
+        shell
+            .settings
+            .apply(super::settings::MARKDOWN_VIEW, None, Some("source".into()))
+    );
+    shell.add(
+        NativeView::fixture("# Source"),
+        Some(r"C:\texzi-test\source.md".into()),
+    );
+    let source = shell.current().unwrap();
+    assert!(!source.displayed_rich());
+    assert!(
+        shell
+            .settings
+            .apply(super::settings::MARKDOWN_VIEW, None, Some("wysiwyg".into()))
+    );
+    assert!(!source.displayed_rich());
+    shell.add(
+        NativeView::fixture("# Rich"),
+        Some(r"C:\texzi-test\rich.md".into()),
+    );
+    assert!(shell.current().unwrap().displayed_rich());
+
+    shell.add(
+        NativeView::fixture("let n = 4;"),
+        Some(r"C:\texzi-test\example.rs".into()),
+    );
+    let code = shell.current().unwrap();
+    assert!(!shell.source_wrap(&code));
+    assert!(shell.source_wrap(&source));
+    assert!(
+        shell
+            .settings
+            .apply(super::settings::WRAP_CODE, None, Some("on".into()))
+    );
+    assert!(shell.source_wrap(&code));
+    code.wrap.set(Some(false));
+    assert!(!shell.source_wrap(&code));
     super::render_shell(shell)
 }
 

@@ -59,3 +59,9 @@ the following command.
 ```powershell
 cargo test -p texzi-app --release --locked --target x86_64-pc-windows-msvc zen_ -- --test-threads=1
 ```
+
+### Settings source language classification
+
+`editor::known_language` exposes the editor's existing language resolution for
+paths and aliases. Texzi uses it to apply the code word-wrap preference. The
+editor retains its existing rendering language and plain-text fallback.

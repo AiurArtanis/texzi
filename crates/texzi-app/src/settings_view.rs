@@ -18,9 +18,11 @@ const CATEGORIES: &[&str] = &[
 ];
 const COMMON: &[&str] = &[
     settings::THEME,
+    settings::FONT_FAMILY,
     settings::FONT_SIZE,
     settings::WRAP_TEXT,
     settings::LINE_NUMBERS,
+    settings::MARKDOWN_VIEW,
 ];
 
 struct Binding {
@@ -149,6 +151,42 @@ fn selected_root(state: &SettingsView, root: Signal<Option<PathBuf>>) -> Option<
     }
 }
 
+#[derive(Clone, PartialEq)]
+struct FieldDraft {
+    root: Option<PathBuf>,
+    text: String,
+}
+
+fn commit_field(
+    settings: &settings::Settings,
+    id: &'static str,
+    current_root: Option<&std::path::Path>,
+    draft: Signal<Option<FieldDraft>>,
+) {
+    let Some(pending) = draft.get_untracked() else {
+        return;
+    };
+    if pending.root.as_deref() != current_root {
+        draft.set(None);
+        settings
+            .error
+            .set(Some("设置范围已改变，未提交原输入。".into()));
+        return;
+    }
+    let value = pending.text.trim();
+    let parsed = if settings::definition(id)["type"] == "integer" {
+        value
+            .parse::<i64>()
+            .map(Value::from)
+            .unwrap_or_else(|_| value.into())
+    } else {
+        value.into()
+    };
+    if settings.apply(id, pending.root.as_deref(), Some(parsed)) {
+        draft.set(None);
+    }
+}
+
 fn control(
     settings: Rc<settings::Settings>,
     id: &'static str,
@@ -156,45 +194,67 @@ fn control(
     root: Signal<Option<PathBuf>>,
 ) -> AnyElement {
     let spec = settings::definition(id);
-    if spec["type"] == "integer" {
-        let draft = signal(None::<String>);
+    if matches!(spec["type"].as_str(), Some("integer" | "string")) {
+        let draft = signal(None::<FieldDraft>);
         let show = settings.clone();
         let show_scope = state.clone();
-        let commit = Rc::new(move || {
-            if let Some(value) = draft.get_untracked() {
-                let parsed = value
-                    .trim()
-                    .parse::<i64>()
-                    .map(Value::from)
-                    .unwrap_or(Value::String(value));
-                if settings.apply(id, selected_root(&state, root).as_deref(), Some(parsed)) {
-                    draft.set(None);
-                }
+        let edit_scope = state.clone();
+        let watch_scope = state.clone();
+        effect(move || {
+            let active_root = selected_root(&watch_scope, root);
+            if draft
+                .get_untracked()
+                .is_some_and(|pending| pending.root != active_root)
+            {
+                draft.set(None);
             }
+        });
+        let commit = Rc::new(move || {
+            commit_field(&settings, id, selected_root(&state, root).as_deref(), draft);
         });
         let blur = commit.clone();
         return input()
             .h(px(34.0))
-            .w(px(100.0))
+            .w(px(if spec["type"] == "integer" {
+                100.0
+            } else {
+                240.0
+            }))
+            .max_w(relative(1.0))
             .px(px(8.0))
             .bg(frame)
             .border(px(1.0))
             .border_color(divider)
             .label(spec["name"].as_str().unwrap())
             .value(move || {
-                draft.get().unwrap_or_else(|| {
-                    show.effective(id, selected_root(&show_scope, root).as_deref())
-                        .0
-                        .to_string()
+                let active_root = selected_root(&show_scope, root);
+                draft
+                    .get()
+                    .filter(|pending| pending.root == active_root)
+                    .map(|pending| pending.text)
+                    .unwrap_or_else(|| {
+                        let value = show.effective(id, active_root.as_deref()).0;
+                        value
+                            .as_str()
+                            .map_or_else(|| value.to_string(), str::to_owned)
+                    })
+            })
+            .on_change(move |value: &str| {
+                draft.update(|pending| {
+                    let draft = pending.get_or_insert_with(|| FieldDraft {
+                        root: selected_root(&edit_scope, root),
+                        text: String::new(),
+                    });
+                    draft.text = value.into();
                 })
             })
-            .on_change(move |value: &str| draft.set(Some(value.into())))
             .on_submit(move |_: &str| commit())
             .on_blur(move |_: &()| blur())
             .into_element();
     }
     view()
         .flex_row()
+        .flex_wrap()
         .gap(px(4.0))
         .children(
             spec["options"]
@@ -243,6 +303,8 @@ fn row(
     let reset = settings.clone();
     let reset_scope = state.clone();
     let limited_scope = state.clone();
+    let font = settings.clone();
+    let font_scope = state.clone();
     view()
         .py(px(12.0))
         .border_b(px(1.0))
@@ -273,12 +335,31 @@ fn row(
                     })
                     .text_size(px(12.0))
                     .text_color(secondary_foreground),
-                ),
+                )
+                .child(when(id == settings::FONT_FAMILY, move || {
+                    let font = font.clone();
+                    let font_scope = font_scope.clone();
+                    text(move || {
+                        let effective = font
+                            .effective(id, selected_root(&font_scope, root).as_deref())
+                            .0;
+                        let stack = settings::source_font_stack(effective.as_str().unwrap());
+                        let installed = nsh_platform_windows::installed_font_family(&stack);
+                        format!(
+                            "当前字体 · {}",
+                            installed.as_deref().unwrap_or("Windows 字形回退")
+                        )
+                    })
+                    .text_size(px(12.0))
+                    .text_color(secondary_foreground)
+                })),
         )
         .child(
             when(
-                move || id == settings::THEME && selected_root(&limited_scope, root).is_some(),
-                || text("主题只支持用户范围").text_color(secondary_foreground),
+                move || {
+                    !settings::folder_supported(id) && selected_root(&limited_scope, root).is_some()
+                },
+                || text("此设置只支持用户范围").text_color(secondary_foreground),
             )
             .otherwise(move || {
                 let reset = reset.clone();
@@ -463,4 +544,52 @@ fn no_results(term: String, query: Signal<String>) -> AnyElement {
                 .child(text("清除搜索")),
         )
         .into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_folder_does_not_commit_its_number_draft_to_user_settings() {
+        let runtime = nsh_core::element::Runtime::default();
+        let _entered = runtime.enter();
+        let preferences = settings::Settings::new();
+        let old_root = PathBuf::from(r"C:\texzi-test\original-folder");
+        let view = SettingsView::new(&[]);
+        view.folder_scope.set(true);
+        let root = signal(Some(old_root.clone()));
+        let draft = signal(Some(FieldDraft {
+            root: selected_root(&view, root),
+            text: "23".into(),
+        }));
+        root.set(None);
+        commit_field(
+            &preferences,
+            settings::FONT_SIZE,
+            selected_root(&view, root).as_deref(),
+            draft,
+        );
+        assert!(draft.get().is_none());
+        assert_eq!(
+            preferences.effective(settings::FONT_SIZE, None).0,
+            Value::from(16)
+        );
+        assert_eq!(
+            preferences
+                .effective(settings::FONT_SIZE, Some(&old_root))
+                .0,
+            Value::from(16)
+        );
+        assert!(preferences.error.get().is_some());
+        draft.set(Some(FieldDraft {
+            root: selected_root(&view, root),
+            text: "19".into(),
+        }));
+        commit_field(&preferences, settings::FONT_SIZE, None, draft);
+        assert_eq!(
+            preferences.effective(settings::FONT_SIZE, None).0,
+            Value::from(19)
+        );
+    }
 }

@@ -45,10 +45,25 @@ pub(crate) enum SaveError {
 }
 
 impl NativeView {
-    pub fn new_file() -> Rc<Self> {
+    pub(crate) fn disk_len(&self) -> u64 {
+        self.owner
+            .files
+            .borrow()
+            .disk
+            .as_ref()
+            .map_or(0, |file| file.bytes.len() as u64)
+    }
+
+    pub fn new_file(format: Format, default_eol: doc::Eol) -> Rc<Self> {
         let mut store = doc::Store::new(doc::HistoryBudget::default());
-        let snapshot = store.open_decoded("", UTF8).expect("empty UTF-8 file");
-        Self::from_store(store, snapshot, FileState::default()).expect("empty source view")
+        let snapshot = store
+            .open_decoded_with_eol("", format, default_eol)
+            .expect("empty file with a supported format");
+        let files = FileState {
+            format,
+            ..FileState::default()
+        };
+        Self::from_store(store, snapshot, files).expect("empty source view")
     }
 
     pub fn open_file(path: &Path) -> Result<Rc<Self>, String> {
@@ -267,6 +282,33 @@ mod tests {
         )
         .unwrap();
     }
+
+    #[test]
+    fn new_file_uses_selected_encoding_and_eol_without_changing_existing_formats() {
+        with_file("new-file-format", |dir, worker| {
+            let format = Format {
+                encoding: Encoding::Utf16Le,
+                bom: true,
+            };
+            let target = dir.join("new.txt");
+            let doc = NativeView::new_file(format, doc::Eol::Lf);
+            append(&doc, "A\nB");
+            worker
+                .block_on(doc.save_file(target.clone(), false, false))
+                .unwrap();
+            assert_eq!(fs::read(target).unwrap(), b"\xff\xfeA\x00\n\x00B\x00");
+
+            let existing = dir.join("existing.txt");
+            let original = b"a\r\nb\n";
+            fs::write(&existing, original).unwrap();
+            let doc = NativeView::open_file(&existing).unwrap();
+            worker
+                .block_on(doc.save_file(existing.clone(), true, false))
+                .unwrap();
+            assert_eq!(fs::read(existing).unwrap(), original);
+        });
+    }
+
     #[test]
     fn saving_without_edits_preserves_encoding_bom_and_newlines() {
         with_file("roundtrip", |dir, worker| {

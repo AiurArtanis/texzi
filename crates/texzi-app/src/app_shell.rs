@@ -455,6 +455,12 @@ impl Shell {
         doc.wrap.get().unwrap_or_else(|| {
             let id = if doc.is_markdown() {
                 settings::WRAP_MARKDOWN
+            } else if doc.path.with(|path| {
+                path.as_deref().is_some_and(|path| {
+                    nsh_base::editor::known_language(&path.to_string_lossy()).is_some()
+                })
+            }) {
+                settings::WRAP_CODE
             } else {
                 settings::WRAP_TEXT
             };
@@ -649,7 +655,11 @@ impl Shell {
         s
     }
     fn add_blank(&self) {
-        self.add(self.owner.run(NativeView::new_file), None);
+        let encoding = self.preference(settings::DEFAULT_ENCODING);
+        let eol = self.preference(settings::DEFAULT_EOL);
+        let (format, eol) =
+            settings::new_document_format(encoding.as_str().unwrap(), eol.as_str().unwrap());
+        self.add(self.owner.run(|| NativeView::new_file(format, eol)), None);
     }
     fn title_room(&self) -> f32 {
         let width = self
@@ -707,7 +717,10 @@ impl Shell {
         self.next.set(id + 1);
         let rich = self.owner.run(|| source.sibling().expect("rich view"));
         let gate = self.owner.run(|| ModeGate::new(source.clone(), rich));
-        if path.as_deref().is_some_and(is_markdown) {
+        if path.as_deref().is_some_and(is_markdown)
+            && source.disk_len() <= settings::MARKDOWN_SOURCE_ONLY_BYTES
+            && self.preference(settings::MARKDOWN_VIEW) == "wysiwyg"
+        {
             self.owner.run(|| gate.to_rich());
         }
         let reference = self.owner.run(component_ref::<Editor>);
@@ -2072,6 +2085,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let tab_shell = s.clone();
     let size_shell = s.clone();
     let height_shell = s.clone();
+    let font_shell = s.clone();
     let lines_shell = s.clone();
     let body = doc.body;
     let source_focus = s.second_active;
@@ -2162,6 +2176,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 let tab_shell = tab_shell.clone();
                 let size_shell = size_shell.clone();
                 let height_shell = height_shell.clone();
+                let font_shell = font_shell.clone();
                 let lines_shell = lines_shell.clone();
                 let wrap_shell = wrap_shell.clone();
                 let wrap_doc = wrap_doc.clone();
@@ -2182,6 +2197,12 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .tab_size(move || Some(tab_shell.tab_size()))
                     .hard_tabs(false)
                     .soft_wrap(move || wrap_shell.source_wrap(&wrap_doc))
+                    .font_family(move || {
+                        let font = font_shell.preference(settings::FONT_FAMILY);
+                        Some(SharedString::from(settings::source_font_stack(
+                            font.as_str().unwrap(),
+                        )))
+                    })
                     .font_size(move || px(size_shell.source_font_size()))
                     .line_height(move || px(height_shell.source_font_size() * 1.5))
                     .line_numbers(move || lines_shell.preference(settings::LINE_NUMBERS) == true)
@@ -2615,6 +2636,29 @@ fn file_sidebar(s: Rc<Shell>) -> impl IntoElement {
         )
 }
 
+const TAB_CLOSE_GROUP: &str = "workbench-tab";
+
+fn tab_close_button(
+    shell: Rc<Shell>,
+    label: &'static str,
+    active: impl Fn() -> bool + 'static,
+    close: impl Fn() + 'static,
+) -> impl IntoElement {
+    let active_shell = shell.clone();
+    icon_button(CLOSE_ICON, label, 24.0, 14.0)
+        .style_when(
+            move || active_shell.preference(settings::TAB_CLOSE) == "active" && !active(),
+            |style| style.invisible(),
+        )
+        .style_when(
+            move || shell.preference(settings::TAB_CLOSE) == "hover",
+            |style| style.opacity(0.0),
+        )
+        .group_hover_named(TAB_CLOSE_GROUP, |style| style.opacity(1.0))
+        .group_focus_within_named(TAB_CLOSE_GROUP, |style| style.opacity(1.0))
+        .on_press(move |_: &()| close())
+}
+
 fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
     let docs = s.docs;
     let active = s.active;
@@ -2648,6 +2692,7 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                         let label = doc.clone();
                         view()
                             .relative()
+                            .group_named(TAB_CLOSE_GROUP)
                             .h(px(38.0))
                             .min_w(px(104.0))
                             .max_w(px(220.0))
@@ -2705,10 +2750,14 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                                         }
                                     }),
                             )
-                            .child(
-                                icon_button(CLOSE_ICON, "关闭此标签", 24.0, 14.0)
-                                    .on_press(move |_: &()| close.close_tab(id)),
-                            )
+                            .child(tab_close_button(
+                                close.clone(),
+                                "关闭此标签",
+                                move || {
+                                    active.get() == id && settings_tab.get() != SettingsTab::Active
+                                },
+                                move || close.close_tab(id),
+                            ))
                             .child(when(
                                 move || {
                                     active.get() == id && settings_tab.get() != SettingsTab::Active
@@ -2733,6 +2782,7 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                 let close = preferences_tab.clone();
                 view()
                     .relative()
+                    .group_named(TAB_CLOSE_GROUP)
                     .h(px(38.0))
                     .flex_row()
                     .items_center()
@@ -2756,10 +2806,12 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                             .on_press(move |_: &()| open.show_settings())
                             .child(text("设置")),
                     )
-                    .child(
-                        icon_button(CLOSE_ICON, "关闭设置标签", 24.0, 14.0)
-                            .on_press(move |_: &()| close.dismiss_settings(true)),
-                    )
+                    .child(tab_close_button(
+                        close.clone(),
+                        "关闭设置标签",
+                        move || settings_tab.get() == SettingsTab::Active,
+                        move || close.dismiss_settings(true),
+                    ))
                     .child(when(
                         move || settings_tab.get() == SettingsTab::Active,
                         || {
