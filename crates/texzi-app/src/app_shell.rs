@@ -3217,12 +3217,30 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                                 if d.gate.rich_mode.get() {
                                     return Err(d.gate.status.get());
                                 }
-                                d.source.go_to_line_column(line, column)
+                                d.source.go_to_line_column(line, column)?;
+                                Ok(d)
                             });
                         match result {
-                            Ok(()) => {
+                            Ok(doc) => {
+                                let second = run.second_active.get();
                                 run.close_panel();
                                 run.notice.set("已定位源码行列".into());
+                                let shell = run.clone();
+                                run.owner.run(|| {
+                                    spawn(async move {
+                                        // The native editor consumes the external selection at commit.
+                                        wait_for_editor_frame(doc.body).await;
+                                        if shell.second_active.get() == second
+                                            && shell
+                                                .current()
+                                                .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                                            && !doc.displayed_rich()
+                                            && let Some(api) = doc.reference.api::<EditorApi>()
+                                        {
+                                            api.reveal_primary_caret(None);
+                                        }
+                                    })
+                                });
                             }
                             Err(e) => run.notice.set(e),
                         }

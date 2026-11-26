@@ -2,6 +2,7 @@
 use crate::{DocId, SaveCapture, Snapshot, Store, TargetKey};
 use std::sync::Arc;
 pub mod paged;
+pub(crate) const IMPORT_CHUNK: usize = 64 * 1024;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub mod save;
@@ -51,6 +52,13 @@ pub struct LoadedBytes {
 }
 impl LoadedBytes {
     pub fn decode(original: Arc<[u8]>, explicit: Option<Encoding>) -> Result<Self, FileError> {
+        Self::decode_cancellable(original, explicit, || false)
+    }
+    pub fn decode_cancellable(
+        original: Arc<[u8]>,
+        explicit: Option<Encoding>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Self, FileError> {
         let signature = if !matches!(explicit, Some(Encoding::Utf16Le | Encoding::Utf16Be))
             && (original.starts_with(&[0, 0, 0xfe, 0xff])
                 || original.starts_with(&[0xff, 0xfe, 0, 0]))
@@ -74,7 +82,7 @@ impl LoadedBytes {
             .or(signature.map(|v| v.0))
             .unwrap_or(Encoding::Utf8);
         let data = &original[signature.map_or(0, |v| v.1)..];
-        let text = decode(data, encoding).map_err(|e| {
+        let text = decode_chunks(data, encoding, cancelled).map_err(|e| {
             if explicit.is_none() && signature.is_none() && matches!(e, FileError::InvalidBytes) {
                 FileError::EncodingChoiceRequired
             } else {
@@ -92,6 +100,10 @@ impl LoadedBytes {
     }
     pub fn text(&self) -> &str {
         &self.text
+    }
+    /// Transfer the text to the document's shared provenance before building its indexes.
+    pub fn into_shared_text(self) -> Arc<str> {
+        self.text.into()
     }
     /// An explicit BOM policy disambiguates a signature from literal FEFF text.
     pub fn decode_exact(original: Arc<[u8]>, format: Format) -> Result<Self, FileError> {
@@ -230,6 +242,63 @@ fn gbk_shape(data: &[u8]) -> bool {
     }
     true
 }
+fn decode_chunks(
+    mut data: &[u8],
+    encoding: Encoding,
+    cancelled: impl Fn() -> bool,
+) -> Result<String, FileError> {
+    let check = || {
+        if cancelled() {
+            Err(FileError::Document(crate::Error::Cancelled))
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    if data.len() <= IMPORT_CHUNK {
+        return decode(data, encoding);
+    }
+    let mut text = String::with_capacity(data.len());
+    while !data.is_empty() {
+        check()?;
+        let end = if data.len() <= IMPORT_CHUNK {
+            data.len()
+        } else {
+            match encoding {
+                Encoding::Utf8 => {
+                    let mut end = IMPORT_CHUNK;
+                    while data[end] & 0xc0 == 0x80 && IMPORT_CHUNK - end < 3 {
+                        end -= 1;
+                    }
+                    end
+                }
+                Encoding::Utf16Le | Encoding::Utf16Be => {
+                    let last = paged::unit(&data[IMPORT_CHUNK - 2..], encoding);
+                    IMPORT_CHUNK
+                        - if (0xd800..=0xdbff).contains(&last) {
+                            2
+                        } else {
+                            0
+                        }
+                }
+                Encoding::GbkWebEncodingRs0844 | Encoding::Gb18030WebEncodingRs0844 => {
+                    paged::gb_advance(data, 0, IMPORT_CHUNK).map_err(|_| FileError::InvalidBytes)?
+                }
+                _ => IMPORT_CHUNK,
+            }
+        };
+        let (chunk, remaining) = data.split_at(end);
+        if encoding == Encoding::Utf8 {
+            text.push_str(std::str::from_utf8(chunk).map_err(|_| FileError::InvalidBytes)?);
+        } else {
+            text.push_str(&decode(chunk, encoding)?);
+        }
+        data = remaining;
+    }
+    check()?;
+    Ok(text)
+}
+
 fn decode(data: &[u8], e: Encoding) -> Result<String, FileError> {
     match e {
         Encoding::Utf8 => std::str::from_utf8(data)

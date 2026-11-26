@@ -13,6 +13,14 @@ const HUGE_BYTES: u64 = 200 * MIB;
 const MAX_EDIT_BYTES: u64 = 256 * MIB;
 pub(super) const SOURCE_ONLY_BYTES: u64 = 50_000_000;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImportState {
+    Idle,
+    Loading,
+    Cancelling,
+    Cancelled,
+}
+
 pub(super) fn requires_editable(id: &str) -> bool {
     crate::rich_commands::handles(id)
         || (source_command(id).is_some()
@@ -41,7 +49,7 @@ pub(super) struct LargeFile {
     page: Signal<Option<Rc<Page>>>,
     message: Signal<String>,
     reading: Signal<bool>,
-    importing: Signal<bool>,
+    import_state: Signal<ImportState>,
     generation: Cell<u64>,
     cancel: RefCell<Option<Arc<AtomicBool>>>,
 }
@@ -63,20 +71,21 @@ impl LargeFile {
                 "正在准备首屏…".into()
             }),
             reading: signal(false),
-            importing: signal(false),
+            import_state: signal(ImportState::Idle),
             generation: Cell::new(0),
             cancel: Default::default(),
         })
     }
 
     pub(super) fn status(&self) -> String {
-        if self.importing.get() {
-            "正在加载完整文档 · 预览只读".into()
-        } else {
-            format!(
+        match self.import_state.get() {
+            ImportState::Loading => "正在加载完整文档 · 预览只读".into(),
+            ImportState::Cancelling => "正在取消完整加载 · 预览只读".into(),
+            ImportState::Cancelled => "已取消完整加载 · 预览只读".into(),
+            ImportState::Idle => format!(
                 "大文件 · 只读分页 · {:.1} MiB",
                 self.len as f64 / MIB as f64
-            )
+            ),
         }
     }
 
@@ -84,7 +93,21 @@ impl LargeFile {
         if let Some(cancel) = self.cancel.borrow_mut().take() {
             cancel.store(true, Ordering::Relaxed);
         }
-        self.importing.set(false);
+        self.import_state.set(ImportState::Idle);
+    }
+
+    fn cancelled(&self, token: &Arc<AtomicBool>) {
+        // Closing the tab, choosing another encoding or retrying can supersede this job.
+        if self
+            .cancel
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, token))
+        {
+            self.cancel_import();
+            self.import_state.set(ImportState::Cancelled);
+            self.message.set("已取消完整加载，可继续分页查看".into());
+        }
     }
 
     pub(super) fn close(&self) {
@@ -222,7 +245,7 @@ struct Import {
 #[derive(Default)]
 pub(super) struct ImportQueue {
     jobs: RefCell<VecDeque<Import>>,
-    busy: Cell<bool>,
+    active: RefCell<Option<Arc<AtomicBool>>>,
 }
 
 impl Shell {
@@ -257,12 +280,15 @@ impl Shell {
             ));
             return;
         }
-        if large.importing.get() {
+        if matches!(
+            large.import_state.get(),
+            ImportState::Loading | ImportState::Cancelling
+        ) {
             return;
         }
         let cancel = Arc::new(AtomicBool::new(false));
         *large.cancel.borrow_mut() = Some(cancel.clone());
-        large.importing.set(true);
+        large.import_state.set(ImportState::Loading);
         if large.page.with(Option::is_none) && !large.reading.get() {
             large.load(self.owner, Position::Boundary(0), None);
         }
@@ -293,8 +319,32 @@ impl Shell {
         });
     }
 
+    fn cancel_full_import(&self, file: &LargeFile) {
+        let Some(token) = file.cancel.borrow().clone() else {
+            return;
+        };
+        token.store(true, Ordering::Relaxed);
+        if self
+            .imports
+            .active
+            .borrow()
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, &token))
+        {
+            file.import_state.set(ImportState::Cancelling);
+            file.message.set("正在取消完整加载…".into());
+        } else {
+            // Neither a preview still preparing nor a queued import owns a full model.
+            self.imports
+                .jobs
+                .borrow_mut()
+                .retain(|job| !Arc::ptr_eq(&token, &job.cancel));
+            file.cancelled(&token);
+        }
+    }
+
     fn next_import(self: &Rc<Self>) {
-        if self.imports.busy.get() {
+        if self.imports.active.borrow().is_some() {
             return;
         }
         let job = loop {
@@ -305,7 +355,7 @@ impl Shell {
                 break job;
             }
         };
-        self.imports.busy.set(true);
+        *self.imports.active.borrow_mut() = Some(job.cancel.clone());
         let shell = self.clone();
         self.owner.run(|| {
             spawn(async move {
@@ -323,10 +373,14 @@ impl Shell {
                     )
                 })
                 .await;
-                if !job.cancel.load(Ordering::Relaxed)
-                    && shell
-                        .docs
-                        .with(|docs| docs.iter().any(|d| Rc::ptr_eq(&job.doc, d)))
+                if job.cancel.load(Ordering::Relaxed) {
+                    // A complete model may already be in transit. Release it away from the UI
+                    // before acknowledging cancellation or starting another full import.
+                    let _ = blocking(move || drop(result)).await;
+                    job.large.cancelled(&job.cancel);
+                } else if shell
+                    .docs
+                    .with(|docs| docs.iter().any(|d| Rc::ptr_eq(&job.doc, d)))
                 {
                     job.large.cancel_import();
                     match result
@@ -371,7 +425,7 @@ impl Shell {
                         Err(error) => job.large.message.set(format!("完整编辑加载失败：{error}")),
                     }
                 }
-                shell.imports.busy.set(false);
+                shell.imports.active.borrow_mut().take();
                 shell.next_import();
             })
         });
@@ -393,11 +447,13 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let input = signal(String::new());
     let page = file.page;
     let message = file.message;
+    let import_state = file.import_state;
     let bytes = file.len;
     let open = file.clone();
     let import = file.clone();
     let start = shell.clone();
     let cancel = file.clone();
+    let cancel_shell = shell.clone();
     let calibration = file.clone();
     let close = shell.clone();
     let show_bytes = file.clone();
@@ -453,15 +509,16 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 .child(action("尝试完整编辑", move || {
                     start.queue_import(doc.clone(), import.clone())
                 }))
-                .child(when(file.importing, move || {
-                    action("取消完整加载", {
-                        let cancel = cancel.clone();
-                        move || {
-                            cancel.cancel_import();
-                            cancel.message.set("已取消完整加载，可继续分页查看".into());
-                        }
-                    })
-                }))
+                .child(when(
+                    move || import_state.get() == ImportState::Loading,
+                    move || {
+                        action("取消完整加载", {
+                            let cancel = cancel.clone();
+                            let shell = cancel_shell.clone();
+                            move || shell.cancel_full_import(&cancel)
+                        })
+                    },
+                ))
                 .child(action("关闭文件", move || close.close_tab(id))),
         )
         .child(text(move || message.get()).number_of_lines(2))

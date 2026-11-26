@@ -387,14 +387,14 @@ impl PagedFile {
     }
 }
 
-fn gb_advance(bytes: &[u8], mut at: usize, target: usize) -> io::Result<usize> {
+pub(super) fn gb_advance(bytes: &[u8], mut at: usize, target: usize) -> io::Result<usize> {
     while at < target {
         at += gb_width(&bytes[at..])?;
     }
     Ok(at)
 }
 
-fn unit(bytes: &[u8], encoding: Encoding) -> u16 {
+pub(super) fn unit(bytes: &[u8], encoding: Encoding) -> u16 {
     let pair = [bytes[0], bytes[1]];
     if encoding == Encoding::Utf16Le {
         u16::from_le_bytes(pair)

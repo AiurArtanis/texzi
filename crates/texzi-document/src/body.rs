@@ -1,5 +1,5 @@
 use crate::{Error, OriginSpan, provenance::Tree};
-use ropey::Rope;
+use ropey::{Rope, RopeBuilder, RopeSlice};
 use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,41 +94,65 @@ impl Body {
     }
     /// Text is already decoded: a leading FEFF is content, never a BOM signature.
     pub fn import_decoded(raw: &str, profile: Profile) -> Self {
-        let mut logical = String::with_capacity(raw.len());
-        let mut codes = String::new();
-        let mut chars = raw.chars().peekable();
-        while let Some(c) = chars.next() {
-            let e = match c {
-                '\r' => Some(if chars.peek() == Some(&'\n') {
-                    chars.next();
-                    Eol::CrLf
-                } else {
-                    Eol::Cr
-                }),
-                '\n' => Some(Eol::Lf),
-                _ => None,
-            };
-            if let Some(e) = e {
-                logical.push('\n');
-                codes.push(e.code());
-            } else {
-                logical.push(c);
-            }
-        }
+        Self::import_cancellable(Arc::from(raw), profile, &|| false)
+            .expect("uninterrupted document import")
+    }
+    pub(crate) fn import_cancellable(
+        raw: Arc<str>,
+        profile: Profile,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Self, Error> {
+        let mut text = RopeBuilder::new();
+        let mut line_breaks = RopeBuilder::new();
+        let mut eols = RopeBuilder::new();
         let mut counts = [0; 3];
-        for c in codes.chars() {
-            counts[index(Eol::from_code(c))] += 1;
+        let mut logical = String::new();
+        let mut codes = String::new();
+        let mut rest: &str = &raw;
+        while !rest.is_empty() {
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let mut end = rest.floor_char_boundary(crate::files::IMPORT_CHUNK.min(rest.len()));
+            // Keep both halves of a CRLF in the same normalization block.
+            if rest.as_bytes().get(end) == Some(&b'\n') && rest.as_bytes()[end - 1] == b'\r' {
+                end += 1;
+            }
+            let (chunk, remaining) = rest.split_at(end);
+            logical.clear();
+            codes.clear();
+            let mut chars = chunk.chars().peekable();
+            while let Some(c) = chars.next() {
+                let eol = match c {
+                    '\r' => Some(if chars.next_if_eq(&'\n').is_some() {
+                        Eol::CrLf
+                    } else {
+                        Eol::Cr
+                    }),
+                    '\n' => Some(Eol::Lf),
+                    _ => None,
+                };
+                if let Some(eol) = eol {
+                    logical.push('\n');
+                    codes.push(eol.code());
+                    counts[index(eol)] += 1;
+                } else {
+                    logical.push(c);
+                }
+            }
+            text.append(&logical);
+            eols.append(&codes);
+            line_breaks.append(&break_markers(RopeSlice::from(logical.as_str())));
+            rest = remaining;
         }
-        let text = Rope::from_str(&logical);
-        let line_breaks = Rope::from_str(&break_markers(&text));
-        Self {
-            text,
-            line_breaks,
-            eols: Rope::from_str(&codes),
+        Ok(Self {
+            text: text.finish(),
+            line_breaks: line_breaks.finish(),
+            eols: eols.finish(),
             counts,
-            origins: Tree::imported(Arc::from(raw)),
+            origins: Tree::imported(raw, cancelled)?,
             profile,
-        }
+        })
     }
     pub fn len_bytes(&self) -> usize {
         self.text.len_bytes()
@@ -205,7 +229,7 @@ impl Body {
         // Import and Edit::input normalize CR; submit_inner rejects raw CR,
         // and history inverses retain canonical text. Thus no CR/LF pair can
         // merge across these edit boundaries and invalidate break ordinals.
-        let inserted_breaks = break_markers(&Rope::from_str(text));
+        let inserted_breaks = break_markers(RopeSlice::from(text));
         self.line_breaks.remove(first_break..last_break);
         self.line_breaks.insert(first_break, &inserted_breaks);
         self.text.remove(a..b);
@@ -238,7 +262,7 @@ impl Body {
         self.origins = Tree::default().replace(0..0, self.len_bytes());
     }
 }
-fn break_markers(text: &Rope) -> String {
+fn break_markers(text: RopeSlice<'_>) -> String {
     // Rope's own iterator keeps the index correct both with and without
     // unicode_lines. Building it inspects only imported/inserted text; later
     // rank lookups and persistent edits use the ropes' logarithmic indices.

@@ -20,6 +20,65 @@ fn strict_unicode_bom_eol_and_byte_exact_baseline() {
         }
     }
 }
+
+#[test]
+fn cancellable_import_preserves_codec_and_crlf_at_chunk_boundaries() {
+    for (encoding, prefix, middle) in [
+        (Encoding::Utf8, 65_535, "😀"),
+        (Encoding::Utf16Le, 32_767, "😀"),
+        (Encoding::Utf16Be, 32_767, "😀"),
+        (Encoding::GbkWebEncodingRs0844, 65_535, "汉"),
+        (Encoding::Gb18030WebEncodingRs0844, 65_535, "😀"),
+    ] {
+        let format = format(encoding, false);
+        let input = "a".repeat(prefix) + middle + "\r\n后\r";
+        let bytes = encode(&input, format).unwrap();
+        let loaded =
+            LoadedBytes::decode_cancellable(bytes.into(), Some(encoding), || false).unwrap();
+        assert_eq!(loaded.format(), format);
+        assert_eq!(loaded.text(), input);
+    }
+    let text: Arc<str> = ("a".repeat(65_535) + "\r\n甲😀\u{2028}乙\r尾\n").into();
+    let mut store = Store::new(HistoryBudget::default());
+    let doc = store
+        .open_decoded_cancellable(text.clone(), format(Encoding::Utf8, false), || false)
+        .unwrap();
+    assert_eq!(doc.body.eols(), [Eol::CrLf, Eol::Cr, Eol::Lf]);
+    assert_eq!(doc.body.to_utf8(), text.as_bytes());
+    for (_, span) in doc.body.origins() {
+        assert!(Arc::ptr_eq(&span.unwrap().source, &text));
+    }
+}
+
+#[test]
+fn cancellation_stops_decode_and_model_build_before_registration() {
+    use std::cell::Cell;
+    let format = format(Encoding::Utf8, false);
+    let text: Arc<str> = "source line\r\n".repeat(32_000).into();
+    let reads = Cell::new(0);
+    let loaded =
+        LoadedBytes::decode_cancellable(Arc::from(text.as_bytes()), Some(format.encoding), || {
+            reads.set(reads.get() + 1);
+            reads.get() == 3
+        });
+    assert!(matches!(loaded, Err(FileError::Document(Error::Cancelled))));
+    // Interrupt normalization and then provenance construction on separate attempts.
+    let mut store = Store::new(HistoryBudget::default());
+    for at in [3, 20] {
+        let checks = Cell::new(0);
+        let result = store.open_decoded_cancellable(text.clone(), format, || {
+            checks.set(checks.get() + 1);
+            checks.get() == at
+        });
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert_eq!(checks.get(), at);
+        assert_eq!(Arc::strong_count(&text), 1);
+    }
+    assert_eq!(
+        store.open_decoded("small", format).unwrap().token,
+        StateToken(1)
+    );
+}
 #[test]
 fn malformed_input_and_bom_conflicts_reject_without_replacement() {
     assert_eq!(

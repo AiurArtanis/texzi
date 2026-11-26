@@ -100,13 +100,16 @@ impl PreparedFile {
             .map_err(|e| e.to_string())?;
         stopped()?;
         let bytes: Arc<[u8]> = raw.into();
-        let loaded = match LoadedBytes::decode(bytes.clone(), encoding) {
+        let cancelled = || cancel.load(Ordering::Relaxed);
+        let decode = |codec| LoadedBytes::decode_cancellable(bytes.clone(), codec, cancelled);
+        let loaded = match decode(encoding) {
             Err(FileError::EncodingChoiceRequired) => {
-                LoadedBytes::decode(bytes.clone(), Some(Encoding::GbkWebEncodingRs0844)).or_else(
-                    |_| {
-                        LoadedBytes::decode(bytes.clone(), Some(Encoding::Gb18030WebEncodingRs0844))
-                    },
-                )
+                match decode(Some(Encoding::GbkWebEncodingRs0844)) {
+                    Err(FileError::InvalidBytes) => {
+                        decode(Some(Encoding::Gb18030WebEncodingRs0844))
+                    }
+                    result => result,
+                }
             }
             result => result,
         }
@@ -114,7 +117,9 @@ impl PreparedFile {
         let format = loaded.format();
         stopped()?;
         let mut store = doc::Store::new(doc::HistoryBudget::default());
-        let snapshot = store.open_decoded(loaded.text(), format).map_err(err)?;
+        let snapshot = store
+            .open_decoded_cancellable(loaded.into_shared_text(), format, cancelled)
+            .map_err(err)?;
         let files = FileState {
             format,
             disk: Some(DiskContents {
