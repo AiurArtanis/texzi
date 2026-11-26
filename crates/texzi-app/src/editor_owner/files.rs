@@ -45,6 +45,10 @@ pub(crate) enum SaveError {
 }
 
 impl NativeView {
+    pub(crate) fn has_disk_baseline(&self) -> bool {
+        self.owner.files.borrow().disk.is_some()
+    }
+
     pub(crate) fn disk_len(&self) -> u64 {
         self.owner
             .files

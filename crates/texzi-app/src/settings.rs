@@ -22,6 +22,8 @@ pub const DEFAULT_ENCODING: &str = "files.defaultEncoding";
 pub const DEFAULT_EOL: &str = "files.defaultEol";
 pub const MARKDOWN_VIEW: &str = "markdown.defaultView";
 pub const TAB_CLOSE: &str = "workbench.tabCloseButton";
+pub const AUTO_SAVE: &str = "files.autoSave";
+pub const MINIMAP: &str = "editor.minimap";
 pub const MARKDOWN_SOURCE_ONLY_BYTES: u64 = 50_000_000;
 
 pub const ENABLED: &[&str] = &[
@@ -37,6 +39,8 @@ pub const ENABLED: &[&str] = &[
     DEFAULT_EOL,
     MARKDOWN_VIEW,
     TAB_CLOSE,
+    AUTO_SAVE,
+    MINIMAP,
 ];
 
 pub fn definition(id: &str) -> &'static Value {
@@ -255,12 +259,57 @@ mod tests {
         fs::remove_file(directory.join("settings.lock")).unwrap();
         fs::remove_dir(directory).unwrap();
     }
+
+    #[test]
+    fn failed_enum_write_retries_only_in_the_original_folder() {
+        let runtime = nsh_core::element::Runtime::default();
+        let _entered = runtime.enter();
+        let directory =
+            std::env::temp_dir().join(format!("texzi-settings-retry-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("settings.json");
+        let lock = directory.join("settings.lock");
+        fs::create_dir(&lock).unwrap();
+        let settings = Settings::with_path(Some(path.clone()));
+        let old = Path::new(r"C:\texzi-test\old-root");
+        let other = Path::new(r"C:\texzi-test\other-root");
+
+        assert!(!settings.apply(WRAP_TEXT, Some(old), Some(json!("off"))));
+        assert_eq!(settings.effective(WRAP_TEXT, Some(old)).0, json!("on"));
+        fs::remove_dir(&lock).unwrap();
+        settings.refresh();
+        assert!(settings.error.get().is_some());
+        assert!(settings.pending_for_scope(Some(other)).is_empty());
+        let pending = settings.pending_for_scope(Some(old)).pop().unwrap();
+        assert!(!settings.retry(&pending, Some(other)));
+        assert!(!path.exists());
+        assert!(settings.retry(&pending, Some(old)));
+        assert_eq!(settings.effective(WRAP_TEXT, Some(old)).0, json!("off"));
+        assert_eq!(settings.effective(WRAP_TEXT, Some(other)).0, json!("on"));
+        assert!(settings.pending_for_scope(Some(old)).is_empty());
+        assert_eq!(
+            effective(&read(&path).unwrap(), WRAP_TEXT, Some(old)).0,
+            json!("off")
+        );
+
+        fs::remove_file(path).unwrap();
+        fs::remove_file(lock).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
 }
 
 pub struct Settings {
     path: Option<PathBuf>,
     data: Signal<Value>,
+    pending: Signal<Vec<PendingWrite>>,
     pub error: Signal<Option<String>>,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct PendingWrite {
+    pub id: String,
+    root: Option<PathBuf>,
+    value: Option<Value>,
 }
 
 impl Settings {
@@ -272,9 +321,14 @@ impl Settings {
                 .map(PathBuf::from)
                 .map(|path| path.join("texzi").join("settings.json"))
         };
+        Self::with_path(path)
+    }
+
+    fn with_path(path: Option<PathBuf>) -> Self {
         let settings = Self {
             path,
             data: signal(empty()),
+            pending: signal(Vec::new()),
             error: signal(None),
         };
         settings.refresh();
@@ -286,7 +340,9 @@ impl Settings {
             match read(path) {
                 Ok(data) => {
                     self.data.set(data);
-                    self.error.set(None);
+                    if self.pending.get_untracked().is_empty() {
+                        self.error.set(None);
+                    }
                 }
                 Err(error) => self.error.set(Some(format!("无法读取设置：{error}"))),
             }
@@ -295,6 +351,28 @@ impl Settings {
 
     pub fn effective(&self, id: &str, root: Option<&Path>) -> (Value, &'static str) {
         self.data.with(|data| effective(data, id, root))
+    }
+
+    pub fn pending_for_scope(&self, root: Option<&Path>) -> Vec<PendingWrite> {
+        self.pending.with(|pending| {
+            pending
+                .iter()
+                .filter(|entry| entry.root.as_deref() == root)
+                .cloned()
+                .collect()
+        })
+    }
+
+    pub fn retry(&self, pending: &PendingWrite, root: Option<&Path>) -> bool {
+        if pending.root.as_deref() != root {
+            self.error
+                .set(Some("请切回此设置原来的范围，再重试。".into()));
+            return false;
+        }
+        if !self.pending.get_untracked().contains(pending) {
+            return false;
+        }
+        self.apply(&pending.id, pending.root.as_deref(), pending.value.clone())
     }
 
     pub fn apply(&self, id: &str, root: Option<&Path>, value: Option<Value>) -> bool {
@@ -314,16 +392,26 @@ impl Settings {
             return false;
         }
         let result = match &self.path {
-            Some(path) => write(path, id, root, value),
+            Some(path) => write(path, id, root, value.clone()),
             None if cfg!(test) => {
                 let mut data = self.data.get();
-                change(&mut data, id, root, value).map(|()| data)
+                change(&mut data, id, root, value.clone()).map(|()| data)
             }
             None => Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "未找到本机应用数据目录",
             )),
         };
+        self.pending.update(|pending| {
+            pending.retain(|entry| entry.id != id || entry.root.as_deref() != root);
+            if result.is_err() {
+                pending.push(PendingWrite {
+                    id: id.into(),
+                    root: root.map(Path::to_owned),
+                    value,
+                });
+            }
+        });
         match result {
             Ok(data) => {
                 self.data.set(data);

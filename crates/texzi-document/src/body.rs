@@ -139,6 +139,24 @@ impl Body {
     pub fn source(&self) -> &Rope {
         &self.text
     }
+    pub fn logical_line_count(&self) -> usize {
+        self.eols.len_chars() + 1
+    }
+    /// The source bytes of a zero-based LF-delimited line, including its LF if present.
+    pub fn logical_line_bytes(&self, line: usize) -> Option<Range<usize>> {
+        let count = self.logical_line_count();
+        if line >= count {
+            return None;
+        }
+        let start = self.text.line_to_byte(self.line_breaks.line_to_char(line));
+        let end = if line + 1 == count {
+            self.len_bytes()
+        } else {
+            self.text
+                .line_to_byte(self.line_breaks.line_to_char(line + 1))
+        };
+        Some(start..end)
+    }
     pub fn eols(&self) -> Vec<Eol> {
         self.eols.chars().map(Eol::from_code).collect()
     }

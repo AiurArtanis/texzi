@@ -137,6 +137,12 @@ fn SettingsRoutingFixture() -> impl IntoElement {
     assert!(shell.source_wrap(&code));
     code.wrap.set(Some(false));
     assert!(!shell.source_wrap(&code));
+    assert_eq!(shell.tab_size(&code), 4);
+    code.tab_size.set(Some(8));
+    assert_eq!(shell.tab_size(&code), 8);
+    assert_eq!(shell.tab_size(&source), 4);
+    code.tab_size.set(None);
+    assert_eq!(shell.tab_size(&code), 4);
     super::render_shell(shell)
 }
 

@@ -59,6 +59,12 @@ impl NativeView {
     pub fn buffer(self: &Rc<Self>) -> ExternalBuffer {
         ExternalBuffer(self.clone())
     }
+    pub(crate) fn current_body(&self) -> Option<std::sync::Arc<doc::Body>> {
+        self.track();
+        let store = self.owner.store.borrow();
+        let view = store.view(self.view).ok()?;
+        Some(store.snapshot(view.doc).ok()?.body)
+    }
     pub fn is_composing(&self) -> bool {
         self.composing.get()
     }

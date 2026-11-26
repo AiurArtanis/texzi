@@ -95,6 +95,9 @@ pub struct EditorProps {
     /// The editor takes the focus when it appears.
     #[prop(default)]
     pub auto_focus: Prop<bool>,
+    /// Emit the logical range when the editor viewport changes.
+    #[prop(default)]
+    pub viewport_feedback: Prop<bool>,
     /// The gutter's line numbers (default true).
     #[prop(default = true)]
     pub line_numbers: Prop<bool>,
@@ -222,6 +225,9 @@ pub enum EditorEvent {
     Focus,
     /// The editor lost the focus.
     Blur,
+    /// The logical text extent currently shown by the scroll viewport.
+    #[args(range)]
+    ViewportChange(EditorRange),
     /// The search's matches changed (a new `search`, an edit, a move to
     /// another match).
     #[args(result)]
@@ -805,5 +811,22 @@ impl EditorApi {
 pub fn Editor(props: EditorProps, cx: Scope<EditorEvent>) -> impl IntoElement {
     let ed = Ed::new(props, cx);
     cx.methods(EditorApi { ed: ed.clone() });
+    let viewport = {
+        let ed = ed.clone();
+        computed(move || {
+            props.viewport_feedback.get().then(|| {
+                ed.scroll_y.get();
+                ed.viewport.get();
+                ed.rows_top.get();
+                ed.text_rev.get();
+                ed.visible_range()
+            })
+        })
+    };
+    effect(move || {
+        if let Some(range) = viewport.get() {
+            cx.emit(EditorEvent::ViewportChange(range));
+        }
+    });
     view::render(ed)
 }

@@ -23,6 +23,7 @@ const COMMON: &[&str] = &[
     settings::WRAP_TEXT,
     settings::LINE_NUMBERS,
     settings::MARKDOWN_VIEW,
+    settings::AUTO_SAVE,
 ];
 
 struct Binding {
@@ -394,6 +395,8 @@ pub(super) fn content(
     let folder = state.folder_scope;
     let notice = settings.error;
     let rows = state.clone();
+    let retry_settings = settings.clone();
+    let retry_scope = state.clone();
     view().size_full().min_h(px(0.0)).items_center().child(
         view()
             .w_full()
@@ -447,6 +450,29 @@ pub(super) fn content(
                 move || notice.get().is_some(),
                 move || text(move || notice.get().unwrap_or_default()),
             ))
+            .child(dynamic(move || {
+                let scope = selected_root(&retry_scope, root);
+                let pending = retry_settings.pending_for_scope(scope.as_deref());
+                (!pending.is_empty()).then(|| {
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap(px(6.0))
+                        .children(pending.into_iter().map(|entry| {
+                            let settings = retry_settings.clone();
+                            let state = retry_scope.clone();
+                            let label = format!(
+                                "重试保存 {}",
+                                settings::definition(&entry.id)["name"].as_str().unwrap()
+                            );
+                            nsh_base::button()
+                                .child(text(label))
+                                .on_press(move |_: &()| {
+                                    settings.retry(&entry, selected_root(&state, root).as_deref());
+                                })
+                        }))
+                })
+            }))
             .child(scroll().flex_1().min_h(px(0.0)).child(dynamic(move || {
                 let term = query.get().trim().to_lowercase();
                 let category = section.get();
@@ -550,10 +576,8 @@ fn no_results(term: String, query: Signal<String>) -> AnyElement {
 mod tests {
     use super::*;
 
-    #[test]
-    fn closing_folder_does_not_commit_its_number_draft_to_user_settings() {
-        let runtime = nsh_core::element::Runtime::default();
-        let _entered = runtime.enter();
+    #[component]
+    fn DraftScopeFixture() -> impl IntoElement {
         let preferences = settings::Settings::new();
         let old_root = PathBuf::from(r"C:\texzi-test\original-folder");
         let view = SettingsView::new(&[]);
@@ -591,5 +615,21 @@ mod tests {
             preferences.effective(settings::FONT_SIZE, None).0,
             Value::from(19)
         );
+        text("")
+    }
+
+    #[test]
+    fn closing_folder_does_not_commit_its_number_draft_to_user_settings() {
+        use nsh_core::{ApproxTextEngine, Core, Size, element::Root};
+        let mut core = Core::new(
+            ApproxTextEngine,
+            Size {
+                width: px(800.0),
+                height: px(600.0),
+            },
+        );
+        core.mount_root(&Root::new::<DraftScopeFixture>(|| ()));
+        core.run_component_tasks();
+        let _ = core.commit();
     }
 }

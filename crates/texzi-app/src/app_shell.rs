@@ -32,6 +32,10 @@ use std::{
     },
 };
 
+#[path = "auto_save.rs"]
+mod auto_save;
+#[path = "minimap.rs"]
+mod minimap;
 #[path = "settings_view.rs"]
 mod settings_view;
 
@@ -78,6 +82,8 @@ struct Document {
     rich_reference: ComponentRef<nsh_base::rich_editor::view::RichEditor>,
     controls: RichControlSet,
     wrap: Signal<Option<bool>>,
+    tab_size: Signal<Option<u32>>,
+    auto_save: Rc<auto_save::State>,
     pending_mode: Signal<Option<bool>>,
     progress: ElementRef,
     body: ElementRef,
@@ -265,6 +271,7 @@ fn bind_shell_shortcuts(run: Rc<dyn Fn(&str)>) {
 fn await_shell_modal<F: std::future::Future + 'static>(
     owner: &Owner,
     modal: Rc<Cell<bool>>,
+    auto_saving: Signal<Option<u64>>,
     show: impl FnOnce() -> F,
     done: impl FnOnce(F::Output) + 'static,
 ) {
@@ -472,8 +479,10 @@ impl Shell {
         self.preference(settings::FONT_SIZE).as_u64().unwrap() as f32
     }
 
-    fn tab_size(&self) -> u32 {
-        self.preference(settings::TAB_SIZE).as_u64().unwrap() as u32
+    fn tab_size(&self, doc: &Document) -> u32 {
+        doc.tab_size
+            .get()
+            .unwrap_or_else(|| self.preference(settings::TAB_SIZE).as_u64().unwrap() as u32)
     }
 
     fn set_theme(&self, theme: &str) {
@@ -512,6 +521,7 @@ impl Shell {
             chord_generation: Cell::new(0),
             source_ref: Cell::new(None),
             modal: Rc::new(Cell::new(false)),
+            auto_saving: signal(None),
             split: signal(None),
             split_down: signal(false),
             second_active: signal(false),
@@ -550,6 +560,7 @@ impl Shell {
                 },
             );
         effect(move || set_color_scheme(theme.get()));
+        auto_save::install(&s);
         // Notify observers must precede actual Shell bindings: NSH chooses
         // one newest match, so later registration could shadow a real command.
         let reset = s.zen_exit.clone();
@@ -740,6 +751,8 @@ impl Shell {
                 rich_reference,
                 controls,
                 wrap,
+                tab_size: self.owner.run(|| signal(None)),
+                auto_save: self.owner.run(|| Rc::new(auto_save::State::new())),
                 pending_mode: self.owner.run(|| signal(None)),
                 progress: self.owner.run(element_ref),
                 body: self.owner.run(element_ref),
@@ -1031,6 +1044,9 @@ impl Shell {
         let shell = self.clone();
         self.modal.set(true);
         spawn(async move {
+            while shell.auto_saving.get().is_some() {
+                let _ = next_frame().await;
+            }
             let result = shell.save_documents(targets, save_as).await;
             shell.modal.set(false);
             if let Err(error) = result {
@@ -1084,6 +1100,7 @@ impl Shell {
                     Ok(()) => {
                         self.remember(path);
                         doc.path.set(Some(path.clone()));
+                        doc.auto_save.after_explicit_save();
                         saved += 1;
                         self.show_saved(&doc);
                         break;
@@ -1156,6 +1173,10 @@ impl Shell {
         if self.modal.get() {
             return;
         }
+        if self.auto_saving.get().is_some() {
+            self.notice.set("自动保存完成后可关闭窗口".into());
+            return;
+        }
         let dirty = self.docs.with(|ds| {
             ds.iter()
                 .filter(|d| d.source.is_dirty().unwrap_or(true))
@@ -1195,6 +1216,10 @@ impl Shell {
     }
     fn close_tab(self: &Rc<Self>, id: u64) {
         if self.modal.get() {
+            return;
+        }
+        if self.auto_saving.get() == Some(id) {
+            self.notice.set("自动保存完成后可关闭此标签".into());
             return;
         }
         let Some(doc) = self.docs.with(|ds| ds.iter().find(|d| d.id == id).cloned()) else {
@@ -1378,6 +1403,8 @@ impl Shell {
             rich_reference,
             controls,
             wrap,
+            tab_size: doc.tab_size,
+            auto_save: doc.auto_save.clone(),
             pending_mode: signal(None),
             progress: element_ref(),
             body: element_ref(),
@@ -1680,6 +1707,51 @@ impl Shell {
                     items,
                     point(bounds.page.x, bounds.page.y + bounds.frame.size.height),
                 );
+            });
+        });
+    }
+
+    fn show_tab_size_menu(self: &Rc<Self>, doc: Rc<Document>, anchor: ElementRef) {
+        let shell = self.clone();
+        self.owner.run(|| {
+            spawn(async move {
+                let Some(bounds) = anchor.measure().await else {
+                    return;
+                };
+                if !shell
+                    .current()
+                    .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                    || doc.gate.busy()
+                {
+                    return;
+                }
+                let selected = doc.tab_size.get();
+                let entries = std::iter::once(None)
+                    .chain((1..=8).map(Some))
+                    .map(|width| {
+                        let label = width
+                            .map_or_else(|| "继承设置".to_owned(), |width| format!("{width} 列"));
+                        let label = if width == selected {
+                            format!("✓ {label}")
+                        } else {
+                            label
+                        };
+                        let doc = doc.clone();
+                        let shell = shell.clone();
+                        MenuItem::new(label).on_select(move || {
+                            if shell
+                                .current()
+                                .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                                && !doc.gate.busy()
+                            {
+                                doc.tab_size.set(width);
+                                shell.restore_editor_focus();
+                            }
+                        })
+                    })
+                    .collect();
+                shell.zen_exit.reset();
+                let _ = popup_menu_at(entries, point(bounds.page.x, bounds.page.y));
             });
         });
     }
@@ -2083,13 +2155,18 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let wrap_doc = doc.clone();
     let wrap_shell = s.clone();
     let tab_shell = s.clone();
+    let tab_doc = doc.clone();
     let size_shell = s.clone();
     let height_shell = s.clone();
     let font_shell = s.clone();
+    let map_shell = s.clone();
+    let map_source = doc.source.clone();
     let lines_shell = s.clone();
     let body = doc.body;
     let source_focus = s.second_active;
     let rich_focus = s.second_active;
+    let source_auto_save = doc.auto_save.clone();
+    let rich_auto_save = doc.auto_save.clone();
     let settings_tab = s.settings_tab;
     let block_controls = doc.controls.blocks.clone();
     let resource_controls = doc.controls.resources.clone();
@@ -2118,6 +2195,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 effect(move || crate::rich_images::install(&session, image_document_path.get()));
                 let shell = controls_shell.clone();
                 let escape = shell.clone();
+                let focus_save = rich_auto_save.clone();
+                let blur_save = rich_auto_save.clone();
                 let focus: Rc<dyn Fn()> =
                     Rc::new(move || shell.focus_group(if second { 2 } else { 1 }));
                 let raw_focus = focus.clone();
@@ -2162,7 +2241,11 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                                 settings_tab.get() != SettingsTab::Active
                                     && rich_focus.get() == second
                             })
-                            .on_focus(move |_: &()| rich_focus.set(second))
+                            .on_focus(move |_: &()| {
+                                rich_focus.set(second);
+                                focus_save.focus_changed(true);
+                            })
+                            .on_blur(move |_: &()| blur_save.focus_changed(false))
                             .on_unhandled_escape(move |_: &()| {
                                 escape.handle_rich_escape(document, second)
                             })
@@ -2174,19 +2257,34 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
             .otherwise(move || {
                 source.source_mounted();
                 let tab_shell = tab_shell.clone();
+                let tab_doc = tab_doc.clone();
                 let size_shell = size_shell.clone();
                 let height_shell = height_shell.clone();
                 let font_shell = font_shell.clone();
+                let focus_save = source_auto_save.clone();
+                let blur_save = source_auto_save.clone();
                 let lines_shell = lines_shell.clone();
                 let wrap_shell = wrap_shell.clone();
                 let wrap_doc = wrap_doc.clone();
-                nsh_base::editor::editor()
+                let map_shell = map_shell.clone();
+                let map_source = map_source.clone();
+                let map_enabled = computed(move || map_shell.preference(settings::MINIMAP) == true);
+                let viewport = signal((0, 0));
+                let editor = nsh_base::editor::editor()
                     .element_ref(&body)
                     .component_ref(&reference)
+                    .viewport_feedback(move || map_enabled.get())
+                    .on_viewport_change(move |range: &nsh_base::editor::EditorRange| {
+                        viewport.set((range.start.line, range.end.line));
+                    })
                     .auto_focus(move || {
                         settings_tab.get() != SettingsTab::Active && source_focus.get() == second
                     })
-                    .on_focus(move |_: &()| source_focus.set(second))
+                    .on_focus(move |_: &()| {
+                        source_focus.set(second);
+                        focus_save.focus_changed(true);
+                    })
+                    .on_blur(move |_: &()| blur_save.focus_changed(false))
                     .language(move || {
                         Some(SharedString::from(if markdown() {
                             "markdown"
@@ -2194,7 +2292,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             "plaintext"
                         }))
                     })
-                    .tab_size(move || Some(tab_shell.tab_size()))
+                    .tab_size(move || Some(tab_shell.tab_size(&tab_doc)))
                     .hard_tabs(false)
                     .soft_wrap(move || wrap_shell.source_wrap(&wrap_doc))
                     .font_family(move || {
@@ -2210,7 +2308,17 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                     .flex_1()
                     .max_w(relative(1.0))
                     .min_w(px(0.0))
+                    .min_h(px(0.0));
+                view()
+                    .flex_row()
+                    .size_full()
                     .min_h(px(0.0))
+                    .min_w(px(0.0))
+                    .child(editor)
+                    .child(when(
+                        move || map_enabled.get(),
+                        move || minimap::render(map_source.clone(), viewport),
+                    ))
             }),
         )
         .child(
@@ -2852,6 +2960,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let preferences_page = s.clone();
     let settings_tab = s.settings_tab;
     let narrow = signal(false);
+    let editor_width = signal(None::<Points>);
     let layout = s.clone();
     effect(move || {
         narrow.set(
@@ -2942,6 +3051,21 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                                 .child(
                                     view()
                                         .size_full()
+                                        .w(move || {
+                                            if settings_tab.get() == SettingsTab::Active {
+                                                editor_width
+                                                    .get()
+                                                    .map(Length::from)
+                                                    .unwrap_or_else(|| relative(1.0).into())
+                                            } else {
+                                                relative(1.0).into()
+                                            }
+                                        })
+                                        .on_layout(move |bounds: &Bounds<Points>| {
+                                            if settings_tab.get_untracked() != SettingsTab::Active {
+                                                editor_width.set(Some(bounds.size.width));
+                                            }
+                                        })
                                         .style_when(
                                             move || settings_tab.get() == SettingsTab::Active,
                                             |style| style.invisible(),
@@ -3073,8 +3197,20 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 fields = fields.child(text(position).number_of_lines(1));
             }
             if !rich {
-                fields =
-                    fields.child(text(format!("空格：{}", shell.tab_size())).number_of_lines(1));
+                let anchor = element_ref();
+                let activate = shell.clone();
+                let label_shell = shell.clone();
+                let label_doc = doc.clone();
+                fields = fields.child(
+                    nsh_base::button()
+                        .element_ref(&anchor)
+                        .accessibility_label("当前文档缩进宽度")
+                        .child(
+                            text(move || format!("空格：{}", label_shell.tab_size(&label_doc)))
+                                .number_of_lines(1),
+                        )
+                        .on_press(move |_: &()| activate.show_tab_size_menu(doc.clone(), anchor)),
+                );
             }
             Some(
                 fields
