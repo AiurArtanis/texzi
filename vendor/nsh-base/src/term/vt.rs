@@ -137,6 +137,14 @@ impl TerminalEmulator for VtEmulator {
         })
     }
 
+    fn cursor_position(&self) -> TerminalCursor {
+        let s = &self.state;
+        TerminalCursor {
+            col: s.x.min(s.cols - 1) as u16,
+            row: s.y as u16,
+        }
+    }
+
     fn take_events(&mut self) -> Vec<TerminalEmulatorEvent> {
         std::mem::take(&mut self.state.events)
     }
@@ -385,8 +393,9 @@ impl Perform for State {
             self.x = 0;
             self.linefeed();
         }
-        if width == 2 && self.x + 1 >= self.cols {
-            // A wide character that does not fit wraps whole.
+        if width == 2 && self.x + 1 >= self.cols && self.cols > 1 {
+            // A wide character that does not fit wraps whole (a one-column
+            // screen, where it never fits, gives it its one cell).
             if self.auto_wrap {
                 self.x = 0;
                 self.linefeed();
@@ -397,7 +406,7 @@ impl Perform for State {
         let style = self.style;
         let row = &mut self.screen[self.y];
         row[self.x] = Cell { ch, style };
-        if width == 2 {
+        if width == 2 && self.x + 1 < self.cols {
             row[self.x + 1] = Cell { ch: '\0', style };
         }
         if self.x + width >= self.cols {
@@ -658,6 +667,14 @@ mod tests {
         t.feed("中文".as_bytes());
         assert_eq!(t.line(0).text(), "中文");
         assert_eq!(t.cursor(), Some(TerminalCursor { col: 3, row: 0 }));
+    }
+
+    #[test]
+    fn a_wide_character_in_a_one_column_screen_takes_its_one_cell() {
+        let mut t = term(1, 2);
+        t.feed("中a⏳".as_bytes());
+        assert_eq!(screen(&t), ["a", "⏳"]);
+        assert_eq!(t.line(0).text(), "中");
     }
 
     #[test]

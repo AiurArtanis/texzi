@@ -23,10 +23,15 @@ use super::{
     state::{Font, State},
     types::{Selection, Selections},
 };
+use crate::sink_text::{sink_edit, utf16_to_byte};
 
 /// The sink is emptied once it holds this many bytes (and no composition
 /// is in progress).
 const SINK_LIMIT: usize = 256;
+
+/// How long a forward move of the sink's own caret waits for the text it
+/// may belong to (`sink_selection`).
+const SINK_TEXT_WAIT: Duration = Duration::from_millis(50);
 
 /// How long the carets blink on Linux after the last edit, caret move or
 /// focus change: GTK's `gtk-cursor-blink-timeout`.
@@ -56,6 +61,16 @@ struct Drag {
 struct Sink {
     /// The text it holds, as last reported.
     text: String,
+    /// Where the editor's caret stands in `text` (bytes), when not at its
+    /// end: the platform moved the sink's own caret (an input method that
+    /// types a pair of brackets and puts its caret between them).
+    caret: Option<usize>,
+    /// The sink's own caret as the platform last reported it (UTF-16), to
+    /// be read against the text it belongs to (`follow_sink_caret`).
+    reported: Option<u32>,
+    /// The editor's caret is following the sink's: the move keeps what
+    /// the sink holds.
+    following: bool,
     /// What it held before the editor emptied it, until the platform shows
     /// it took the empty value (a change that does not extend this text).
     emptied: Option<String>,
@@ -154,18 +169,6 @@ impl Ed {
             untracked(|| super::languages::resolve(name.as_deref().unwrap_or("")));
         let options = options_of(&props, language);
         let mut state = State::new(&text, language, options, font, measure);
-        if let Some(external) = use_context::<super::ExternalBuffer>() {
-            let snapshot = external
-                .0
-                .snapshot()
-                .expect("texzi initial document snapshot");
-            state.buffer.external = Some(external);
-            state.buffer.install_external(super::ExternalUpdate {
-                snapshot,
-                edits: None,
-            });
-            state.selections = state.buffer.take_external_selection().unwrap();
-        }
         state.set_language(language, syntax);
         state.reported = Some((state.buffer.version(), text));
         let sel_history = SelectionHistory::new(&state.selections);
@@ -205,7 +208,6 @@ impl Ed {
             completion: super::completion::Completion::new(),
             definition: super::definition::Definition::new(),
         };
-        ed.follow_external();
         ed.follow_props();
         ed.follow_hooks();
         ed.follow_completion();
@@ -215,48 +217,6 @@ impl Ed {
         ed
     }
 
-    fn follow_external(&self) {
-        let ext = self.st.borrow().buffer.external.clone();
-        if let Some(ext) = ext {
-            let ed = self.clone();
-            effect(move || {
-                ext.0.track();
-                let snapshot = match ext.0.snapshot() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::error!("texzi refresh: {e}");
-                        return;
-                    }
-                };
-                let text_changed;
-                {
-                    let mut st = ed.st.borrow_mut();
-                    text_changed = st.buffer.version() != snapshot.revision;
-                    if !text_changed && st.buffer.external_epoch == snapshot.view_epoch {
-                        return;
-                    }
-                    if text_changed {
-                        let changes = st.buffer.install_external(super::ExternalUpdate {
-                            snapshot,
-                            edits: None,
-                        });
-                        st.changed(&changes);
-                        st.selections = st.buffer.take_external_selection().unwrap();
-                    } else {
-                        st.selections = snapshot.selections.internal();
-                        st.buffer.external_epoch = snapshot.view_epoch;
-                    }
-                }
-                ed.empty_sink();
-                if text_changed {
-                    ed.bump_text();
-                    ed.marks_rev.update(|r| *r += 1);
-                    ed.schedule_highlight();
-                }
-                ed.bump_selection();
-            });
-        }
-    }
     // Props.
 
     /// Effects carrying the props into the state, each read on its own so a
@@ -303,12 +263,11 @@ impl Ed {
             let relayout = options.tab_size != st.options.tab_size;
             st.options = options;
             if relayout {
-                let offset = ed.reflow_position(&mut st, false, |st| {
-                    st.display.set_tab_size(st.options.tab_size);
-                    st.relayout();
-                });
+                let tab = st.options.tab_size;
+                st.display.set_tab_size(tab);
+                st.relayout();
                 drop(st);
-                ed.finish_reflow(offset);
+                ed.bump_text();
             }
         });
         let ed = self.clone();
@@ -366,25 +325,23 @@ impl Ed {
             let mut st = ed.st.borrow_mut();
             st.display.set_cells(crate::terminal::is_terminal());
             if st.font != font {
-                let offset = ed.reflow_position(&mut st, true, |st| {
-                    st.display.set_measure(measurer(&font));
-                    st.font = font;
-                    st.relayout();
-                });
+                st.display.set_measure(measurer(&font));
+                st.font = font;
+                st.relayout();
                 drop(st);
-                ed.finish_reflow(offset);
+                ed.bump_text();
             }
         });
         let ed = self.clone();
         effect(move || {
             let wrap = ed.props.soft_wrap.get();
             let width = ed.text_width.get();
-            let offset = ed.reflow_position(&mut ed.st.borrow_mut(), false, |st| {
-                let wrap_width = (wrap && width.0 > 0.0).then_some(width);
-                st.display.set_wrap_width(wrap_width);
-                st.display.rebuild(&st.buffer);
-            });
-            ed.finish_reflow(offset);
+            let mut st = ed.st.borrow_mut();
+            let st = &mut *st;
+            let wrap_width = (wrap && width.0 > 0.0).then_some(width);
+            st.display.set_wrap_width(wrap_width);
+            st.display.rebuild(&st.buffer);
+            ed.bump_text();
         });
         let ed = self.clone();
         effect(move || {
@@ -418,15 +375,6 @@ impl Ed {
             }
             ed.marks_rev.update(|r| *r += 1);
             ed.bump_text();
-        });
-        let ed = self.clone();
-        effect(move || {
-            if ed.props.auto_focus.get() {
-                // The native input is mounted by the current commit. Match
-                // RichEditor's deferred focus instead of targeting no host yet.
-                let ed = ed.clone();
-                spawn(async move { ed.focus() });
-            }
         });
     }
 
@@ -490,6 +438,7 @@ impl Ed {
                     KeyOptions {
                         when: When::Always,
                         repeat: binding.repeat,
+                        for_focus: true,
                         ..Default::default()
                     },
                     move |_| e.run(command),
@@ -591,10 +540,6 @@ impl Ed {
             }
         }
         self.restart_blink();
-        let ext = self.st.borrow().buffer.external.clone();
-        if let Some(ext) = ext {
-            ext.0.notify();
-        }
     }
 
     /// Runs a public command.
@@ -807,11 +752,6 @@ impl Ed {
             self.show_caret();
             self.restart_blink();
         }
-        // Also refresh after a version/epoch rejection. Never retry an old plan.
-        let ext = self.st.borrow().buffer.external.clone();
-        if let Some(ext) = ext {
-            ext.0.notify();
-        }
     }
 
     /// The sink's text changed to `text`: what was typed (or replaced by an
@@ -827,11 +767,12 @@ impl Ed {
         self.sink_edited(text);
     }
 
-    /// Applies the sink's `text`: what was deleted and typed since.
+    /// Applies the sink's `text`: what was deleted and typed since, at the
+    /// place in it the editor's caret stands for.
     fn sink_edited(&self, text: &str) {
-        let (deleted, inserted) = {
+        let edit = {
             let mut sink = self.sink.borrow_mut();
-            let base = match sink.emptied.take() {
+            let (base, caret) = match sink.emptied.take() {
                 // The platform dropped the empty value: the text still extends
                 // what it held. A text equal to what it held was typed again
                 // into the emptied sink: platforms report each edit, so an
@@ -839,20 +780,32 @@ impl Ed {
                 // the edits made before it is idle as one: there, the text
                 // deleted and typed again before the empty value arrives reads
                 // the same, and is inserted a second time.
-                Some(old) if text != old && text.starts_with(old.as_str()) => old,
-                Some(_) => String::new(),
-                None => std::mem::take(&mut sink.text),
+                Some(old) if text != old && text.starts_with(old.as_str()) => {
+                    let len = old.len();
+                    (old, len)
+                }
+                Some(_) => (String::new(), 0),
+                None => {
+                    let caret = sink.caret.take();
+                    let old = std::mem::take(&mut sink.text);
+                    let caret = caret.unwrap_or(old.len());
+                    (old, caret)
+                }
             };
-            let prefix = common_prefix(&base, text);
-            let deleted = base[prefix..].chars().count();
-            let inserted = text[prefix..].to_owned();
+            let edit = sink_edit(&base, caret, text);
+            sink.reported = None;
             sink.text = text.to_owned();
-            (deleted, inserted)
+            sink.caret = (edit.caret < text.len()).then_some(edit.caret);
+            edit
         };
         self.sink_value.set(text.to_owned());
-        for _ in 0..deleted {
+        for _ in 0..edit.backspaces {
             self.run(Command::Backspace);
         }
+        for _ in 0..edit.deletes {
+            self.run(Command::Delete);
+        }
+        let inserted = edit.inserted;
         if inserted == "\n" {
             self.run(Command::Newline);
         } else if !inserted.is_empty() {
@@ -871,13 +824,109 @@ impl Ed {
         }
     }
 
+    /// The sink's own caret moved to `selection` (UTF-16 offsets in its
+    /// text): one the platform placed itself, without a key the editor
+    /// hears (an input method that types "（）" and puts its caret between
+    /// them). A single caret moves by as much, so what is typed next goes in
+    /// where the caret is drawn. While an input method composes its caret
+    /// is the composition's; a selection in the sink, a move past what the
+    /// sink is known to hold (its text is reported after it), across text
+    /// the editor does not hold the same way, or with several carets is
+    /// left alone.
+    pub(crate) fn sink_selection(&self, selection: &nsh_core::element::Selection) {
+        let forward = {
+            let mut sink = self.sink.borrow_mut();
+            sink.reported = None;
+            if sink.composing || selection.start != selection.end {
+                return;
+            }
+            // Where the editor's caret already stands for (typing at it), or
+            // past what the sink holds: nothing to follow.
+            let Some(to) = utf16_to_byte(&sink.text, selection.end as usize) else {
+                return;
+            };
+            let from = sink.caret.unwrap_or(sink.text.len());
+            if to == from {
+                return;
+            }
+            sink.reported = Some(selection.end);
+            to > from
+        };
+        // AppKit reports the caret an insertion leaves before the insertion's
+        // text, which may come a turn later: a change of the text drops the
+        // report (it puts the caret there itself), and a move forward, as an
+        // insertion's report reads, waits for one. A move back (an input
+        // method stepping into the pair it typed) is read next turn.
+        let delay = if forward {
+            SINK_TEXT_WAIT
+        } else {
+            Duration::ZERO
+        };
+        let ed = self.clone();
+        drop(set_timeout(delay, move || ed.follow_sink_caret()));
+    }
+
+    /// Moves the editor's caret to where the sink's own caret was last
+    /// reported, read against the text the sink holds now.
+    fn follow_sink_caret(&self) {
+        let (from, to, moved) = {
+            let mut sink = self.sink.borrow_mut();
+            let Some(reported) = sink.reported.take() else {
+                return;
+            };
+            if sink.composing {
+                return;
+            }
+            let Some(to) = utf16_to_byte(&sink.text, reported as usize) else {
+                return;
+            };
+            let from = sink.caret.unwrap_or(sink.text.len());
+            (from, to, sink.text[from.min(to)..from.max(to)].to_owned())
+        };
+        if from == to {
+            return;
+        }
+        {
+            let mut st = self.st.borrow_mut();
+            if st.selections.len() != 1 {
+                return;
+            }
+            let caret = st.selections.primary();
+            if caret.anchor != caret.head {
+                return;
+            }
+            let head = caret.head;
+            let (target, range) = if to < from {
+                let Some(target) = head.checked_sub(moved.len()) else {
+                    return;
+                };
+                (target, target..head)
+            } else {
+                (head + moved.len(), head..head + moved.len())
+            };
+            if range.end > st.buffer.len() || st.buffer.slice(range) != moved {
+                return;
+            }
+            st.selections = Selections::new(vec![Selection::caret(target)], 0);
+        }
+        {
+            let mut sink = self.sink.borrow_mut();
+            sink.caret = (to < sink.text.len()).then_some(to);
+            sink.following = true;
+        }
+        self.after(Outcome::Moved);
+        self.sink.borrow_mut().following = false;
+    }
+
     /// Empties the sink (the caret moved away from what it holds), unless
     /// an input method is composing there.
     pub(crate) fn empty_sink(&self) {
         let mut sink = self.sink.borrow_mut();
-        if sink.composing || sink.text.is_empty() {
+        if sink.composing || sink.following || sink.text.is_empty() {
             return;
         }
+        sink.caret = None;
+        sink.reported = None;
         sink.emptied = Some(std::mem::take(&mut sink.text));
         drop(sink);
         self.sink_value.set(String::new());
@@ -887,17 +936,6 @@ impl Ed {
     /// shows at the caret and the text waits for the commit, which asks for
     /// no completions (the input method offers its own candidates).
     pub(crate) fn composition(&self, composing: bool, text: &str) {
-        if let Some(external) = self.st.borrow().buffer.external.clone() {
-            external.0.composition_changed(composing);
-        }
-        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
-            log::info!(
-                "TX04_IME_EDITOR_EVENT composing={} preedit_utf16={} cached_revision={}",
-                composing,
-                text.encode_utf16().count(),
-                self.st.borrow().buffer.version()
-            );
-        }
         let (started, held) = {
             let mut sink = self.sink.borrow_mut();
             let started = composing && !sink.composing;
@@ -909,9 +947,7 @@ impl Ed {
             self.hide_inline_completion();
         }
         if let Some(held) = held {
-            self.st.borrow_mut().buffer.external_ime = true;
             self.without_completions(|| self.sink_edited(&held));
-            self.st.borrow_mut().buffer.external_ime = false;
         }
         {
             let mut st = self.st.borrow_mut();
@@ -955,7 +991,7 @@ impl Ed {
             st.editing(1, |e| e.copy())
         };
         *self.line_copy.borrow_mut() = line_wise.then(|| text.clone());
-        set_clipboard(text);
+        drop(set_clipboard(text));
     }
 
     pub(crate) fn cut(&self) {
@@ -964,7 +1000,7 @@ impl Ed {
             st.editing(1, |e| e.cut())
         };
         *self.line_copy.borrow_mut() = line_wise.then(|| text.clone());
-        set_clipboard(text);
+        drop(set_clipboard(text));
         self.after(outcome);
     }
 
@@ -1375,11 +1411,6 @@ impl Ed {
     // Reports.
 
     fn report_text(&self) {
-        // External-owner mode uses incremental document transactions, not full
-        // onChange strings on each keystroke.
-        if self.st.borrow().buffer.external.is_some() {
-            return;
-        }
         let text = {
             let mut st = self.st.borrow_mut();
             let version = st.buffer.version();
@@ -1394,32 +1425,6 @@ impl Ed {
     }
 
     pub(crate) fn report_selections(&self) {
-        {
-            let mut st = self.st.borrow_mut();
-            if let Some(ext) = st.buffer.external.clone() {
-                match ext.0.select(
-                    st.buffer.version(),
-                    st.buffer.external_epoch,
-                    super::ExternalSelections::from_internal(&st.selections),
-                ) {
-                    Ok(snapshot) => {
-                        st.buffer.external_epoch = snapshot.view_epoch;
-                        if super::ExternalSelections::from_internal(&st.selections)
-                            != snapshot.selections
-                        {
-                            st.selections = snapshot.selections.internal();
-                        }
-                    }
-                    Err(error) => {
-                        log::error!("texzi selection rejected: {error}");
-                        if let Ok(snapshot) = ext.0.snapshot() {
-                            st.buffer.external_epoch = snapshot.view_epoch;
-                            st.selections = snapshot.selections.internal();
-                        }
-                    }
-                }
-            }
-        }
         let selections = {
             let mut st = self.st.borrow_mut();
             let selections = st.editor_selections();
@@ -1509,47 +1514,6 @@ impl Ed {
         if let Some(target) = target_x {
             self.scroll_x.set(target);
             self.hscroll.scroll_to(Point::new(target, px(0.0)), false);
-        }
-    }
-
-    fn reflow_position(
-        &self,
-        state: &mut State,
-        keep_visible_caret: bool,
-        reflow: impl FnOnce(&mut State),
-    ) -> Option<Points> {
-        let top = self.rows_top.get_untracked();
-        let y = self.scroll_y.get_untracked();
-        let anchor = if self.props.anchor_wrap_reflow.get_untracked() && y > top {
-            let line_height = state.line_height().0.max(1.0);
-            let caret = keep_visible_caret
-                .then(|| {
-                    let byte = state.primary_head();
-                    (byte, state.caret_point(byte).y + top)
-                })
-                .filter(|(_, caret_top)| {
-                    *caret_top >= y
-                        && *caret_top + px(line_height) <= y + self.viewport.get_untracked().height
-                });
-            if let Some((byte, caret_top)) = caret {
-                Some((byte, y - caret_top))
-            } else {
-                let row = (((y - top).0 / line_height).floor() as usize)
-                    .min(state.display.row_count() - 1);
-                let delta = ((y - top).0 - row as f32 * line_height).clamp(0.0, line_height);
-                Some((state.display.row(row).range.start, px(delta)))
-            }
-        } else {
-            None
-        };
-        reflow(state);
-        anchor.map(|(byte, offset)| state.caret_point(byte).y + top + offset)
-    }
-
-    fn finish_reflow(&self, offset: Option<Points>) {
-        self.bump_text();
-        if let Some(offset) = offset {
-            self.set_scroll_offset(Point::new(self.scroll_x.get_untracked(), offset));
         }
     }
 
@@ -1869,17 +1833,9 @@ fn always(repeat: bool) -> KeyOptions {
     KeyOptions {
         when: When::Always,
         repeat,
+        for_focus: true,
         ..Default::default()
     }
-}
-
-/// The bytes `a` and `b` start with alike, on a char boundary.
-fn common_prefix(a: &str, b: &str) -> usize {
-    a.char_indices()
-        .zip(b.chars())
-        .find(|((_, x), y)| x != y)
-        .map(|((i, _), _)| i)
-        .unwrap_or_else(|| a.len().min(b.len()))
 }
 
 /// The selection a drag by words or lines makes: from `origin` to the unit
@@ -1889,18 +1845,5 @@ fn extend_by(origin: Selection, start: usize, end: usize, at: usize) -> Selectio
         Selection::new(origin.end(), start)
     } else {
         Selection::new(origin.start(), end.max(origin.end()))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn common_prefixes_stop_on_char_boundaries() {
-        assert_eq!(common_prefix("abc", "abd"), 2);
-        assert_eq!(common_prefix("ab", "abc"), 2);
-        assert_eq!(common_prefix("中a", "中b"), 3);
-        assert_eq!(common_prefix("", "x"), 0);
     }
 }

@@ -26,7 +26,6 @@ mod render;
 mod session;
 mod table;
 mod touch;
-mod visible_rows;
 
 use std::collections::BTreeMap;
 
@@ -64,13 +63,6 @@ pub struct RichEditorProps {
     /// history), `"history"`, `"baseKeymap"`, `"markdown"` (Markdown
     /// shortcuts, paste and copy). Default `["starter"]`.
     pub plugins: Prop<Option<Vec<SharedString>>>,
-    /// Single keystrokes owned by the host application, in `nsh/keymap`
-    /// syntax (`"mod+o"`, for example). While focused, this view leaves
-    /// equivalent strokes unbound so the host's keymap or native menu can
-    /// handle them. The host must install those commands itself. Default
-    /// empty preserves the view's own bindings; invalid entries are ignored.
-    #[prop(default)]
-    pub application_shortcuts: Prop<Vec<SharedString>>,
     /// The document can be edited (default true); plugins can make it
     /// read-only too. A read-only editor still selects and copies.
     #[prop(default = true)]
@@ -114,6 +106,13 @@ pub struct RichEditorProps {
     pub styles: Prop<RichEditorStyles>,
     /// What screen readers call the editor.
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// Shows the input accessory with this `nativeID` over the keyboard
+    /// while the editor has the focus (`input_accessory_view`, TS
+    /// `InputAccessoryView` of `nsh/mobile`; iOS), as `Input`'s
+    /// `input_accessory` (TS `ios={{ inputAccessoryViewID }}`) does. The
+    /// platforms without one show nothing.
+    #[prop(rename = "inputAccessoryViewID")]
+    pub input_accessory: Prop<Option<SharedString>>,
     /// Tiptap's bubble menu: shown next to the selection while the app
     /// fills it (the app decides when, from the session's state: a link
     /// under the caret, a selection of text), above it, below it where
@@ -127,6 +126,13 @@ pub struct RichEditorProps {
     /// The gap between the selection and the bubble menu (default 8).
     #[prop(default = px(8.0))]
     pub bubble_menu_offset: Prop<Points>,
+    /// The app's own layer over the document, inside the box that scrolls:
+    /// what it holds moves with the text in the same frame (a block's
+    /// handle in the margin, a marker beside a node). It covers the
+    /// content box and takes no press itself; the app places its children
+    /// in the content box's points, where `nodeRect` and `coordsAtPos`
+    /// answer.
+    pub content_layer: Prop<Option<Slot>>,
 }
 
 /// A change of a `RichEditor`'s document. The document itself is read on
@@ -197,7 +203,17 @@ impl RichEditorSelection {
 
 /// The events of a [`RichEditor`].
 #[derive(Debug, Clone, PartialEq, Event)]
+#[non_exhaustive]
 pub enum RichEditorEvent {
+    /// The laid-out document's size changed (as `Input`'s
+    /// `onContentSizeChange`): its full flow extent in points, offscreen
+    /// blocks included, the `content` part's padding excluded.
+    ContentSizeChange {
+        /// The full flow extent in points.
+        content_size: Size<Points>,
+    },
+    /// A table moved inside its horizontal viewport. Content overlays may need to reposition.
+    TableScroll,
     /// The document changed.
     #[args(change)]
     Change(RichEditorChange),
@@ -212,8 +228,11 @@ pub enum RichEditorEvent {
     Focus,
     /// The editor lost the focus.
     Blur,
-    /// A plain Escape at a text caret or gap cursor remained after the editor's own handlers.
-    UnhandledEscape,
+    /// An input method started or ended composition in this view. Reports
+    /// only state transitions, after the session and composition are
+    /// updated; a cancel can end composition without a document change.
+    #[args(composing)]
+    CompositionChange(bool),
 }
 
 /// The methods of a [`RichEditor`]'s ref.
@@ -246,29 +265,6 @@ impl RichEditorApi {
     /// The selection.
     pub fn selection(&self) -> RichEditorSelection {
         RichEditorSelection::of(&self.rv.session.state())
-    }
-
-    /// The visible primary caret's distance from the top of the viewport.
-    pub fn viewport_caret_top(&self) -> Option<f32> {
-        self.rv.viewport_caret_top()
-    }
-
-    /// Reveals the primary caret after its block is laid out, without
-    /// dispatching an edit or replacing the selection.
-    pub fn reveal_primary_caret(&self, viewport_top: Option<f32>) {
-        self.rv.reveal_primary_caret(viewport_top);
-    }
-
-    /// How far the rich document is scrolled vertically.
-    pub fn scroll_top(&self) -> f32 {
-        self.rv.scroll_y.get_untracked().0
-    }
-
-    /// Restores a saved vertical position in the current rich layout.
-    pub fn set_scroll_top(&self, top: f32) {
-        if top.is_finite() {
-            self.rv.move_visible_row_scroll(top);
-        }
     }
 
     /// Replaces the document with `doc` (ProseMirror's JSON), as a change

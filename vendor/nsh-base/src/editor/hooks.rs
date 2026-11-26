@@ -640,36 +640,6 @@ impl Ed {
         }
     }
 
-    pub(crate) fn viewport_caret_top(&self) -> Option<f32> {
-        // The pointer geometry is not initialized until the editor receives
-        // mouse input. A freshly mounted view already knows its row layout.
-        let state = self.st.borrow();
-        let point = state.caret_point(state.primary_head());
-        let height = self.viewport.get_untracked().height.0;
-        let offset = (self.rows_top.get_untracked() + point.y - self.scroll_y.get_untracked()).0;
-        (offset >= 0.0 && offset + state.line_height().0 <= height).then_some(offset)
-    }
-
-    pub(crate) fn reveal_primary_caret(&self, viewport_top: Option<f32>) {
-        let (point, line_height) = {
-            let mut state = self.st.borrow_mut();
-            let head = state.primary_head();
-            state.reveal(head);
-            (state.caret_point(head), state.line_height())
-        };
-        self.bump_text();
-        self.scroll_into_view(point, line_height);
-        if let Some(offset) = viewport_top {
-            let room = (self.viewport.get_untracked().height - line_height)
-                .0
-                .max(0.0);
-            let y = self.rows_top.get_untracked() + point.y - px(offset.clamp(0.0, room));
-            self.set_scroll_offset(Point::new(self.scroll_x.get_untracked(), y));
-        } else {
-            self.center_vertically(point, line_height);
-        }
-    }
-
     pub(crate) fn go_to_line(&self, line: u32) {
         {
             let mut st = self.st.borrow_mut();

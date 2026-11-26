@@ -46,7 +46,8 @@ use std::{
 use nsh_core::{
     Color, EventKind, EventPayload, ImageSource, PayloadValue, ROOT_ID,
     desktop::{
-        DesktopCommand, Key, MenuAction, MenuItem, MenuRole, Shortcut, WindowRequest, menu_icon,
+        DesktopCommand, Key, MenuAction, MenuItem, MenuLabels, MenuRole, Shortcut, WindowEvent,
+        WindowRequest, menu_icon,
     },
     geometry::{Edges, Points},
 };
@@ -71,7 +72,7 @@ use windows::{
             },
             HiDpi::GetSystemMetricsForDpi,
             Input::KeyboardAndMouse::{
-                ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
+                GetCapture, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
                 TrackMouseEvent, VIRTUAL_KEY, VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE,
                 VK_F1, VK_F24, VK_HOME, VK_INSERT, VK_LEFT, VK_NEXT, VK_OEM_1, VK_OEM_2, VK_OEM_3,
                 VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD,
@@ -129,9 +130,13 @@ struct Entry {
 }
 
 /// A context menu: its items and where it shows.
-struct Popup {
+pub(crate) struct Popup {
     items: Arc<[MenuItem]>,
     at: Option<(f32, f32)>,
+    /// `at` is the menu's top-end corner rather than its top-start one: it
+    /// opens towards the left (a right-to-left layout's, anchored to a
+    /// view's bottom-end corner).
+    end: bool,
     /// What the items of a menu of the platform's own do, by id - 1 (the
     /// app's menus report their ids instead).
     actions: Vec<Action>,
@@ -148,6 +153,10 @@ pub(crate) type Action = Rc<dyn Fn(&Rc<Surface>)>;
 /// A surface's chrome.
 #[derive(Default)]
 pub(crate) struct Chrome {
+    /// The labels the core translates for this surface's language: the
+    /// platform's own menus and the role items with no label of their own
+    /// show them.
+    pub(crate) labels: RefCell<MenuLabels>,
     /// The application menu.
     menu: RefCell<Option<Arc<[MenuItem]>>>,
     /// The menu bar shown (`HMENU`, 0 for none).
@@ -169,15 +178,20 @@ pub(crate) struct Chrome {
     tracked_popup: RefCell<Option<Arc<[MenuItem]>>>,
     #[cfg(feature = "dev")]
     test_choice: Cell<Option<(u32, Option<MenuRole>)>>,
+    /// The app listens to quit requests
+    /// (`DesktopCommand::SetQuitOnRequest(false)`): the Quit item and its
+    /// Ctrl+Q ask it ([`ask_quit`]).
+    asks_quit: Cell<bool>,
 }
 
 impl Chrome {
     /// Captures and consumes this surface's context-menu request. Native
     /// tracking starts later; cancellation still consumes the request.
-    fn app_popup(&self, items: Arc<[MenuItem]>, at: Option<(f32, f32)>) -> Popup {
+    pub(crate) fn app_popup(&self, items: Arc<[MenuItem]>, at: Option<(f32, f32)>) -> Popup {
         Popup {
             items,
             at,
+            end: false,
             actions: Vec::new(),
             area: self.context_area.take(),
             awaited: true,
@@ -255,7 +269,7 @@ fn framed_attrs(hwnd: HWND) -> Option<crate::shell::Attrs> {
 
 /// The window's title bar is hidden now: the system frame stays, the
 /// caption buttons are drawn over the app.
-pub(crate) fn hidden(hwnd: HWND) -> bool {
+fn hidden(hwnd: HWND) -> bool {
     framed_attrs(hwnd).is_some_and(|a| a.hidden_title_bar())
 }
 
@@ -296,11 +310,18 @@ fn scale_of(surface: &Surface, hwnd: HWND) -> f32 {
     }
 }
 
-/// The width of the window's client area, in points.
-fn client_width(surface: &Surface, hwnd: HWND) -> f32 {
+/// The window's client area, in its own pixels (empty when the window is
+/// gone).
+fn client_rect(hwnd: HWND) -> RECT {
     let mut rect = RECT::default();
     // SAFETY: a query with a local out value.
     let _ = unsafe { GetClientRect(hwnd, &mut rect) };
+    rect
+}
+
+/// The width of the window's client area, in points.
+fn client_width(surface: &Surface, hwnd: HWND) -> f32 {
+    let rect = client_rect(hwnd);
     (rect.right - rect.left) as f32 / scale_of(surface, hwnd)
 }
 
@@ -367,10 +388,11 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
         return;
     }
     // The embedding app owns its window and the shell's integration: only
-    // context menus work there.
+    // context menus, and the labels of the menus the view makes, work
+    // there.
     if !top_level(hwnd) {
         match command {
-            DesktopCommand::PopupMenu { .. } => {}
+            DesktopCommand::PopupMenu { .. } | DesktopCommand::SetMenuLabels(_) => {}
             DesktopCommand::RegisterGlobalShortcut { id, .. } => {
                 crate::global_shortcut::answer(surface, *id, false);
                 return;
@@ -393,10 +415,6 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
                 {
                     crate::app::show_main(surface, hwnd);
                 }
-                // The app's own mode replaces the one it was to open in.
-                WindowRequest::SetMode(_) | WindowRequest::SetPlacement(_) => {
-                    surface.main_opening_mode.take();
-                }
                 _ => {}
             }
             if !crate::shell::request(hwnd, request) {
@@ -407,6 +425,11 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
         // A window of the app's own's ([`crate::app_window`]).
         DesktopCommand::OpenWindow(_) => {}
         DesktopCommand::Quit => quit(surface),
+        // The core applies it; the platform sees it for completeness.
+        DesktopCommand::SetQuitMode(_) => {}
+        DesktopCommand::SetQuitOnRequest(quit) => c.asks_quit.set(!quit),
+        // Additional quit request sources are currently macOS-only.
+        DesktopCommand::SetQuitRequestOptions(_) | DesktopCommand::CancelQuitRequest => {}
         // Quits as above, then the runner starts the app again; an
         // embedding app's window is its own.
         DesktopCommand::Restart => {
@@ -420,10 +443,22 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
         }
         // The Win32 menu bar always shows.
         DesktopCommand::SetMenuBar(_) => {}
-        DesktopCommand::PopupMenu { items, at } => popup(
-            surface,
-            c.app_popup(items.clone(), at.map(|p| (p.x.0, p.y.0))),
-        ),
+        // The edit menus read them as they open, a top-level window's menu
+        // bar now.
+        DesktopCommand::SetMenuLabels(labels) => {
+            c.labels.replace((**labels).clone());
+            if top_level(hwnd) {
+                show_menu_bar(surface);
+            }
+        }
+        DesktopCommand::PopupMenu { items, at } => {
+            let hwnd = surface.hwnd();
+            popup(
+                surface,
+                hwnd,
+                c.app_popup(items.clone(), at.map(|p| (p.x.0, p.y.0))),
+            )
+        }
         DesktopCommand::SetTray(tray) => crate::tray::set(surface, tray.as_ref()),
         DesktopCommand::RegisterGlobalShortcut { id, shortcut } => {
             crate::global_shortcut::register(surface, *id, shortcut);
@@ -445,8 +480,7 @@ fn post_popup(hwnd: HWND) {
 /// own, which must not run while a batch is applied or an event handled.
 /// With icons not in memory, once they have loaded ([`ICON_WAIT`] at most):
 /// loaded, they are in memory when [`show_popup`] asks for them.
-fn popup(surface: &Surface, menu: Popup) {
-    let hwnd = surface.hwnd();
+pub(crate) fn popup(surface: &Surface, hwnd: HWND, menu: Popup) {
     let mut sources = Vec::new();
     MenuItem::each_icon(&menu.items, &mut |icon| sources.push(icon.clone()));
     *surface.chrome.popup.borrow_mut() = Some(menu);
@@ -482,7 +516,7 @@ pub(crate) enum LocalItem {
         /// work).
         role: Option<MenuRole>,
         /// A label of its own (else the role's).
-        label: &'static str,
+        label: String,
         /// It can be chosen.
         enabled: bool,
         /// What choosing it does.
@@ -493,6 +527,18 @@ pub(crate) enum LocalItem {
 /// Shows a context menu of the platform's own (a text field's) at the
 /// pointer.
 pub(crate) fn popup_actions(surface: &Surface, items: Vec<LocalItem>) {
+    popup_actions_at(surface, items, None, false);
+}
+
+/// Shows a context menu of the platform's own at `at` (in the window's
+/// points), or at the pointer; with `end`, `at` is its top-end corner (it
+/// opens towards the left).
+pub(crate) fn popup_actions_at(
+    surface: &Surface,
+    items: Vec<LocalItem>,
+    at: Option<(f32, f32)>,
+    end: bool,
+) {
     let mut actions = Vec::new();
     let items: Vec<MenuItem> = items
         .into_iter()
@@ -507,10 +553,11 @@ pub(crate) fn popup_actions(surface: &Surface, items: Vec<LocalItem>) {
                 actions.push(action);
                 MenuItem::Action(MenuAction {
                     id: actions.len() as u32,
-                    label: if label.is_empty() {
-                        role.map_or("", MenuRole::label).to_owned()
-                    } else {
-                        label.to_owned()
+                    label: match role {
+                        Some(role) if label.is_empty() => {
+                            surface.chrome.labels.borrow().label(role).to_owned()
+                        }
+                        _ => label,
                     },
                     shortcut: role.and_then(|r| r.shortcut(false)),
                     enabled,
@@ -518,15 +565,19 @@ pub(crate) fn popup_actions(surface: &Surface, items: Vec<LocalItem>) {
                     role: None,
                     when: nsh_core::keymap::When::Always,
                     icon: None,
+                    symbol: None,
+                    destructive: false,
                 })
             }
         })
         .collect();
     popup(
         surface,
+        surface.hwnd(),
         Popup {
             items: items.into(),
-            at: None,
+            at,
+            end,
             actions,
             area: None,
             awaited: false,
@@ -540,14 +591,31 @@ pub(crate) fn popup_tray(surface: &Surface, items: Arc<[MenuItem]>, at: (f32, f3
     surface.chrome.context_area.take();
     popup(
         surface,
+        surface.hwnd(),
         Popup {
             items,
             at: Some(at),
+            end: false,
             actions: Vec::new(),
             area: None,
             awaited: false,
         },
     );
+}
+
+/// The user asked to quit (the Quit item, its Ctrl+Q): while the app
+/// listens to quit requests, it hears this one ([`WindowEvent::QuitRequest`])
+/// and decides, and this is true; false when quitting goes on.
+fn ask_quit(surface: &Surface) -> bool {
+    if !surface.chrome.asks_quit.get() {
+        return false;
+    }
+    surface.event(
+        ROOT_ID,
+        EventKind::Window,
+        EventPayload::Window(Box::new(WindowEvent::QuitRequest)),
+    );
+    true
 }
 
 /// Quits the app, as its `quit` role: the windows close without asking
@@ -669,6 +737,18 @@ pub(crate) fn nc_max_size(hwnd: HWND, info: &mut MINMAXINFO) {
     };
 }
 
+/// What the system's frame of `hwnd` leaves invisible around a window in
+/// the normal mode, in pixels (left, top, right, bottom): its resize
+/// borders past the visible one, on every side but the top. A window
+/// without the system's frame has none.
+pub(crate) fn invisible_frame(hwnd: HWND) -> crate::window_state::Margins {
+    if frameless(hwnd) {
+        return (0, 0, 0, 0);
+    }
+    let side = (frame_thickness(hwnd) - top_border(hwnd)).max(0);
+    (side, 0, side, side)
+}
+
 /// The visible border the system draws along a window's top edge, in
 /// pixels (Windows 11; 0 where there is none).
 fn top_border(hwnd: HWND) -> i32 {
@@ -761,15 +841,557 @@ pub(crate) fn nc_hit_test(surface: &Surface, hwnd: HWND, lparam: LPARAM) -> Opti
             return Some(LRESULT(code as isize));
         }
     }
+    Some(LRESULT(
+        view_code(surface, &attrs, zoomed(hwnd), x, y) as isize
+    ))
+}
+
+/// What the app's views answer to a hit test at `(x, y)` (client points):
+/// the code of a view marked `windowResize`, `windowControl` or
+/// `windowDrag` there, when the window lets the user do it, else the
+/// client area's.
+fn view_code(surface: &Surface, attrs: &crate::shell::Attrs, zoomed: bool, x: f32, y: f32) -> u32 {
     let code = match crate::input::window_part(surface, x, y) {
         Some(crate::input::WindowPart::Resize(edge)) => crate::shell::edge_code(edge),
         Some(crate::input::WindowPart::Control(control)) => {
-            crate::shell::control_code(control, &attrs)
+            crate::shell::control_code(control, attrs)
         }
         Some(crate::input::WindowPart::Drag) => HTCAPTION,
         None => HTCLIENT,
     };
-    result(code)
+    crate::shell::allowed(code, attrs, zoomed)
+}
+
+/// The `SetTimer` id of [`Mouse::Recheck`] on a window.
+pub(crate) const RECHECK_TIMER: usize = 0x4e53_484c;
+
+/// How long [`Mouse::Recheck`] waits, in milliseconds. `WM_TIMER` comes
+/// only once no input is queued, so the moves still waiting are handled
+/// first and the system's tracking has caught up with them.
+const RECHECK_MS: u32 = 16;
+
+/// Window `hwnd`'s mouse leave tracking. Windows tracks the client and the
+/// non-client area for leaves apart (`TrackMouseEvent`'s `TME_LEAVE`
+/// without and with `TME_NONCLIENT`), and a view marked `windowDrag`,
+/// `windowControl` or `windowResize` is non-client area inside the app's
+/// content (`HTCAPTION`, `HTCLOSE`, `HTLEFT`, ...): a leave only says that
+/// the pointer left one area, and arrives after the other area's moves.
+/// [`Tracking::step`] decides what each message does over this plain data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Tracking {
+    /// `WM_MOUSELEAVE` is armed.
+    client: bool,
+    /// `WM_NCMOUSELEAVE` is armed, at this hit test code: Windows may end
+    /// the tracking when the code changes, so a move at another code arms
+    /// it again.
+    nc: Option<u32>,
+    /// The views heard the pointer over the app's content last (a move),
+    /// not a leave: only then does a leave tell them anything.
+    hovered: bool,
+    /// The views heard the non-client area's moves last (a view answering
+    /// as the frame): its leave ends their hover.
+    view_hover: bool,
+    /// The system held the pointer (its move or size loop, or a press on a
+    /// drag region the views have not heard) and let it go: the next
+    /// recheck tells the views where it is, whatever they heard before,
+    /// unless a move does first. The hover may have moved to another view
+    /// of the same area meanwhile (a snap put a `windowControl` view under
+    /// the pointer, a held press slid onto another view in the drag
+    /// region), with no move dispatched.
+    deferred: bool,
+}
+
+/// A mouse message of the window, as [`Tracking::step`] takes it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Mouse {
+    /// `WM_MOUSEMOVE`; `content`: at the app's content
+    /// ([`client_point_is_content`]).
+    ClientMove { content: bool },
+    /// `WM_NCMOUSEMOVE` at hit test code `code`; `on_view`: over a view of
+    /// the app's that answers as the frame.
+    NcMove { code: u32, on_view: bool },
+    /// `WM_MOUSELEAVE`.
+    ClientLeave,
+    /// `WM_NCMOUSELEAVE`.
+    NcLeave,
+    /// [`RECHECK_TIMER`]: a leave kept the views hovered with neither area
+    /// tracked, or a hold ended ([`Tracking::deferred`]).
+    Recheck,
+    /// The system's move or size loop ended, or a held press on a drag
+    /// region did ([`hold_ended`]).
+    HoldEnded,
+}
+
+/// The area `TrackMouseEvent` is asked to track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Area {
+    Client,
+    NonClient,
+}
+
+/// What the views hear of a mouse message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Heard {
+    Nothing,
+    /// A move: at a move message's point, or where a leave's or a
+    /// recheck's look found the pointer.
+    Here,
+    /// The pointer left the app's content.
+    Left,
+}
+
+/// What handling a mouse message asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Step {
+    /// Arm the leave of this area.
+    track: Option<Area>,
+    heard: Heard,
+    /// Start [`RECHECK_TIMER`].
+    recheck_later: bool,
+    /// The look is the first after a hold ([`Tracking::deferred`]).
+    after_hold: bool,
+}
+
+impl Tracking {
+    /// Handles `mouse`; `held`: the system holds the pointer (its move or
+    /// size loop runs, or a press on a drag region holds the capture). A
+    /// leave looks where the pointer is now (`content`: its hit test code
+    /// when it is over the app's content, asked only when needed): over
+    /// the content the views hear a move there, unless they are hovered in
+    /// that area already (its move told them), anywhere else a leave. A
+    /// leave never arms tracking: `TrackMouseEvent` posts a leave at once
+    /// when the system does not have the pointer in the area yet (it has
+    /// not taken the moves still queued), and leaves are retrieved before
+    /// input, so they would follow one another. A leave that keeps the
+    /// hover with neither area tracked asks for [`Mouse::Recheck`], which
+    /// runs after the queued input and arms the area the pointer is in or
+    /// ends the hover: the hover never outlasts the pointer. While the
+    /// system holds the pointer (`held`, asked of leaves and rechecks
+    /// only), the views heard no press, and its move or size loop ends
+    /// whatever tracking is armed at once: leaves and rechecks then do
+    /// nothing, and [`Mouse::HoldEnded`] looks once afterwards.
+    fn step(&mut self, mouse: Mouse, held: bool, content: impl FnOnce() -> Option<u32>) -> Step {
+        let mut step = Step {
+            track: None,
+            heard: Heard::Nothing,
+            recheck_later: false,
+            after_hold: false,
+        };
+        if matches!(mouse, Mouse::ClientMove { .. } | Mouse::NcMove { .. }) {
+            // The move tells the views where the pointer is.
+            self.deferred = false;
+        }
+        match mouse {
+            Mouse::ClientMove { content } => {
+                if !self.client {
+                    self.client = true;
+                    step.track = Some(Area::Client);
+                }
+                // The client area's tracking ends this hover now.
+                self.view_hover = false;
+                step.heard = if content {
+                    Heard::Here
+                } else {
+                    // A window that cannot be moved: its title bar's moves
+                    // leave once, then nothing.
+                    self.leave()
+                };
+                self.hovered = content;
+                return step;
+            }
+            Mouse::NcMove { code, on_view } => {
+                if self.nc != Some(code) {
+                    self.nc = Some(code);
+                    step.track = Some(Area::NonClient);
+                }
+                step.heard = if on_view {
+                    self.hovered = true;
+                    Heard::Here
+                } else if self.view_hover {
+                    self.leave()
+                } else {
+                    Heard::Nothing
+                };
+                self.view_hover = on_view;
+                return step;
+            }
+            Mouse::ClientLeave => {
+                self.client = false;
+                if held {
+                    return step;
+                }
+                step.heard = self.look(true, content());
+            }
+            Mouse::NcLeave => {
+                self.nc = None;
+                if held {
+                    return step;
+                }
+                // Kept for the look: one finding the pointer on a view
+                // still (the system ended a recheck's tracking at once)
+                // tells the views nothing new.
+                let owned = self.view_hover;
+                // A leave of an area the views are not hovered in has
+                // nothing to end while the client area is tracked: its leave
+                // will.
+                if owned || !self.client {
+                    step.heard = self.look(owned, content());
+                }
+            }
+            Mouse::Recheck => {
+                if held {
+                    return step;
+                }
+                if std::mem::take(&mut self.deferred) {
+                    step.after_hold = true;
+                    match content() {
+                        Some(code) => {
+                            step.track = self.arm(code);
+                            self.hovered = true;
+                            self.view_hover = code != HTCLIENT;
+                            step.heard = Heard::Here;
+                        }
+                        None => step.heard = self.leave(),
+                    }
+                    return step;
+                }
+                // A move came meanwhile: its area's leave ends the hover.
+                if self.client || self.nc.is_some() {
+                    return step;
+                }
+                match content() {
+                    Some(code) => {
+                        step.track = Some(if code == HTCLIENT {
+                            self.client = true;
+                            Area::Client
+                        } else {
+                            self.nc = Some(code);
+                            Area::NonClient
+                        });
+                        step.heard = self.look(true, Some(code));
+                    }
+                    None => step.heard = self.look(true, None),
+                }
+                return step;
+            }
+            Mouse::HoldEnded => {
+                // Looked at once the queued input is handled: a move the
+                // system makes as it lets the pointer go comes first and
+                // tells the views itself. Ended twice (the loop's end, then
+                // the press's), it still reports once.
+                self.deferred = true;
+                step.recheck_later = true;
+                return step;
+            }
+        }
+        step.recheck_later = self.hovered && !self.client && self.nc.is_none();
+        step
+    }
+
+    /// Arms the area of hit test code `code` unless it is armed there.
+    fn arm(&mut self, code: u32) -> Option<Area> {
+        if code == HTCLIENT {
+            (!std::mem::replace(&mut self.client, true)).then_some(Area::Client)
+        } else {
+            (self.nc.replace(code) != Some(code)).then_some(Area::NonClient)
+        }
+    }
+
+    /// Forgets what the views heard (the app restarted with new views): the
+    /// next look tells them.
+    fn forget(&mut self) {
+        self.hovered = false;
+        self.view_hover = false;
+        self.deferred = false;
+    }
+
+    /// The views hear a leave if they were hovered.
+    fn leave(&mut self) -> Heard {
+        self.view_hover = false;
+        if std::mem::take(&mut self.hovered) {
+            Heard::Left
+        } else {
+            Heard::Nothing
+        }
+    }
+
+    /// A leave's or a recheck's look at where the pointer is: `owned`, the
+    /// leave is of the area the views were hovered in; one that is not only
+    /// ends a hover (the area the pointer is in reports its own moves).
+    fn look(&mut self, owned: bool, content: Option<u32>) -> Heard {
+        let Some(code) = content else {
+            return self.leave();
+        };
+        if !owned {
+            return Heard::Nothing;
+        }
+        let view = code != HTCLIENT;
+        // Hovered in this area already: the move there told the views, and
+        // a recheck whose tracking the system ended at once finds the same.
+        let known = self.hovered && self.view_hover == view;
+        self.hovered = true;
+        self.view_hover = view;
+        if known { Heard::Nothing } else { Heard::Here }
+    }
+}
+
+/// Runs mouse message `mouse` of window `hwnd` through its leave tracking
+/// ([`Tracking::step`]) and does what it asks. The views hear a leave's
+/// and a recheck's outcome here, at the pointer, with the buttons held; a
+/// move's handler reports the move at its own point by the [`Heard`]
+/// returned.
+pub(crate) fn track(surface: &Rc<Surface>, hwnd: HWND, mouse: Mouse) -> Heard {
+    let Some(cell) = crate::window::tracking(hwnd) else {
+        return Heard::Nothing;
+    };
+    let looks = matches!(mouse, Mouse::ClientLeave | Mouse::NcLeave | Mouse::Recheck);
+    // Asked before the tracking is read: finding a held press stale ends
+    // the hold, which the tracking records.
+    let held = looks && held(surface, hwnd);
+    let mut tracking = cell.get();
+    let mut at = None;
+    let step = tracking.step(mouse, held, || {
+        at = content_under_pointer(surface, hwnd);
+        at.map(|(_, code)| code)
+    });
+    cell.set(tracking);
+    apply(hwnd, step);
+    if looks {
+        let at = match step.heard {
+            Heard::Here => at.map(|(position, _)| position),
+            Heard::Left => None,
+            Heard::Nothing => return step.heard,
+        };
+        if step.after_hold {
+            crate::window::hold_pointer(surface, hwnd, at);
+        } else {
+            crate::window::nc_pointer(surface, at);
+        }
+    }
+    step.heard
+}
+
+/// Whether the system holds a window's pointer ([`hold`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hold {
+    Held,
+    Free,
+    /// A press on a drag region is held, but its button went up with no
+    /// release or capture change reaching the window (it lost the
+    /// foreground while pressed: Alt+Tab, the Windows key, a UAC prompt).
+    Stale,
+}
+
+/// Whether the system holds a window's pointer, from its state: `sizing`,
+/// its move or size loop runs; `press`, a press on a drag region holds
+/// the capture ([`hold_press`]); `primary_down`, the primary button is
+/// down now; `input_queued`, mouse button or key input waits in the
+/// thread's queue (perhaps the press's release).
+fn hold(sizing: bool, press: bool, primary_down: bool, input_queued: bool) -> Hold {
+    if sizing {
+        Hold::Held
+    } else if !press {
+        Hold::Free
+    } else if primary_down || input_queued {
+        // A release still queued ends the press itself, with its click: the
+        // button's state now is ahead of the queue.
+        Hold::Held
+    } else {
+        Hold::Stale
+    }
+}
+
+/// Window `hwnd` holds a press on a drag region ([`hold_press`]).
+fn press_held(surface: &Surface, hwnd: HWND) -> bool {
+    surface
+        .input
+        .window_press
+        .borrow()
+        .as_ref()
+        .is_some_and(|p| p.hwnd == hwnd)
+}
+
+/// The system holds window `hwnd`'s pointer ([`Hold`]): a press the views
+/// never heard, so leaves and rechecks wait for its end. A stale press is
+/// let go here, or hover would wait for it forever.
+fn held(surface: &Surface, hwnd: HWND) -> bool {
+    let sizing = crate::window::shell(hwnd).is_some_and(|s| s.sizing.get());
+    let press = press_held(surface, hwnd);
+    let (down, queued) = if press && !sizing {
+        // `GetInputState` rather than `GetQueueStatus`, which would clear
+        // the queue's "new input" state a host's `MsgWaitForMultipleObjects`
+        // waits on.
+        // SAFETY: a plain query of this thread's queue.
+        let queued = unsafe { GetInputState() }.as_bool();
+        (crate::window::primary_down(), queued)
+    } else {
+        (false, false)
+    };
+    match hold(sizing, press, down, queued) {
+        Hold::Held => true,
+        Hold::Free => false,
+        Hold::Stale => {
+            press_lost(surface, hwnd);
+            false
+        }
+    }
+}
+
+/// Window `hwnd`'s held press is over without its release (the window
+/// lost the foreground, or the press went stale): forgotten, the capture
+/// let go, and the hold ended.
+pub(crate) fn press_lost(surface: &Surface, hwnd: HWND) {
+    if take_press(surface, hwnd).is_none() {
+        return;
+    }
+    // SAFETY: plain calls; only this window's own capture is released.
+    if unsafe { GetCapture() } == hwnd {
+        let _ = unsafe { ReleaseCapture() };
+    }
+    hold_ended(hwnd);
+}
+
+/// The app stopped (its views are gone): its held press is forgotten, and
+/// what the views heard of the pointer with it.
+pub(crate) fn reset_hover(surface: &Surface) {
+    let press = surface.input.window_press.borrow_mut().take();
+    for hwnd in press.map(|p| p.hwnd).into_iter().chain([surface.hwnd()]) {
+        if let Some(cell) = crate::window::tracking(hwnd) {
+            let mut tracking = cell.get();
+            tracking.forget();
+            cell.set(tracking);
+        }
+    }
+}
+
+/// The system let window `hwnd`'s pointer go ([`held`] ended): what it
+/// did meanwhile is looked at once, after the queued input.
+pub(crate) fn hold_ended(hwnd: HWND) {
+    let Some(cell) = crate::window::tracking(hwnd) else {
+        return;
+    };
+    let mut tracking = cell.get();
+    let step = tracking.step(Mouse::HoldEnded, false, || None);
+    cell.set(tracking);
+    apply(hwnd, step);
+}
+
+/// Arms the tracking and starts the timer `step` asks for.
+fn apply(hwnd: HWND, step: Step) {
+    if let Some(area) = step.track {
+        let mut track = TRACKMOUSEEVENT {
+            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: match area {
+                Area::Client => TME_LEAVE,
+                Area::NonClient => TME_LEAVE | TME_NONCLIENT,
+            },
+            hwndTrack: hwnd,
+            dwHoverTime: 0,
+        };
+        // SAFETY: a valid structure for this window.
+        let _ = unsafe { TrackMouseEvent(&mut track) };
+    }
+    if step.recheck_later {
+        // SAFETY: a timer on this live window; set again, it starts over.
+        unsafe { SetTimer(Some(hwnd), RECHECK_TIMER, RECHECK_MS, None) };
+    }
+}
+
+/// `WM_TIMER` of window `hwnd`: true when it was [`RECHECK_TIMER`]'s,
+/// which runs once.
+pub(crate) fn recheck_timer(surface: &Rc<Surface>, hwnd: HWND, timer: usize) -> bool {
+    if timer != RECHECK_TIMER {
+        return false;
+    }
+    // SAFETY: this window's own timer.
+    let _ = unsafe { KillTimer(Some(hwnd), RECHECK_TIMER) };
+    track(surface, hwnd, Mouse::Recheck);
+    true
+}
+
+/// A client mouse message at `lparam` (client pixels) of window `hwnd` is
+/// at the app's content: inside the client area, or anywhere while the
+/// window holds the capture (a drag that left it). A window that cannot
+/// be moved answers its system title bar as the client area
+/// ([`crate::shell::allowed`]), so its moves there come above it.
+pub(crate) fn client_point_is_content(hwnd: HWND, lparam: LPARAM) -> bool {
+    let p = POINT {
+        x: (lparam.0 & 0xFFFF) as i16 as i32,
+        y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+    };
+    // SAFETY: a plain query.
+    in_client(p, client_rect(hwnd)) || unsafe { GetCapture() } == hwnd
+}
+
+/// Where the pointer is now (client points) with the window's hit test code
+/// there, when it is over the app's content in window `hwnd`: not over
+/// another window, a border, the system's title bar or a drawn caption
+/// button.
+fn content_under_pointer(surface: &Surface, hwnd: HWND) -> Option<((f32, f32), u32)> {
+    let mut p = POINT::default();
+    // SAFETY: a query with a local out value.
+    unsafe { GetCursorPos(&mut p) }.ok()?;
+    // SAFETY: a plain query of the window at a point.
+    if unsafe { WindowFromPoint(p) } != hwnd {
+        return None;
+    }
+    let packed = LPARAM(((p.x as u16 as u32) | ((p.y as u16 as u32) << 16)) as isize);
+    // The window's own answer, as the system gets it: an embedded view has
+    // no frame of its own, so it is all client area whatever its views are
+    // marked.
+    // SAFETY: a message sent to a live window of this thread, the one whose
+    // message is being handled; its procedure answers hit tests reentrantly.
+    let code = unsafe { SendMessageW(hwnd, WM_NCHITTEST, None, Some(packed)) }.0 as u32;
+    let client = client_rect(hwnd);
+    // SAFETY: a plain call with a local value.
+    unsafe { windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p) }
+        .ok()
+        .ok()?;
+    let scale = scale_of(surface, hwnd);
+    let at = (p.x as f32 / scale, p.y as f32 / scale);
+    let drawn = caption_at(surface, hwnd, at.0, at.1).is_some();
+    let view = frame_view(surface, hwnd, code, at);
+    content_hit(code, view, drawn, in_client(p, client)).then_some((at, code))
+}
+
+/// What the app's views answer at `at` (client points) in window `hwnd`,
+/// for a point the window answers with hit test code `code` inside its
+/// client area: a caption or a button is a view's own code (the window's
+/// frame answers those only above the client area, and the drawn caption
+/// buttons are told apart by the caller); a border's code needs a look at
+/// the views, since the window's own border answers it as well as a
+/// `windowResize` view; any other code is no view's.
+fn frame_view(surface: &Surface, hwnd: HWND, code: u32, at: (f32, f32)) -> u32 {
+    match code {
+        HTCAPTION | HTMINBUTTON | HTMAXBUTTON | HTCLOSE => code,
+        HTLEFT | HTRIGHT | HTTOP | HTTOPLEFT | HTTOPRIGHT | HTBOTTOM | HTBOTTOMLEFT
+        | HTBOTTOMRIGHT => frame_view_code(surface, hwnd, at),
+        _ => HTCLIENT,
+    }
+}
+
+/// [`view_code`] at `at` (client points) in window `hwnd`.
+fn frame_view_code(surface: &Surface, hwnd: HWND, at: (f32, f32)) -> u32 {
+    let attrs = crate::window::shell(hwnd)
+        .map(|s| s.attrs())
+        .unwrap_or_default();
+    view_code(surface, &attrs, zoomed(hwnd), at.0, at.1)
+}
+
+/// A point with hit test code `code` is over the app's content: the client
+/// area, or a view of the app's answering as the frame (`windowDrag`,
+/// `windowControl`, `windowResize`), whose code is `view` ([`view_code`]).
+/// The window's own borders answer the same codes as a `windowResize` view
+/// and the system's title bar as a `windowDrag` or `windowControl` one, so
+/// the code must be the view's, inside the client area; the drawn caption
+/// buttons are no views of the app's.
+fn content_hit(code: u32, view: u32, drawn_caption: bool, in_client: bool) -> bool {
+    in_client && !drawn_caption && (code == HTCLIENT || code == view)
+}
+
+/// `p` (client pixels) is inside the client area `client`.
+fn in_client(p: POINT, client: RECT) -> bool {
+    (client.left..client.right).contains(&p.x) && (client.top..client.bottom).contains(&p.y)
 }
 
 fn is_button(code: u32) -> bool {
@@ -822,37 +1444,33 @@ pub(crate) fn nc_mouse(
     let drawn = caption_at(surface, hwnd, x, y).is_some();
     match msg {
         WM_NCMOUSEMOVE => {
-            if !shell.nc_tracking.replace(true) {
-                let mut track = TRACKMOUSEEVENT {
-                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                    dwFlags: TME_LEAVE | TME_NONCLIENT,
-                    hwndTrack: hwnd,
-                    dwHoverTime: 0,
-                };
-                // SAFETY: a valid structure for this window.
-                let _ = unsafe { TrackMouseEvent(&mut track) };
-            }
             set_hover(
                 surface,
                 hwnd,
                 if is_button(code) && drawn { code } else { 0 },
             );
-            // Over the app's title bar's views (not the drawn buttons, not
-            // the borders): they hear it as the client area's moves.
-            let on_view = !drawn && matches!(code, HTCAPTION | HTMINBUTTON | HTMAXBUTTON | HTCLOSE);
-            if on_view || shell.view_hover.get() {
-                shell.view_hover.set(on_view);
-                crate::window::nc_pointer(surface, on_view.then_some((x, y)));
+            // Over the views of the app's that answer as the frame (not the
+            // drawn buttons, not the window's borders): they hear it as the
+            // client area's moves. The system's title bar answers with the
+            // same codes, above the client area: no view is there.
+            let inside = in_client(p, client_rect(hwnd));
+            let view = if inside && !drawn {
+                frame_view(surface, hwnd, code, (x, y))
+            } else {
+                HTCLIENT
+            };
+            let on_view = content_hit(code, view, drawn, inside);
+            match track(surface, hwnd, Mouse::NcMove { code, on_view }) {
+                Heard::Here => crate::window::nc_pointer(surface, Some((x, y))),
+                Heard::Left => crate::window::nc_pointer(surface, None),
+                Heard::Nothing => {}
             }
             None
         }
         WM_NCMOUSELEAVE => {
-            shell.nc_tracking.set(false);
             shell.pressed.set(0);
             set_hover(surface, hwnd, 0);
-            if shell.view_hover.replace(false) {
-                crate::window::nc_pointer(surface, None);
-            }
+            track(surface, hwnd, Mouse::NcLeave);
             None
         }
         WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK if is_button(code) => {
@@ -1030,6 +1648,9 @@ pub(crate) fn press_moved(surface: &Surface, hwnd: HWND, lparam: LPARAM) -> bool
             );
         }
     }
+    // The move loop has ended by now (its `WM_EXITSIZEMOVE` said so), or
+    // the window cannot be moved and none ran.
+    hold_ended(hwnd);
     true
 }
 
@@ -1050,12 +1671,16 @@ pub(crate) fn press_released(surface: &Rc<Surface>, hwnd: HWND, at: (f32, f32)) 
     ) {
         crate::window::click(surface, press.at, at);
     }
+    hold_ended(hwnd);
     true
 }
 
-/// Window `hwnd` lost the mouse capture: its held press is forgotten.
+/// Window `hwnd` lost the mouse capture: its held press is forgotten, and
+/// the hold ended.
 pub(crate) fn press_cancelled(surface: &Surface, hwnd: HWND) {
-    take_press(surface, hwnd);
+    if take_press(surface, hwnd).is_some() {
+        hold_ended(hwnd);
+    }
 }
 
 /// Presses window `hwnd`'s close button as the user does (`nsh test`):
@@ -1197,6 +1822,9 @@ pub(crate) fn draw(surface: &Surface, hwnd: HWND, dc: &ID2D1DeviceContext, scale
         };
         // SAFETY: drawing on the context between its BeginDraw / EndDraw.
         unsafe {
+            use windows::Win32::Graphics::{
+                Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE, DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+            };
             if let Some(bg) = background
                 && let Ok(brush) = dc.CreateSolidColorBrush(&color_f(bg), None)
             {
@@ -1205,6 +1833,28 @@ pub(crate) fn draw(surface: &Surface, hwnd: HWND, dc: &ID2D1DeviceContext, scale
             let Ok(brush) = dc.CreateSolidColorBrush(&color_f(foreground), None) else {
                 continue;
             };
+            // The system's own caption glyphs (Windows 11's Segoe Fluent
+            // Icons, Windows 10's Segoe MDL2 Assets), as native title bars
+            // draw them; lines where neither font is installed.
+            if let Some(format) = icon_format() {
+                let ch = match code {
+                    HTMINBUTTON => '\u{E921}',
+                    HTMAXBUTTON if zoomed(hwnd) => '\u{E923}',
+                    HTMAXBUTTON => '\u{E922}',
+                    _ => '\u{E8BB}',
+                };
+                let mut buf = [0u16; 2];
+                let units = ch.encode_utf16(&mut buf);
+                dc.DrawText(
+                    units,
+                    &format,
+                    &rect_f(x, 0.0, BUTTON_WIDTH, caption),
+                    &brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                continue;
+            }
             let left = snap(x + (BUTTON_WIDTH - glyph) / 2.0);
             let top = snap((caption - glyph) / 2.0);
             let (right, bottom) = (left + glyph - px, top + glyph - px);
@@ -1248,6 +1898,67 @@ pub(crate) fn draw(surface: &Surface, hwnd: HWND, dc: &ID2D1DeviceContext, scale
     }
 }
 
+/// The caption glyphs' font, the one the system's title bars use, centered
+/// in a button; `None` when no such font is installed.
+fn icon_format() -> Option<IDWriteTextFormat> {
+    thread_local! {
+        static FORMAT: Option<IDWriteTextFormat> = icon_font().and_then(|family| {
+            let factory = crate::gfx::dwrite();
+            // SAFETY: COM calls with valid strings.
+            unsafe {
+                let format = factory
+                    .CreateTextFormat(
+                        &HSTRING::from(family),
+                        None,
+                        DWRITE_FONT_WEIGHT_NORMAL,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        // The size Windows' caption buttons use.
+                        10.0,
+                        &HSTRING::new(),
+                    )
+                    .ok()?;
+                let _ = format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let _ = format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                Some(format)
+            }
+        });
+    }
+    FORMAT.with(Clone::clone)
+}
+
+/// The installed icon font with the caption glyphs, newest first.
+fn icon_font() -> Option<&'static str> {
+    let factory = crate::gfx::dwrite();
+    let mut collection = None;
+    // SAFETY: COM calls with local out values.
+    unsafe {
+        factory
+            .GetSystemFontCollection(&mut collection, false)
+            .ok()?;
+        let collection = collection?;
+        ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
+            .into_iter()
+            .find(|name| {
+                let (mut index, mut exists) = (0u32, windows::core::BOOL(0));
+                collection
+                    .FindFamilyName(&HSTRING::from(*name), &mut index, &mut exists)
+                    .is_ok()
+                    && exists.as_bool()
+            })
+    }
+}
+
+use windows::{
+    Win32::Graphics::DirectWrite::{
+        DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+        DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteTextFormat,
+    },
+    core::HSTRING,
+};
+
 // --- Menus ------------------------------------------------------------------------------
 
 type SetPreferredAppMode = unsafe extern "system" fn(i32) -> i32;
@@ -1288,12 +1999,12 @@ fn theme_menus(dark: bool) {
     });
 }
 
-/// A menu item's text: `&` shows as itself, the shortcut after a tab.
-fn item_text(action: &MenuAction) -> Vec<u16> {
-    let label = if action.label.is_empty() {
-        action.role.map_or("", MenuRole::label)
-    } else {
-        &action.label
+/// A menu item's text: `&` shows as itself, the shortcut after a tab; a
+/// role's label from `labels` when it has none of its own.
+fn item_text(action: &MenuAction, labels: &MenuLabels) -> Vec<u16> {
+    let label = match action.role {
+        Some(role) if action.label.is_empty() => labels.label(role),
+        _ => &action.label,
     };
     let mut text = label.replace('&', "&&");
     if let Some(shortcut) = &action.shortcut {
@@ -1474,10 +2185,12 @@ fn load_icons(
 
 /// Appends `items` to `menu`, numbering their commands in `entries`
 /// (command id = index + 1) and adding the items with an icon to `icons`,
-/// but for this level's without `with_icons` (a menu bar's titles are text).
+/// but for this level's without `with_icons` (a menu bar's titles are text);
+/// roles with no label of their own read `labels`.
 fn append(
     menu: HMENU,
     items: &[MenuItem],
+    labels: &MenuLabels,
     entries: &mut Vec<Entry>,
     icons: &mut Vec<PendingIcon>,
     with_icons: bool,
@@ -1512,7 +2225,7 @@ fn append(
                     if action.checked == Some(true) {
                         flags |= MF_CHECKED;
                     }
-                    let text = item_text(action);
+                    let text = item_text(action, labels);
                     let _ = AppendMenuW(menu, flags, entries.len(), PCWSTR(text.as_ptr()));
                     if let Some(source) = action.icon.clone().filter(|_| with_icons) {
                         icons.push(PendingIcon {
@@ -1529,9 +2242,10 @@ fn append(
                     enabled,
                     items,
                     icon,
+                    ..
                 } => {
                     let Ok(sub) = CreatePopupMenu() else { continue };
-                    append(sub, items, entries, icons, true);
+                    append(sub, items, labels, entries, icons, true);
                     let mut flags = MF_POPUP | MF_STRING;
                     if !enabled {
                         flags |= MF_GRAYED;
@@ -1568,9 +2282,10 @@ fn show_menu_bar(surface: &Surface) {
     // destroyed once the window no longer shows it, then its bitmaps freed.
     unsafe {
         let bar = match &shown {
-            Some(items) => CreateMenu()
-                .ok()
-                .inspect(|bar| append(*bar, items, &mut entries, &mut icons, false)),
+            Some(items) => CreateMenu().ok().inspect(|bar| {
+                let labels = c.labels.borrow();
+                append(*bar, items, &labels, &mut entries, &mut icons, false);
+            }),
             None => None,
         };
         theme_menus(crate::system::dark(surface));
@@ -1610,7 +2325,11 @@ fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>, area: Option<&
     let hwnd = surface.hwnd();
     match role {
         // An embedding app's window is its own to close or keep.
-        Some(MenuRole::Quit) if top_level(hwnd) => quit(surface),
+        Some(MenuRole::Quit) if top_level(hwnd) => {
+            if !ask_quit(surface) {
+                quit(surface);
+            }
+        }
         Some(MenuRole::Quit | MenuRole::Close) => {
             // As the window menu's Close: the app hears a close press.
             if let Some(shell) = crate::window::shell(hwnd) {
@@ -1638,7 +2357,7 @@ fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>, area: Option<&
                 MenuRole::Paste => (0x56, false),
                 _ => (0x41, false),
             };
-            crate::input::menu_key(
+            crate::input::key(
                 surface,
                 KeyEvent {
                     vk,
@@ -1649,6 +2368,10 @@ fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>, area: Option<&
                         shift,
                         ..Default::default()
                     },
+                    scan: 0,
+                    extended: false,
+                    sys: false,
+                    translated: false,
                 },
             );
         }
@@ -1664,10 +2387,11 @@ fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>, area: Option<&
 }
 
 /// `WM_NSH_MENU`: shows the context menu asked for.
-pub(crate) fn show_popup(surface: &Rc<Surface>) {
+pub(crate) fn show_popup(surface: &Rc<Surface>, hwnd: HWND) {
     let Some(Popup {
         items,
         at,
+        end,
         actions,
         area,
         awaited,
@@ -1675,14 +2399,20 @@ pub(crate) fn show_popup(surface: &Rc<Surface>) {
     else {
         return;
     };
-    let hwnd = surface.hwnd();
     let mut entries = Vec::new();
     let mut icons = Vec::new();
     let bitmaps: Rc<RefCell<IconBitmaps>> = Rc::default();
     // SAFETY: a menu made, tracked and destroyed on this thread.
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
-        append(menu, &items, &mut entries, &mut icons, true);
+        append(
+            menu,
+            &items,
+            &surface.chrome.labels.borrow(),
+            &mut entries,
+            &mut icons,
+            true,
+        );
         // What loaded in time is in memory, on the items now; what did not
         // goes on them while the menu is open.
         let loads = load_icons(surface, icons, &bitmaps);
@@ -1690,7 +2420,7 @@ pub(crate) fn show_popup(surface: &Rc<Surface>) {
         let mut p = POINT::default();
         match at {
             Some((x, y)) => {
-                let scale = surface.scale();
+                let scale = scale_of(surface, hwnd);
                 p.x = (x * scale).round() as i32;
                 p.y = (y * scale).round() as i32;
                 let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut p);
@@ -1701,15 +2431,22 @@ pub(crate) fn show_popup(surface: &Rc<Surface>) {
         }
         theme_menus(crate::system::dark(surface));
         // The window must be in front for the menu to close when clicking
-        // elsewhere.
-        let _ = SetForegroundWindow(hwnd);
+        // elsewhere; a background app's stays behind (the test agent closes
+        // its menus itself).
+        if !crate::window::in_background() {
+            let _ = SetForegroundWindow(hwnd);
+        }
         #[cfg(feature = "dev")]
         if actions.is_empty() {
             *surface.chrome.tracked_popup.borrow_mut() = Some(items.clone());
         }
         let chosen = TrackPopupMenuEx(
             menu,
-            (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN).0,
+            (TPM_RETURNCMD
+                | TPM_RIGHTBUTTON
+                | if end { TPM_RIGHTALIGN } else { TPM_LEFTALIGN }
+                | TPM_TOPALIGN)
+                .0,
             p.x,
             p.y,
             hwnd,
@@ -2028,13 +2765,18 @@ mod tests {
         assert!(!delivers_click(&label, None));
 
         let hwnd = HWND::default();
-        // Pressing on a child inside the drag region holds the innermost view.
+        // Pressing on a child inside the drag region holds the innermost view
+        // (and the pointer, for leaves and rechecks: [`held`]).
+        assert!(!press_held(&surface, hwnd));
         assert!(hold_press(&surface, hwnd, (20, 15), (20.0, 15.0), LPARAM(0)).is_some());
+        assert!(press_held(&surface, hwnd));
         // A move within the drag rectangle stays held.
         assert!(press_moved(&surface, hwnd, pack(22, 16)));
         assert!(surface.input.window_press.borrow().is_some());
+        assert!(press_held(&surface, hwnd));
         assert!(press_released(&surface, hwnd, (22.0, 16.0)));
         assert!(surface.input.window_press.borrow().is_none());
+        assert!(!press_held(&surface, hwnd));
 
         // A view appearing over the press point before release suppresses the click.
         assert!(hold_press(&surface, hwnd, (20, 15), (20.0, 15.0), LPARAM(0)).is_some());
@@ -2061,12 +2803,45 @@ mod tests {
         assert!(hold_press(&surface, hwnd, (20, 15), (20.0, 15.0), LPARAM(0)).is_some());
         assert!(press_moved(&surface, hwnd, pack(30, 20)));
         assert!(surface.input.window_press.borrow().is_none());
+        assert!(!press_held(&surface, hwnd));
         assert!(!press_released(&surface, hwnd, (30.0, 20.0)));
 
         // Losing capture drops the held press.
         assert!(hold_press(&surface, hwnd, (20, 15), (20.0, 15.0), LPARAM(0)).is_some());
         press_cancelled(&surface, hwnd);
+        assert!(!press_held(&surface, hwnd));
         assert!(!press_released(&surface, hwnd, (20.0, 15.0)));
+
+        // So does losing the foreground, and an app restart.
+        assert!(hold_press(&surface, hwnd, (20, 15), (20.0, 15.0), LPARAM(0)).is_some());
+        press_lost(&surface, hwnd);
+        assert!(!press_held(&surface, hwnd));
+        assert!(hold_press(&surface, hwnd, (20, 15), (20.0, 15.0), LPARAM(0)).is_some());
+        reset_hover(&surface);
+        assert!(!press_held(&surface, hwnd));
+    }
+
+    /// A role-only item reads the translated label, else the English
+    /// default, with its shortcut after a tab.
+    #[test]
+    fn a_role_item_reads_the_translated_label() {
+        let action = MenuAction {
+            id: 1,
+            label: String::new(),
+            shortcut: MenuRole::Copy.shortcut(false),
+            enabled: true,
+            checked: None,
+            role: Some(MenuRole::Copy),
+            when: nsh_core::keymap::When::Always,
+            icon: None,
+            symbol: None,
+            destructive: false,
+        };
+        let text = |labels: &MenuLabels| String::from_utf16(&item_text(&action, labels)).unwrap();
+        assert_eq!(text(&MenuLabels::default()), "Copy\tCtrl+C\0");
+        let mut labels = MenuLabels::default();
+        labels.roles.insert(MenuRole::Copy, "コピー".into());
+        assert_eq!(text(&labels), "コピー\tCtrl+C\0");
     }
 
     fn selectable_text(surface: &Surface) -> (NshView, NshView) {
@@ -2091,6 +2866,16 @@ mod tests {
 
     fn selection(text: &NshView) -> Option<(u32, u32)> {
         text.state().text.as_ref().unwrap().area_range.get()
+    }
+
+    #[test]
+    fn quit_requests_ask_the_app_only_while_it_listens() {
+        let surface = Surface::new(Environment::default());
+        assert!(!ask_quit(&surface), "quits as before");
+        surface.chrome.asks_quit.set(true);
+        assert!(ask_quit(&surface), "the app decides");
+        surface.chrome.asks_quit.set(false);
+        assert!(!ask_quit(&surface), "quits again");
     }
 
     #[test]
@@ -2138,6 +2923,10 @@ mod tests {
                         shift: true,
                         ..Default::default()
                     },
+                    scan: 0,
+                    extended: false,
+                    sys: false,
+                    translated: false,
                 },
             );
             let popup = surface.chrome.app_popup(Arc::from([]), None);
@@ -2189,5 +2978,519 @@ mod tests {
         let popup = second.chrome.app_popup(Arc::from([]), None);
         choose(&second, 0, Some(MenuRole::SelectAll), popup.area.as_ref());
         assert_eq!(selection(&text), None);
+    }
+
+    const CLIENT: RECT = RECT {
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 600,
+    };
+
+    fn point(x: i32, y: i32) -> POINT {
+        POINT { x, y }
+    }
+
+    #[test]
+    fn drag_to_button_keeps_content_hover_but_borders_and_drawn_buttons_leave() {
+        // The client area, and the views answering as the frame.
+        assert!(content_hit(HTCLIENT, HTCLIENT, false, true));
+        for code in [HTCAPTION, HTCLOSE, HTMINBUTTON, HTMAXBUTTON] {
+            assert!(content_hit(code, code, false, true));
+        }
+        // A `windowResize` view answers a border's code: it is the app's.
+        for code in [HTLEFT, HTTOP, HTBOTTOMRIGHT, HTTOPLEFT] {
+            assert!(content_hit(code, code, false, true));
+        }
+        // The window's own border answers the same codes over an ordinary
+        // view or a drag region: it is not.
+        for view in [HTCLIENT, HTCAPTION] {
+            for code in [HTTOP, HTBOTTOMRIGHT, HTLEFT] {
+                assert!(!content_hit(code, view, false, true));
+            }
+        }
+        for code in [HTNOWHERE, HTTRANSPARENT as u32] {
+            assert!(!content_hit(code, HTCLIENT, false, true));
+        }
+        // A drawn caption button over a drag region.
+        assert!(!content_hit(HTCLOSE, HTCAPTION, true, true));
+        assert!(!content_hit(HTCLOSE, HTCLOSE, true, true));
+    }
+
+    #[test]
+    fn the_system_title_bar_is_not_the_apps_content() {
+        // The client area's edges: left and top are inside, right and
+        // bottom are the first pixels outside.
+        assert!(in_client(point(0, 0), CLIENT));
+        assert!(in_client(point(799, 599), CLIENT));
+        assert!(!in_client(point(800, 300), CLIENT));
+        assert!(!in_client(point(400, 600), CLIENT));
+        assert!(!in_client(point(-1, 300), CLIENT));
+        // A window that is gone has no client area.
+        assert!(!in_client(point(0, 0), RECT::default()));
+        // The system's caption and its buttons answer as a `windowDrag` or
+        // `windowControl` view does, above the client area; such a view is
+        // inside it, with the system title bar or without.
+        let caption = point(400, -12);
+        let drag_view = point(400, 12);
+        for code in [HTCAPTION, HTMINBUTTON, HTMAXBUTTON, HTCLOSE] {
+            assert!(!content_hit(code, code, false, in_client(caption, CLIENT)));
+            assert!(content_hit(code, code, false, in_client(drag_view, CLIENT)));
+        }
+    }
+
+    /// A window as [`track`] keeps it: its tracking, what its views heard
+    /// last, whether its recheck timer runs, whether the last message
+    /// looked where the pointer is, and whether the system holds the
+    /// pointer ([`held`]).
+    #[derive(Default)]
+    struct Window {
+        tracking: Tracking,
+        hovered: bool,
+        timer: bool,
+        looked: bool,
+        held: bool,
+    }
+
+    impl Window {
+        /// Over an ordinary view, its first move heard.
+        fn over_client() -> Self {
+            let mut window = Window::default();
+            let step = window.send(Mouse::ClientMove { content: true }, None);
+            assert_eq!(step.track, Some(Area::Client));
+            window
+        }
+
+        /// Handles `mouse` with the pointer at `content` now.
+        fn send(&mut self, mouse: Mouse, content: Option<u32>) -> Step {
+            let mut looked = false;
+            let step = self.tracking.step(mouse, self.held, || {
+                looked = true;
+                content
+            });
+            self.looked = looked;
+            match step.heard {
+                Heard::Here => self.hovered = true,
+                Heard::Left => self.hovered = false,
+                Heard::Nothing => {}
+            }
+            if matches!(mouse, Mouse::ClientLeave | Mouse::NcLeave) {
+                assert_eq!(step.track, None, "a leave never tracks again");
+            }
+            self.timer |= step.recheck_later;
+            step
+        }
+
+        /// The recheck timer fires, once.
+        fn recheck(&mut self, content: Option<u32>) -> Step {
+            assert!(std::mem::take(&mut self.timer), "no recheck was asked for");
+            self.send(Mouse::Recheck, content)
+        }
+
+        fn tracked(&self) -> bool {
+            self.tracking.client || self.tracking.nc.is_some()
+        }
+
+        /// Handles `first` and what follows from it as the system answers,
+        /// with the pointer resting at `content`: while `bounces` is above
+        /// zero, tracking armed is ended at once by a leave the system
+        /// posts (it has not caught up with the pointer, or holds it); a
+        /// recheck asked for runs. What the views heard, in order; panics
+        /// unless it comes to rest.
+        fn settle(&mut self, first: Mouse, content: Option<u32>, mut bounces: usize) -> Vec<Heard> {
+            let mut queue = std::collections::VecDeque::from([first]);
+            let mut heard = Vec::new();
+            for _ in 0..1000 {
+                let Some(mouse) = queue.pop_front() else {
+                    return heard;
+                };
+                let step = if matches!(mouse, Mouse::Recheck) {
+                    self.recheck(content)
+                } else {
+                    self.send(mouse, content)
+                };
+                if step.heard != Heard::Nothing {
+                    heard.push(step.heard);
+                }
+                if let Some(area) = step.track
+                    && bounces > 0
+                {
+                    bounces -= 1;
+                    queue.push_back(match area {
+                        Area::Client => Mouse::ClientLeave,
+                        Area::NonClient => Mouse::NcLeave,
+                    });
+                }
+                if step.recheck_later {
+                    queue.push_back(Mouse::Recheck);
+                }
+            }
+            panic!("the leaves and rechecks never came to rest");
+        }
+    }
+
+    const ON_VIEW: Mouse = Mouse::NcMove {
+        code: HTCAPTION,
+        on_view: true,
+    };
+
+    #[test]
+    fn a_drag_region_and_a_button_hand_the_hover_to_each_other() {
+        let mut window = Window::over_client();
+        // Onto the drag region: its move tracks the non-client area, then
+        // the client area's leave comes and finds the pointer there.
+        let step = window.send(ON_VIEW, None);
+        assert_eq!(
+            (step.track, step.heard),
+            (Some(Area::NonClient), Heard::Here)
+        );
+        // The move told the views: the leave adds nothing at that point.
+        let step = window.send(Mouse::ClientLeave, Some(HTCAPTION));
+        assert_eq!(step.heard, Heard::Nothing);
+        assert!(window.hovered && window.tracking.view_hover && !window.timer);
+        // Back to the button: its move tracks the client area, so the
+        // non-client leave after it has nothing to do.
+        window.send(Mouse::ClientMove { content: true }, None);
+        let step = window.send(Mouse::NcLeave, Some(HTCLIENT));
+        assert_eq!(step.heard, Heard::Nothing);
+        assert!(window.hovered && !window.looked && !window.timer);
+        // Out of the window from there.
+        window.send(Mouse::ClientLeave, None);
+        assert!(!window.hovered && !window.timer);
+    }
+
+    #[test]
+    fn a_hover_kept_by_a_client_leave_ends_with_the_non_client_leave() {
+        // Client, a side border (no view: the views hear nothing), back in
+        // the client before the queued client leave runs: the views stay
+        // hovered, and the border's tracking is left to end it.
+        let mut window = Window::over_client();
+        let border = Mouse::NcMove {
+            code: HTLEFT,
+            on_view: false,
+        };
+        assert_eq!(window.send(border, None).heard, Heard::Nothing);
+        window.send(Mouse::ClientLeave, Some(HTCLIENT));
+        assert!(window.hovered && !window.timer);
+        // Out of the window before a client move is retrieved: the border's
+        // leave says so.
+        window.send(Mouse::NcLeave, None);
+        assert!(window.looked && !window.hovered && !window.timer);
+    }
+
+    #[test]
+    fn a_recheck_waits_for_the_queued_moves() {
+        // As above, but the border's leave finds the pointer still in the
+        // client area, whose move is still to come: nothing is tracked, so
+        // a recheck is asked for.
+        let mut window = Window::over_client();
+        window.send(
+            Mouse::NcMove {
+                code: HTLEFT,
+                on_view: false,
+            },
+            None,
+        );
+        window.send(Mouse::ClientLeave, Some(HTCLIENT));
+        let step = window.send(Mouse::NcLeave, Some(HTCLIENT));
+        assert_eq!(step.heard, Heard::Nothing);
+        assert!(window.hovered && window.timer && !window.tracked());
+        // The move comes first and tracks the client area: the recheck
+        // has nothing to do and does not look.
+        window.send(Mouse::ClientMove { content: true }, None);
+        let step = window.recheck(None);
+        assert_eq!((step.track, step.heard), (None, Heard::Nothing));
+        assert!(!window.looked && window.hovered);
+    }
+
+    #[test]
+    fn the_last_leave_keeping_the_hover_untracked_is_rechecked() {
+        // Over a drag region, tracked there. Into the client area and back
+        // before either move is dispatched: the system took the client
+        // move (and posted the non-client leave), and neither move arms
+        // the destination's tracking.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        let step = window.send(Mouse::NcLeave, Some(HTCAPTION));
+        assert_eq!(step.heard, Heard::Nothing);
+        assert!(window.hovered && !window.tracked() && window.timer);
+        // The pointer leaves the window with no move dispatched: no leave
+        // can come, the recheck ends the hover.
+        let step = window.recheck(None);
+        assert_eq!((step.track, step.heard), (None, Heard::Left));
+        assert!(!window.hovered && !window.tracking.view_hover && !window.timer);
+
+        // Or it rests on the drag region: the recheck tracks it there, and
+        // leaving it later ends the hover.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.send(Mouse::NcLeave, Some(HTCAPTION));
+        let step = window.recheck(Some(HTCAPTION));
+        assert_eq!(
+            (step.track, step.heard),
+            (Some(Area::NonClient), Heard::Nothing)
+        );
+        assert!(window.tracking.view_hover);
+        window.send(Mouse::NcLeave, None);
+        assert!(!window.hovered && !window.timer);
+
+        // The same from the client area: a button, a drag region, the
+        // button again before the drag region's move is dispatched.
+        let mut window = Window::over_client();
+        window.send(Mouse::ClientLeave, Some(HTCLIENT));
+        assert!(window.hovered && window.timer);
+        let step = window.recheck(Some(HTCLIENT));
+        assert_eq!(
+            (step.track, step.heard),
+            (Some(Area::Client), Heard::Nothing)
+        );
+        assert!(!window.tracking.view_hover);
+        window.send(Mouse::ClientLeave, None);
+        assert!(!window.hovered && !window.timer);
+    }
+
+    #[test]
+    fn a_recheck_tracking_where_the_system_disagrees_waits_again() {
+        // The recheck's tracking posts a leave at once when the system has
+        // not caught up: that leave asks for another recheck, after the
+        // queued input, and never tracks again itself.
+        let mut window = Window::over_client();
+        window.send(Mouse::ClientLeave, Some(HTCLIENT));
+        window.recheck(Some(HTCLIENT));
+        window.send(Mouse::ClientLeave, Some(HTCLIENT));
+        assert!(window.hovered && window.timer);
+        window.recheck(None);
+        assert!(!window.hovered && !window.timer);
+    }
+
+    #[test]
+    fn a_move_to_another_non_client_code_tracks_again() {
+        // The bar, then a `windowControl` view in it: Windows may end the
+        // tracking when the code changes, so the move tracks again.
+        let mut window = Window::default();
+        assert_eq!(window.send(ON_VIEW, None).track, Some(Area::NonClient));
+        assert_eq!(window.send(ON_VIEW, None).track, None);
+        let close = Mouse::NcMove {
+            code: HTCLOSE,
+            on_view: true,
+        };
+        let step = window.send(close, None);
+        assert_eq!(
+            (step.track, step.heard),
+            (Some(Area::NonClient), Heard::Here)
+        );
+        assert_eq!(window.tracking.nc, Some(HTCLOSE));
+        // Off the views onto a border: the views hear a leave.
+        let border = Mouse::NcMove {
+            code: HTTOP,
+            on_view: false,
+        };
+        let step = window.send(border, None);
+        assert_eq!(
+            (step.track, step.heard),
+            (Some(Area::NonClient), Heard::Left)
+        );
+        assert!(!window.tracking.view_hover);
+    }
+
+    #[test]
+    fn a_client_move_off_the_client_area_is_a_leave() {
+        // A window that cannot be moved answers its system title bar as
+        // the client area: the views hear the pointer leave, and the client
+        // area is still tracked for the leave out of the window.
+        let mut window = Window::over_client();
+        let step = window.send(Mouse::ClientMove { content: false }, None);
+        assert_eq!((step.track, step.heard), (None, Heard::Left));
+        assert!(!window.hovered && window.tracking.client);
+        // Further moves there tell the views nothing.
+        let step = window.send(Mouse::ClientMove { content: false }, None);
+        assert_eq!(step.heard, Heard::Nothing);
+        window.send(Mouse::ClientMove { content: true }, None);
+        assert!(window.hovered);
+    }
+
+    #[test]
+    fn a_leave_only_follows_a_hover() {
+        // Off a view onto a border with nothing hovered: no leave.
+        let mut window = Window::default();
+        let border = Mouse::NcMove {
+            code: HTTOP,
+            on_view: false,
+        };
+        assert_eq!(window.send(border, None).heard, Heard::Nothing);
+        // A leave whose look finds the pointer gone, with nothing
+        // hovered: no leave either, and no recheck.
+        let step = window.send(Mouse::NcLeave, None);
+        assert_eq!((step.heard, step.recheck_later), (Heard::Nothing, false));
+    }
+
+    #[test]
+    fn a_leave_finding_the_pointer_on_the_hovered_area_is_quiet() {
+        // From a button onto the drag region around it: the drag region's
+        // move tells the views, the button's leave after it finds the
+        // pointer there and adds nothing.
+        let mut window = Window::over_client();
+        let heard = window.settle(ON_VIEW, Some(HTCAPTION), 0);
+        assert_eq!(heard, [Heard::Here]);
+        assert!(
+            window
+                .settle(Mouse::ClientLeave, Some(HTCAPTION), 0)
+                .is_empty()
+        );
+        // Back: the same the other way.
+        assert_eq!(
+            window.settle(Mouse::ClientMove { content: true }, Some(HTCLIENT), 0),
+            [Heard::Here]
+        );
+        assert!(window.settle(Mouse::NcLeave, Some(HTCLIENT), 0).is_empty());
+    }
+
+    #[test]
+    fn a_held_pointer_hears_nothing_until_it_is_let_go() {
+        // Pressed on a drag region, then moved: the system moves the
+        // window, holding the pointer, and posts a leave again at once for
+        // whatever is armed. The leaves arm nothing and ask for no recheck,
+        // so they come to rest at once, and the views hear no move (their
+        // buttons held for a press they never heard).
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.held = true;
+        for first in [Mouse::NcLeave, Mouse::ClientLeave, Mouse::Recheck] {
+            // A recheck asked for before the hold fires during it.
+            window.timer = matches!(first, Mouse::Recheck);
+            assert!(window.settle(first, Some(HTCAPTION), usize::MAX).is_empty());
+            assert!(!window.tracked() && !window.timer);
+        }
+        // Let go where it was: one recheck after the queued input, which
+        // tracks the drag region again and tells the views once where the
+        // pointer is. The system may end that tracking at once a few times
+        // until it has caught up: each such leave is quiet.
+        window.held = false;
+        let step = window.send(Mouse::HoldEnded, None);
+        assert!(step.recheck_later && step.track.is_none());
+        assert_eq!(
+            window.settle(Mouse::Recheck, Some(HTCAPTION), 5),
+            [Heard::Here]
+        );
+        assert!(window.tracked() && !window.timer && window.hovered);
+        assert!(!window.tracking.deferred);
+
+        // Let go off the window (a snap moved it away): one leave.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.held = true;
+        window.settle(Mouse::NcLeave, None, usize::MAX);
+        window.held = false;
+        window.send(Mouse::HoldEnded, None);
+        assert_eq!(window.settle(Mouse::Recheck, None, 0), [Heard::Left]);
+        assert!(!window.hovered && !window.timer);
+
+        // Let go over an ordinary view: one move there.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.held = true;
+        window.settle(Mouse::NcLeave, Some(HTCAPTION), usize::MAX);
+        window.held = false;
+        window.send(Mouse::HoldEnded, None);
+        assert_eq!(
+            window.settle(Mouse::Recheck, Some(HTCLIENT), 3),
+            [Heard::Here]
+        );
+        assert!(window.tracking.client && !window.tracking.view_hover);
+
+        // The system's move after the hold came first and tracks: it told
+        // the views, and the recheck has nothing to do.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.held = true;
+        window.settle(Mouse::NcLeave, Some(HTCAPTION), usize::MAX);
+        window.held = false;
+        window.send(Mouse::HoldEnded, None);
+        window.send(ON_VIEW, None);
+        let step = window.recheck(Some(HTCAPTION));
+        assert_eq!((step.track, step.heard), (None, Heard::Nothing));
+    }
+
+    #[test]
+    fn a_hold_ends_with_one_report_where_the_pointer_is() {
+        // A press held on a drag region slid onto another view of it (both
+        // `HTCAPTION`), with no leave and no move dispatched: the views
+        // still hover the first. The hold's end tells them, once, though
+        // the pointer is in the same area.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.send(Mouse::HoldEnded, None);
+        let step = window.recheck(Some(HTCAPTION));
+        assert_eq!((step.heard, step.after_hold), (Heard::Here, true));
+        assert_eq!(step.track, None, "the drag region is tracked already");
+
+        // A snap put a `windowControl` view under the pointer: tracked at
+        // its code, and told once.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.held = true;
+        window.settle(Mouse::NcLeave, Some(HTCAPTION), usize::MAX);
+        window.held = false;
+        window.send(Mouse::HoldEnded, None);
+        assert_eq!(
+            window.settle(Mouse::Recheck, Some(HTMAXBUTTON), 2),
+            [Heard::Here]
+        );
+        assert_eq!(window.tracking.nc, Some(HTMAXBUTTON));
+
+        // Ended twice (the move loop's end, then the press's): one report,
+        // and the flag is consumed by it.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.send(Mouse::HoldEnded, None);
+        window.send(Mouse::HoldEnded, None);
+        assert_eq!(
+            window.settle(Mouse::Recheck, Some(HTCAPTION), 0),
+            [Heard::Here]
+        );
+        assert!(!window.tracking.deferred);
+        // A later leave keeping the hover untracked is quiet again.
+        assert!(window.settle(Mouse::NcLeave, Some(HTCAPTION), 3).is_empty());
+
+        // A recheck while the system holds the pointer again keeps the
+        // report for that hold's end.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.send(Mouse::HoldEnded, None);
+        window.held = true;
+        assert_eq!(window.recheck(Some(HTCAPTION)).heard, Heard::Nothing);
+        assert!(window.tracking.deferred);
+    }
+
+    #[test]
+    fn a_held_press_is_let_go_when_its_button_is_up() {
+        // The move or size loop holds the pointer whatever the buttons say.
+        assert_eq!(hold(true, false, false, false), Hold::Held);
+        assert_eq!(hold(true, true, false, false), Hold::Held);
+        // No press held: nothing holds it.
+        assert_eq!(hold(false, false, true, true), Hold::Free);
+        // A press held with its button down, or with its release still in
+        // the queue (the release ends it, with its click).
+        assert_eq!(hold(false, true, true, false), Hold::Held);
+        assert_eq!(hold(false, true, false, true), Hold::Held);
+        // Its button went up and no release is coming: the window lost the
+        // foreground while pressed.
+        assert_eq!(hold(false, true, false, false), Hold::Stale);
+    }
+
+    #[test]
+    fn a_restarted_app_hears_the_hover_again() {
+        // The app restarts with new views while the pointer rests on the
+        // drag region: the next look tells them, and nothing is left to
+        // report for an old hold.
+        let mut window = Window::default();
+        window.send(ON_VIEW, None);
+        window.send(Mouse::HoldEnded, None);
+        window.tracking.forget();
+        window.hovered = false;
+        assert!(!window.tracking.deferred);
+        let step = window.send(Mouse::ClientLeave, Some(HTCAPTION));
+        assert_eq!(step.heard, Heard::Here);
+        assert!(!step.after_hold);
     }
 }

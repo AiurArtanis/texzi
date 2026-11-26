@@ -243,12 +243,6 @@ pub(crate) fn resolve(name: &str) -> (&'static LanguageConfig, Syntax) {
     })
 }
 
-/// The configured language for a path or alias, when it is more specific than plain text.
-pub fn known_language(name: &str) -> Option<&'static str> {
-    let (language, _) = resolve(name);
-    (!std::ptr::eq(language, &PLAIN_TEXT)).then_some(language.name)
-}
-
 /// What an engine registered.
 #[derive(Clone, Default)]
 struct Languages {

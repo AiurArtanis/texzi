@@ -22,7 +22,8 @@ use serde_json::{Value, json};
 use super::node_view::NodeView;
 use crate::rich_editor::{
     commands::{BoxCommand, helpers, tiptap::FOCUS_META},
-    model::Attrs,
+    formats::{DomParser, slice_from_text},
+    model::{Attrs, Slice},
     state::{EditorState, StateError, Transaction, TransactionOrigin},
     transform::Mapping,
 };
@@ -98,13 +99,18 @@ pub trait ViewGeometry: Send + Sync {
     fn coords_at_pos(&self, pos: usize) -> Option<Bounds<Points>>;
     /// The document position at `point`.
     fn pos_at_coords(&self, point: Point<Points>) -> Option<usize>;
-    /// The box around the selection.
+    /// The box around the selection (a node selection's: its node's).
     fn selection_rect(&self) -> Option<Bounds<Points>>;
     /// The box of the block starting at `pos`, as it is laid out.
     fn node_rect(&self, pos: usize) -> Option<Bounds<Points>> {
         let _ = pos;
         None
     }
+    /// The visible box of the independently scrolling grid at this document position.
+    fn table_viewport(&self, _pos: usize) -> Option<Bounds<Points>> {
+        None
+    }
+
     /// A content point less the same point in the root view, now (its
     /// scrolling included), once the pointer has been over the content.
     fn page_shift(&self) -> Option<Point<Points>> {
@@ -277,7 +283,6 @@ struct Inner {
     state: EditorState,
     node_views: NodeViews,
     dispatch: Option<DispatchTransaction>,
-    composition_listener: Option<Arc<dyn Fn(bool) + Send + Sync>>,
     subscribers: Vec<(SubscriptionId, Subscriber)>,
     views: Vec<(SubscriptionId, ViewHook)>,
     listeners: Vec<(SubscriptionId, SessionEventKind, EventListener)>,
@@ -321,7 +326,6 @@ impl EditorSession {
                 state,
                 node_views,
                 dispatch: None,
-                composition_listener: None,
                 subscribers: Vec::new(),
                 views: Vec::new(),
                 listeners: Vec::new(),
@@ -427,6 +431,56 @@ impl EditorSession {
             }
         }
         applied
+    }
+
+    /// Pastes `html` at the selection as a paste of it would go in
+    /// (ProseMirror's `pasteHTML`): through the plugins'
+    /// `transform_pasted_html` and the clipboard parser (the schema's parse
+    /// rules, fitted to the selection: an `isolating` node, such as a
+    /// figure holding its caption, stays whole), then `transform_pasted`
+    /// and `handle_paste`, else a replace of the selection (origin
+    /// `Paste`). Whether it pasted: HTML that parses to nothing, or HTML
+    /// into code, pastes nothing. A plugin's `handle_paste` taking it
+    /// counts as pasted; a transaction the state refuses is logged, and
+    /// does not change the answer.
+    ///
+    /// The app's JS paste hooks are not asked: they answer a JS turn later,
+    /// and this is what one calls to go on with a paste it handled
+    /// (`handlePaste` with HTML it cleaned up), which would ask it again.
+    pub fn paste_html(&self, html: &str) -> bool {
+        self.paste("", html, false)
+    }
+
+    /// Pastes `text` at the selection as a plain-text paste of it would go
+    /// in (ProseMirror's `pasteText`): through the plugins'
+    /// `transform_pasted_text` and `clipboard_text_parser` (else a
+    /// paragraph per line), then as [`EditorSession::paste_html`].
+    pub fn paste_text(&self, text: &str) -> bool {
+        self.paste(text, "", true)
+    }
+
+    fn paste(&self, text: &str, html: &str, plain: bool) -> bool {
+        let state = self.state();
+        let Some(mut slice) = parse_paste(&state, text, html, plain) else {
+            return false;
+        };
+        for plugin in state.plugins() {
+            slice = plugin.transform_pasted(&state, slice);
+        }
+        let mut trs = Vec::new();
+        let handled = state
+            .plugins()
+            .iter()
+            .any(|p| p.handle_paste(&state, &slice, &mut |tr| trs.push(tr)));
+        if !handled {
+            trs.push(paste_transaction(&state, slice));
+        }
+        for tr in trs {
+            if let Err(e) = self.dispatch(tr) {
+                log::warn!("RichEditor: a paste's transaction was refused: {e}");
+            }
+        }
+        true
     }
 
     /// Whether `command` applies to the current state (it dispatches
@@ -548,17 +602,28 @@ impl EditorSession {
         self.geometry()?.pos_at_coords(point)
     }
 
-    /// The box around the selection in the view showing the session.
+    /// The box around the selection in the view showing the session: a
+    /// node selection's is its node's box, as Tiptap's bubble menu places
+    /// itself by the node's DOM.
     pub fn selection_rect(&self) -> Option<Bounds<Points>> {
         self.geometry()?.selection_rect()
     }
 
+    /// Measures the view's placement again: an enclosing scroll view or
+    /// layout can move it with no layout of its own. Page queries ask for
+    /// it, so their answers follow such a move once measured (the next
+    /// query, a frame later).
+    pub(crate) fn refresh_geometry(&self) {
+        self.request(ViewRequest::Place);
+    }
+
     /// The caret's box at `pos` in the root view (page coordinates, as
     /// ProseMirror's `coordsAtPos` gives the window's). The view measures
-    /// where it is as it lays out and when asked here, so the answer
+    /// where it is as it lays out and after each page query, so the answer
     /// follows a move of what is around it a frame later.
     pub fn page_coords_at_pos(&self, pos: usize) -> Option<Bounds<Points>> {
         let geometry = self.geometry()?;
+        self.refresh_geometry();
         let shift = geometry.page_shift()?;
         let b = geometry.coords_at_pos(pos)?;
         Some(Bounds::new(
@@ -567,12 +632,26 @@ impl EditorSession {
         ))
     }
 
+    /// The box of the block starting at `pos`, in points of the content box
+    /// of the view showing the session (where `contentLayer` places its
+    /// children), or `None` when no view does.
+    pub fn node_rect(&self, pos: usize) -> Option<Bounds<Points>> {
+        self.geometry()?.node_rect(pos)
+    }
+
+    /// The visible part of the table starting at `pos`, in content coordinates.
+    /// Content overlays can use its edges to avoid drawing over neighboring paragraphs.
+    pub fn table_viewport(&self, pos: usize) -> Option<Bounds<Points>> {
+        self.geometry()?.table_viewport(pos)
+    }
+
     /// The box of the block starting at `pos` in the root view (page
     /// coordinates, as ProseMirror's `nodeDOM(pos).getBoundingClientRect()`
     /// gives the window's): where to place what goes around a table or an
     /// image.
     pub fn page_node_rect(&self, pos: usize) -> Option<Bounds<Points>> {
         let geometry = self.geometry()?;
+        self.refresh_geometry();
         let shift = geometry.page_shift()?;
         let b = geometry.node_rect(pos)?;
         Some(Bounds::new(
@@ -585,6 +664,7 @@ impl EditorSession {
     /// coordinates, as ProseMirror's `posAtCoords` takes the window's).
     pub fn pos_at_page_coords(&self, page: Point<Points>) -> Option<usize> {
         let geometry = self.geometry()?;
+        self.refresh_geometry();
         let shift = geometry.page_shift()?;
         geometry.pos_at_coords(Point::new(page.x + shift.x, page.y + shift.y))
     }
@@ -638,18 +718,7 @@ impl EditorSession {
     }
 
     pub(crate) fn set_composing(&self, composing: bool) {
-        let old = self.0.composing.swap(composing, Ordering::Relaxed);
-        if old != composing {
-            let listener = self.lock().composition_listener.clone();
-            if let Some(listener) = listener {
-                listener(composing);
-            }
-        }
-    }
-
-    /// Transient composition state for an external owner/mode guard. No text.
-    pub fn set_composition_listener(&self, listener: Option<Arc<dyn Fn(bool) + Send + Sync>>) {
-        self.lock().composition_listener = listener;
+        self.0.composing.store(composing, Ordering::Relaxed);
     }
 
     /// Registers a view's handler of requests.
@@ -734,6 +803,56 @@ impl JsValue for EditorSession {
             None => Ok(JsOwned::new(host, host.null())),
         }
     }
+}
+
+/// What a paste of `text` and `html` is in `state`: HTML through the
+/// plugins' `transform_pasted_html` and the clipboard parser (the schema's
+/// parse rules), else text through `transform_pasted_text` and
+/// `clipboard_text_parser` (`plain`: a paste as plain text). Into code,
+/// HTML is skipped; HTML that parses to nothing falls back to the text.
+pub(crate) fn parse_paste(
+    state: &EditorState,
+    text: &str,
+    html: &str,
+    plain: bool,
+) -> Option<Slice> {
+    let from = state.selection().resolved_from().clone();
+    let in_code = from.parent().ty().spec().code;
+    if !html.is_empty() && !in_code {
+        let mut html = html.to_owned();
+        for plugin in state.plugins() {
+            html = plugin.transform_pasted_html(state, html);
+        }
+        let parser = state
+            .some_prop(|p| p.clipboard_parser(state))
+            .unwrap_or_else(|| DomParser::from_schema(state.schema()));
+        let slice = parser.parse_from_clipboard(&html, &from);
+        if slice.content.size() > 0 {
+            return Some(slice);
+        }
+    }
+    if text.is_empty() {
+        return None;
+    }
+    let mut text = text.to_owned();
+    for plugin in state.plugins() {
+        text = plugin.transform_pasted_text(state, text, plain);
+    }
+    Some(
+        state
+            .some_prop(|p| p.clipboard_text_parser(state, &text, &from, plain))
+            .unwrap_or_else(|| slice_from_text(state.schema(), &text, &from)),
+    )
+}
+
+/// The transaction that pastes `slice` over the selection of `state`.
+pub(crate) fn paste_transaction(state: &EditorState, slice: Slice) -> Transaction {
+    let mut tr = state.tr();
+    tr.replace_selection(slice);
+    tr.set_origin(TransactionOrigin::Paste);
+    tr.set_meta("paste", Value::Bool(true));
+    tr.scroll_into_view();
+    tr
 }
 
 #[cfg(test)]

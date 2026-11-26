@@ -508,7 +508,6 @@ fn fold_hit(
                 .top(move || Length::from(lh() * slot.get().1 as f32))
                 .w(move || Length::from(fold_width()))
                 .h(move || Length::from(lh2()))
-                .cursor_pointer()
                 .on_mouse_enter(move |_: &MouseEvent| pointer.hover.set(Some(row())))
                 .on_mouse_leave(move |_: &MouseEvent| {
                     if pointer.hover.get_untracked() == Some(row()) {
@@ -1461,14 +1460,6 @@ fn composition(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoEl
             let head = st.primary_head();
             (text_, st.row_after(head), st.caret_point(head))
         };
-        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
-            log::info!(
-                "TX04_IME_RENDER preedit_utf16={} x={} y={}",
-                text_.encode_utf16().count(),
-                at.x.0,
-                at.y.0
-            );
-        }
         // The row it covers is the active line's.
         let active = props.active_line.get();
         Some(
@@ -1532,15 +1523,14 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         ed.clone(),
     );
     let value = ed.sink_value;
-    let width_ed = ed.clone();
+    let content = ed.clone();
+    let moved = ed.clone();
     input()
         .element_ref(&ed.input)
         .absolute()
         .left(move || Length::from(at.get().x))
         .top(move || Length::from(at.get().y))
-        // A one-pixel multiline RichEdit wraps each preedit character and moves
-        // its native candidate caret down. Keep the hidden sink on this row.
-        .w(move || Length::from((width_ed.viewport.get().width - at.get().x).max(px(1.0))))
+        .w(px(1.0))
         .h(move || Length::from(lh()))
         // Presses at the caret are the rows' (a click there places it).
         .pointer_events(PointerEvents::None)
@@ -1559,12 +1549,27 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         })
         .caret(false)
         .multiline(true)
+        // The app's scroll bars belong to the text area, not the caret sink.
+        .scrollbar(false)
+        .auto_focus(props.auto_focus)
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)
         .paste_behavior(PasteBehavior::Report)
         .value(move || value.get())
+        // The native field is only a keyboard sink; its semantic value is
+        // the document, including off-screen rows and external updates.
+        .accessibility_value(move || {
+            content.text_rev.get();
+            Some(nsh_core::AccessibilityValue {
+                text: Some(content.text().into()),
+                ..Default::default()
+            })
+        })
         .label(move || props.accessibility_label.get().unwrap_or_default())
         .on_change(move |text: &str| change.sink_changed(text))
+        .on_selection_change(move |selection: &nsh_core::element::Selection| {
+            moved.sink_selection(selection)
+        })
         .on_composition_change(move |c: &Composition| composition.composition(c.composing, &c.text))
         .on_key_press(move |k: &str| key.sink_key(k))
         .on_paste(move |p: &PasteEvent| paste.paste(&p.text))

@@ -651,7 +651,7 @@ impl Editing<'_> {
         }
         let before = self.selections.clone();
         let changes = self.buffer.edit(edits, &before, &after, kind);
-        *self.selections = self.buffer.take_external_selection().unwrap_or(after);
+        *self.selections = after;
         if !changes.is_empty() {
             Outcome::Edited(changes)
         } else if *self.selections != before {
