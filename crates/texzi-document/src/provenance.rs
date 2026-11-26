@@ -161,7 +161,13 @@ impl Tree {
             }
         }
     }
-    pub(crate) fn imported(source: Arc<str>) -> Self {
+    pub(crate) fn imported(
+        source: Arc<str>,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Self, crate::Error> {
+        if cancelled() {
+            return Err(crate::Error::Cancelled);
+        }
         let mut tree = Self::default();
         let mut start = 0;
         let mut len = 0;
@@ -178,6 +184,9 @@ impl Tree {
                 len += c.len_utf8();
             }
             if end - start >= 1024 || end == source.len() {
+                if cancelled() {
+                    return Err(crate::Error::Cancelled);
+                }
                 tree = Self::join(
                     tree,
                     Self::leaf(Piece {
@@ -193,7 +202,7 @@ impl Tree {
                 len = 0;
             }
         }
-        tree
+        Ok(tree)
     }
     pub(crate) fn replace(&self, range: Range<usize>, inserted: usize) -> Self {
         let (left, tail) = self.split(range.start);

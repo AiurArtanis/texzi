@@ -502,37 +502,60 @@ impl Store {
         profile: Profile,
         backed_by_disk: bool,
     ) -> Result<Snapshot, Error> {
-        if profile.version != 1 {
+        if profile.version != 1 || !profile.valid() {
             return Err(Error::InvalidProfile);
         }
-        self.open_import(raw, profile, backed_by_disk, false)
+        self.open_import(
+            Body::import_utf8(raw, profile),
+            raw.is_empty(),
+            backed_by_disk,
+        )
     }
     pub fn open_decoded(
         &mut self,
         text: &str,
         format: crate::files::Format,
     ) -> Result<Snapshot, Error> {
-        self.open_import(
-            text,
-            Profile {
-                version: 2,
-                file_format: Some(format),
-                ..Profile::default()
-            },
-            false,
-            true,
-        )
+        self.open_decoded_cancellable(Arc::from(text), format, || false)
     }
-    fn open_import(
+    pub fn open_decoded_cancellable(
         &mut self,
-        raw: &str,
-        profile: Profile,
-        backed_by_disk: bool,
-        decoded: bool,
+        text: Arc<str>,
+        format: crate::files::Format,
+        cancelled: impl Fn() -> bool,
     ) -> Result<Snapshot, Error> {
+        self.open_decoded_with_line_limit(text, format, usize::MAX, cancelled)
+    }
+    /// Enforce the full editor's logical line budget while normalizing the decoded input.
+    /// The empty document and the empty line following a final newline each count as a line.
+    pub fn open_decoded_with_line_limit(
+        &mut self,
+        text: Arc<str>,
+        format: crate::files::Format,
+        max_lines: usize,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Snapshot, Error> {
+        let profile = Profile {
+            version: 2,
+            file_format: Some(format),
+            ..Profile::default()
+        };
         if !profile.valid() {
             return Err(Error::InvalidProfile);
         }
+        let empty = text.is_empty();
+        let body = Body::import_cancellable(text, profile, max_lines, &cancelled)?;
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        self.open_import(body, empty, false)
+    }
+    fn open_import(
+        &mut self,
+        body: Body,
+        empty: bool,
+        backed_by_disk: bool,
+    ) -> Result<Snapshot, Error> {
         let id = NEXT_DOC
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| x.checked_add(1))
             .map_err(|_| Error::CounterExhausted)?;
@@ -541,11 +564,7 @@ impl Store {
             doc: DocId(id),
             revision: Revision(0),
             token,
-            body: Arc::new(if decoded {
-                Body::import_decoded(raw, profile)
-            } else {
-                Body::import_utf8(raw, profile)
-            }),
+            body: Arc::new(body),
         };
         self.docs.insert(
             current.doc,
@@ -556,7 +575,7 @@ impl Store {
                 closed_views: std::collections::BTreeMap::new(),
                 baseline_kind: if backed_by_disk {
                     BaselineKind::ExternalLoadClaim
-                } else if raw.is_empty() {
+                } else if empty {
                     BaselineKind::InitialEmpty
                 } else {
                     BaselineKind::MemoryImport

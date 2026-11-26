@@ -20,6 +20,103 @@ fn strict_unicode_bom_eol_and_byte_exact_baseline() {
         }
     }
 }
+
+#[test]
+fn cancellable_import_preserves_codec_and_crlf_at_chunk_boundaries() {
+    for (encoding, prefix, middle) in [
+        (Encoding::Utf8, 65_535, "😀"),
+        (Encoding::Utf16Le, 32_767, "😀"),
+        (Encoding::Utf16Be, 32_767, "😀"),
+        (Encoding::GbkWebEncodingRs0844, 65_535, "汉"),
+        (Encoding::Gb18030WebEncodingRs0844, 65_535, "😀"),
+    ] {
+        let format = format(encoding, false);
+        let input = "a".repeat(prefix) + middle + "\r\n后\r";
+        let bytes = encode(&input, format).unwrap();
+        let loaded =
+            LoadedBytes::decode_cancellable(bytes.into(), Some(encoding), || false).unwrap();
+        assert_eq!(loaded.format(), format);
+        assert_eq!(loaded.text(), input);
+    }
+    let text: Arc<str> = ("a".repeat(65_535) + "\r\n甲😀\u{2028}乙\r尾\n").into();
+    let mut store = Store::new(HistoryBudget::default());
+    let doc = store
+        .open_decoded_cancellable(text.clone(), format(Encoding::Utf8, false), || false)
+        .unwrap();
+    assert_eq!(doc.body.eols(), [Eol::CrLf, Eol::Cr, Eol::Lf]);
+    assert_eq!(doc.body.to_utf8(), text.as_bytes());
+    for (_, span) in doc.body.origins() {
+        assert!(Arc::ptr_eq(&span.unwrap().source, &text));
+    }
+}
+
+#[test]
+fn cancellation_stops_decode_and_model_build_before_registration() {
+    use std::cell::Cell;
+    let format = format(Encoding::Utf8, false);
+    let text: Arc<str> = "source line\r\n".repeat(32_000).into();
+    let reads = Cell::new(0);
+    let loaded =
+        LoadedBytes::decode_cancellable(Arc::from(text.as_bytes()), Some(format.encoding), || {
+            reads.set(reads.get() + 1);
+            reads.get() == 3
+        });
+    assert!(matches!(loaded, Err(FileError::Document(Error::Cancelled))));
+    // Interrupt normalization and then provenance construction on separate attempts.
+    let mut store = Store::new(HistoryBudget::default());
+    for at in [3, 20] {
+        let checks = Cell::new(0);
+        let result = store.open_decoded_cancellable(text.clone(), format, || {
+            checks.set(checks.get() + 1);
+            checks.get() == at
+        });
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert_eq!(checks.get(), at);
+        assert_eq!(Arc::strong_count(&text), 1);
+    }
+    let mut fresh = Store::new(HistoryBudget::default());
+    assert_eq!(
+        store.open_decoded("small", format).unwrap().token,
+        fresh.open_decoded("small", format).unwrap().token
+    );
+}
+#[test]
+fn logical_line_limit_counts_normalized_breaks_and_stops_before_registration() {
+    use std::cell::Cell;
+    let format = format(Encoding::Utf8, false);
+    let text: Arc<str> = format!("{}\r\n甲\r乙\n丙\u{2028}尾\n", "x".repeat(65_535)).into();
+    let mut reference = Store::new(HistoryBudget::default());
+    let expected = reference.open_decoded(&text, format).unwrap();
+    let lines = expected.body.source().len_lines();
+    let mut store = Store::new(HistoryBudget::default());
+    assert!(matches!(
+        store.open_decoded_with_line_limit(text.clone(), format, lines - 1, || false),
+        Err(Error::LineLimit)
+    ));
+    let dense: Arc<str> = "a\r\n".repeat(50_000).into();
+    let checks = Cell::new(0);
+    assert!(matches!(
+        store.open_decoded_with_line_limit(dense.clone(), format, 100, || {
+            checks.set(checks.get() + 1);
+            false
+        }),
+        Err(Error::LineLimit)
+    ));
+    assert_eq!(checks.get(), 1);
+    assert_eq!(Arc::strong_count(&dense), 1);
+    let accepted = store
+        .open_decoded_with_line_limit(text, format, lines, || false)
+        .unwrap();
+    assert_eq!(accepted.token, expected.token);
+    assert_eq!(accepted.body.eols(), expected.body.eols());
+    assert_eq!(accepted.body.source(), expected.body.source());
+    assert!(
+        store
+            .open_decoded_with_line_limit(Arc::from(""), format, 1, || false)
+            .is_ok()
+    );
+}
+
 #[test]
 fn malformed_input_and_bom_conflicts_reject_without_replacement() {
     assert_eq!(

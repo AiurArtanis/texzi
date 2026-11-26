@@ -7,6 +7,7 @@ use texzi_document as doc;
 mod commands;
 mod files;
 pub(crate) use files::SaveError;
+pub(crate) use files::{PrepareError, PreparedFile, line_limit_message};
 
 pub struct Owner {
     store: RefCell<doc::Store>,
