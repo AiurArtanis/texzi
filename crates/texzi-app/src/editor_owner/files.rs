@@ -1,7 +1,6 @@
 use super::*;
 use doc::files::{Encoding, FileError, Format, LoadedBytes, encode, save};
 use std::{
-    io::Read,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -76,7 +75,18 @@ pub(crate) struct PreparedFile {
 }
 
 impl PreparedFile {
+    #[cfg(test)]
     pub(crate) fn read(path: &Path, limit: u64, cancel: &AtomicBool) -> Result<Self, String> {
+        let source = doc::files::paged::FileSource::open(path).map_err(|e| e.to_string())?;
+        Self::from_source(&source, limit, cancel, None)
+    }
+
+    pub(crate) fn from_source(
+        source: &doc::files::paged::FileSource,
+        limit: u64,
+        cancel: &AtomicBool,
+        encoding: Option<Encoding>,
+    ) -> Result<Self, String> {
         let stopped = || {
             if cancel.load(Ordering::Relaxed) {
                 Err("已取消加载".to_owned())
@@ -85,34 +95,12 @@ impl PreparedFile {
             }
         };
         stopped()?;
-        let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let info = file.metadata().map_err(|e| e.to_string())?;
-        if !info.is_file() || info.len() > limit {
-            return Err("文件大小超出此次完整编辑预算，请重新打开并选择分页查看".into());
-        }
-        let mut raw = Vec::new();
-        raw.try_reserve_exact(usize::try_from(info.len()).map_err(|e| e.to_string())?)
-            .map_err(|e| format!("可用内存不足：{e}"))?;
-        let mut chunk = [0u8; 64 * 1024];
-        loop {
-            stopped()?;
-            let count = file.read(&mut chunk).map_err(|e| e.to_string())?;
-            if count == 0 {
-                break;
-            }
-            if raw.len() as u64 + count as u64 > info.len() {
-                return Err("文件在读取期间变大，请重新打开".into());
-            }
-            raw.extend_from_slice(&chunk[..count]);
-        }
-        if raw.len() as u64 != info.len()
-            || file.metadata().and_then(|m| m.modified()).ok() != info.modified().ok()
-        {
-            return Err("文件已在读取期间更改，请重新打开".into());
-        }
+        let raw = source
+            .complete_bytes(limit, cancel)
+            .map_err(|e| e.to_string())?;
         stopped()?;
         let bytes: Arc<[u8]> = raw.into();
-        let loaded = match LoadedBytes::decode(bytes.clone(), None) {
+        let loaded = match LoadedBytes::decode(bytes.clone(), encoding) {
             Err(FileError::EncodingChoiceRequired) => {
                 LoadedBytes::decode(bytes.clone(), Some(Encoding::GbkWebEncodingRs0844)).or_else(
                     |_| {

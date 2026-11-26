@@ -2,7 +2,7 @@ use super::*;
 use std::collections::VecDeque;
 use texzi_document::files::{
     Encoding,
-    paged::{Page, PagedFile, Position},
+    paged::{Calibration, FileSource, Page, PagedFile, Position},
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -32,6 +32,9 @@ pub(super) fn requires_editable(id: &str) -> bool {
 }
 
 pub(super) struct LargeFile {
+    source: Arc<FileSource>,
+    choice: Cell<Option<Encoding>>,
+    pending_seek: Signal<Option<Position>>,
     path: PathBuf,
     len: u64,
     reader: RefCell<Option<Arc<PagedFile>>>,
@@ -44,8 +47,12 @@ pub(super) struct LargeFile {
 }
 
 impl LargeFile {
-    fn new(path: PathBuf, len: u64) -> Rc<Self> {
+    fn new(path: PathBuf, source: Arc<FileSource>) -> Rc<Self> {
+        let len = source.len;
         Rc::new(Self {
+            source,
+            choice: Cell::new(None),
+            pending_seek: signal(None),
             path,
             len,
             reader: Default::default(),
@@ -88,13 +95,75 @@ impl LargeFile {
         self.reading.set(false);
     }
 
+    fn calibrate(self: &Rc<Self>, owner: Owner) {
+        let Some(pos) = self.pending_seek.get() else {
+            return;
+        };
+        let Some(reader) = self.reader.borrow().clone() else {
+            return;
+        };
+        if self.reading.get() {
+            return;
+        }
+        let view = self.clone();
+        let generation = self.generation.get();
+        self.reading.set(true);
+        owner.run(|| {
+            spawn(async move {
+                let mut from = reader.scan_start(pos);
+                loop {
+                    let reader = reader.clone();
+                    let step = blocking(move || reader.calibrate_step(pos, from)).await;
+                    if view.generation.get() != generation {
+                        return;
+                    }
+                    match step {
+                        Ok(Ok(Calibration::More(at))) => {
+                            from = at;
+                            view.message
+                                .set(format!("正在校准 GB18030 字符边界 · 已到字节 {at}"));
+                            // Yield between bounded reads, with a visible and cancellable operation.
+                            let _ = next_frame().await;
+                            if view.generation.get() != generation {
+                                return;
+                            }
+                        }
+                        Ok(Ok(Calibration::Ready(page))) => {
+                            view.message.set(format!(
+                                "GB18030 · 字节 {}–{} / {}",
+                                page.start, page.end, view.len
+                            ));
+                            view.page.set(Some(Rc::new(page)));
+                            view.pending_seek.set(None);
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            view.message.set(format!("校准失败：{e}"));
+                            break;
+                        }
+                        Err(e) => {
+                            view.message.set(format!("校准未完成：{e}"));
+                            break;
+                        }
+                    }
+                }
+                view.reading.set(false);
+            })
+        });
+    }
+
     fn load(self: &Rc<Self>, owner: Owner, pos: Position, encoding: Option<Encoding>) {
         if self.reading.get() {
             return;
         }
         let current = self.reader.borrow().clone();
-        let path = self.path.clone();
-        let expected = self.len;
+        let source = self.source.clone();
+        self.pending_seek.set(None);
+        if encoding.is_some() {
+            self.cancel_import();
+            self.choice.set(encoding);
+        }
+        let choice = self.choice.get();
         let generation = self.generation.get();
         self.reading.set(true);
         self.message.set("正在读取请求的页面…".into());
@@ -104,14 +173,10 @@ impl LargeFile {
                 let result = blocking(move || {
                     let reader = match (current, encoding) {
                         (Some(file), None) => file,
-                        (_, Some(choice)) => Arc::new(PagedFile::open_as(&path, Some(choice))?),
-                        (None, None) => Arc::new(PagedFile::open(&path)?),
+                        _ => Arc::new(PagedFile::from_source(source, choice)?),
                     };
-                    if reader.len != expected {
-                        return Err(std::io::Error::other("文件大小已改变，请重新打开"));
-                    }
-                    let page = reader.read(pos)?;
-                    Ok((reader, page))
+                    let page = reader.read(pos);
+                    Ok::<_, std::io::Error>((reader, page))
                 })
                 .await;
                 if generation != view.generation.get() {
@@ -119,7 +184,14 @@ impl LargeFile {
                 }
                 view.reading.set(false);
                 match result {
-                    Ok(Ok((reader, page))) => {
+                    Ok(Ok((reader, Err(error)))) => {
+                        if error.kind() == std::io::ErrorKind::WouldBlock {
+                            view.pending_seek.set(Some(pos));
+                        }
+                        *view.reader.borrow_mut() = Some(reader);
+                        view.message.set(error.to_string());
+                    }
+                    Ok(Ok((reader, Ok(page)))) => {
                         let label = match reader.encoding {
                             Encoding::Utf8 => "UTF-8",
                             Encoding::Utf16Le => "UTF-16 LE",
@@ -154,12 +226,13 @@ pub(super) struct ImportQueue {
 }
 
 impl Shell {
-    pub(super) fn open_large(self: &Rc<Self>, path: PathBuf, size: u64) {
+    pub(super) fn open_large(self: &Rc<Self>, path: PathBuf, source: Arc<FileSource>) {
+        let size = source.len;
         self.remember(&path);
         let id = self.next.get();
         self.next.set(id + 1);
         let (doc, large) = self.owner.run(|| {
-            let large = LargeFile::new(path.clone(), size);
+            let large = LargeFile::new(path.clone(), source);
             let doc = self.make_document(
                 id,
                 NativeView::new_file(),
@@ -215,8 +288,16 @@ impl Shell {
             spawn(async move {
                 let path = job.large.path.clone();
                 let cancel = job.cancel.clone();
+                let source = job.large.source.clone();
+                let encoding = job.large.choice.get();
                 let result = blocking(move || {
-                    crate::editor_owner::PreparedFile::read(&path, MAX_EDIT_BYTES, &cancel)
+                    source.verify_path(&path).map_err(|e| e.to_string())?;
+                    crate::editor_owner::PreparedFile::from_source(
+                        &source,
+                        MAX_EDIT_BYTES,
+                        &cancel,
+                        encoding,
+                    )
                 })
                 .await;
                 if !job.cancel.load(Ordering::Relaxed)
@@ -228,6 +309,13 @@ impl Shell {
                     match result
                         .map_err(|e| e.to_string())
                         .and_then(|r| r)
+                        .and_then(|r| {
+                            job.large
+                                .source
+                                .verify_path(&job.large.path)
+                                .map(|_| r)
+                                .map_err(|e| e.to_string())
+                        })
                         .and_then(|data| shell.owner.run(|| data.attach()))
                     {
                         Ok(source) => {
@@ -286,6 +374,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let import = file.clone();
     let start = shell.clone();
     let cancel = file.clone();
+    let calibration = file.clone();
     let close = shell.clone();
     let show_bytes = file.clone();
     let navigator = file.clone();
@@ -352,6 +441,24 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 .child(action("关闭文件", move || close.close_tab(id))),
         )
         .child(text(move || message.get()).number_of_lines(2))
+        .child(when(move || calibration.pending_seek.get().is_some(), {
+            let file = file.clone();
+            move || {
+                let begin = file.clone();
+                let cancel = file.clone();
+                view()
+                    .flex_row()
+                    .child(action("校准并定位", move || begin.calibrate(owner)))
+                    .child(action("取消定位", move || {
+                        cancel
+                            .generation
+                            .set(cancel.generation.get().wrapping_add(1));
+                        cancel.pending_seek.set(None);
+                        cancel.reading.set(false);
+                        cancel.message.set("已取消定位，保留当前页".into());
+                    }))
+            }
+        }))
         .child(when(
             move || page.with(Option::is_some),
             move || {

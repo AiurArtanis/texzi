@@ -794,15 +794,17 @@ impl Shell {
             self.restore_editor_focus();
             return Ok(());
         }
-        let size = path.metadata().map_err(|e| e.to_string())?.len();
-        if size >= LARGE_BYTES {
-            self.open_large(path, size);
+        let file =
+            texzi_document::files::paged::FileSource::open(&path).map_err(|e| e.to_string())?;
+        if file.len >= LARGE_BYTES {
+            self.open_large(path, Arc::new(file));
             return Ok(());
         }
-        let prepared = crate::editor_owner::PreparedFile::read(
-            &path,
+        let prepared = crate::editor_owner::PreparedFile::from_source(
+            &file,
             LARGE_BYTES - 1,
             &AtomicBool::new(false),
+            None,
         )?;
         let source = self.owner.run(|| prepared.attach())?;
         self.remember(&path);
@@ -1486,6 +1488,11 @@ impl Shell {
         }
     }
     fn request_mode(self: &Rc<Self>, doc: Rc<Document>, target_rich: bool) {
+        if target_rich && doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES {
+            self.notice
+                .set("此大文件使用源码模式，已关闭语法高亮".into());
+            return;
+        }
         if doc.pending_mode.get().is_some() || doc.gate.rich_mode.get() == target_rich {
             return;
         }
