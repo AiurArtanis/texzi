@@ -25,8 +25,11 @@ $roaming = Join-Path $scratch 'roaming'
 $folder = Join-Path $scratch 'fixtures'
 $recovery = Join-Path $local 'texzi/recovery'
 foreach ($directory in $folder, $roaming, $recovery) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
+$settings = Join-Path $local 'texzi/settings.json'
+[IO.File]::WriteAllText($settings, '{"version":1,"user":{"files.autoSave":"afterDelay"},"folders":{}}')
 $markdown = Join-Path $folder 'body.md'
-[IO.File]::WriteAllText($markdown, "# TEXZI-STARTUP-HEADING`n`nTEXZI-STARTUP-BODY`n")
+$markdownBody = "# TEXZI-STARTUP-HEADING`n`nTEXZI-STARTUP-BODY`n"
+[IO.File]::WriteAllText($markdown, $markdownBody)
 $large = Join-Path $folder 'large.txt'
 $block = [Text.Encoding]::ASCII.GetBytes((("TEXZI-LARGE-BODY".PadRight(127, '.') + "`n") * 512))
 $stream = [IO.File]::Open($large, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
@@ -63,14 +66,24 @@ function Has-Text([string]$Text) {
     }
     return $false
 }
-function Find-Editor([string]$Marker) {
+function Find-OnlyEditor {
     $edits = $workbench.FindAll([Windows.Automation.TreeScope]::Descendants, $editCondition)
+    $found = $null
     foreach ($edit in $edits) {
         $value = $null
-        if ($edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$value) -and
-            !$value.Current.IsReadOnly -and (([string]$value.Current.Value).Contains($Marker) -or
-            ([string]$edit.Current.Name).Contains($Marker))) { return $value }
+        if ($edit.Current.IsEnabled -and $edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$value) -and !$value.Current.IsReadOnly) {
+            if ($null -ne $found) { return $null }
+            $found = $value
+        }
     }
+    return $found
+}
+function Edit-AndWaitForSave([string]$FileName) {
+    # The editor's input sink can have an empty UIA Value beside the rendered text.
+    # A write in the isolated fixture verifies which document the sink actually edits.
+    $editor = Wait-For "the editable body of $FileName" { Find-OnlyEditor }
+    $editor.SetValue('~')
+    Wait-For "the edit saved to $FileName" { Has-Text "已保存 $FileName" } | Out-Null
 }
 
 $start = [Diagnostics.ProcessStartInfo]::new((Resolve-Path -LiteralPath $Exe).Path)
@@ -92,17 +105,26 @@ try {
     $handle = [IntPtr]$workbench.Current.NativeWindowHandle
     Wait-For 'the workbench search' { Find-Named '搜索文件或命令' } | Out-Null
     Invoke-Named '切换到源码'
-    Wait-For 'editable Markdown source' { Find-Editor 'TEXZI-STARTUP-HEADING' } | Out-Null
+    Wait-For 'Markdown source' { (Find-Named '返回所见即所得') -and (Has-Text 'TEXZI-STARTUP-HEADING') } | Out-Null
+    Edit-AndWaitForSave 'body.md'
+    $saved = [IO.File]::ReadAllText($markdown)
+    if ($saved.Length -ne $markdownBody.Length + 1 -or $saved.Replace('~', '') -cne $markdownBody) {
+        throw 'The Markdown source edit did not preserve the rest of the document.'
+    }
     Invoke-Named '返回所见即所得'
     Wait-For 'formatted Markdown body' { (Find-Named '格式命令') -and (Has-Text 'TEXZI-STARTUP-BODY') } | Out-Null
     Invoke-Named 'large.txt'
-    Wait-For 'large-file import to finish' { Has-Text '大文件加载完成' } | Out-Null
-    $editor = Wait-For 'the complete 20 MiB editable body' { Find-Editor 'TEXZI-LARGE-BODY' }
-    if ($editor.Current.IsReadOnly) { throw 'The large-file preview did not reach full edit mode.' }
+    Wait-For 'large-file import to finish' { (Has-Text '大文件加载完成') -and (Has-Text 'TEXZI-LARGE-BODY') } | Out-Null
+    Edit-AndWaitForSave 'large.txt'
+    $stream = [IO.File]::OpenRead($large)
+    try {
+        if ($stream.ReadByte() -ne [int][char]'~' -or [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)) -ne $original) {
+            throw 'The 20 MiB edit did not add the expected byte and preserve the complete original text.'
+        }
+    } finally { $stream.Dispose() }
     if (![TexziStartup]::Close($handle)) { throw 'Failed to request close on the workbench.' }
     if (!$proc.WaitForExit(15000) -or $proc.ExitCode -ne 0) { throw 'The workbench did not exit cleanly.' }
-    if ((Get-FileHash -LiteralPath $large).Hash -ne $original) { throw 'Opening the 20 MiB fixture changed it on disk.' }
-    Write-Host "Verified Windows workbench PID $($proc.Id), Markdown modes, editable 20 MiB and clean exit."
+    Write-Host "Verified Windows workbench PID $($proc.Id), Markdown modes, on-disk edits to both fixtures and clean exit."
 } finally {
     if (!$proc.HasExited) {
         $proc.Kill()
