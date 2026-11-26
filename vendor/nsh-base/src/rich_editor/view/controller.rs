@@ -648,6 +648,7 @@ impl Rv {
             let mut geo = geometry.borrow_mut();
             geo.frames.remove(&id);
             geo.frames.remove(&slot_id(id));
+            geo.row_origins.remove(&id);
             geo.insets.remove(&id);
             geo.table_scroll.remove(&id);
             geo.table_scroll_handles.remove(&id);

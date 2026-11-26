@@ -35,7 +35,11 @@ struct Mounted {
 
 impl Mounted {
     fn flush(&mut self, core: &mut Core<ApproxTextEngine>) {
-        for _ in 0..8 {
+        self.drive(core, 8);
+    }
+
+    fn drive(&mut self, core: &mut Core<ApproxTextEngine>, commits: usize) {
+        for _ in 0..commits {
             core.run_component_tasks();
             if let Some(batch) = core.commit() {
                 for item in batch.items {
@@ -226,6 +230,74 @@ fn a_released_half_track_grab_keeps_its_fraction_after_measuring_shorter_blocks(
     assert!(rows.first().is_some_and(|&(_, y)| y < height * 0.25));
     assert!(rows.last().is_some_and(|&(_, y)| y > height * 0.75));
     assert!(rows.windows(2).all(|pair| pair[0].0 + 1 == pair[1].0));
+}
+
+#[test]
+fn translating_the_mounted_page_after_release_does_not_resize_or_move_the_document() {
+    let mut core = Core::new(ApproxTextEngine, Size::new(px(800.0), px(600.0)));
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<ThumbFixture>(|| ()));
+    let mut mounted = Mounted::default();
+    mounted.flush(&mut core);
+    let outer = mounted.parents[&mounted.receiver.unwrap()];
+    let flow = mounted
+        .scrolls
+        .iter()
+        .copied()
+        .find(|&s| s != outer)
+        .unwrap();
+    mounted.scroll = Some(outer);
+    mounted.event(&mut core, "thumbBegin", json!([9]));
+    let mut actual_y = 0.0;
+    // Overlapping pages leave measurements of neighbours that just unmounted.
+    for fraction in [0.87, 0.875, 0.882, 0.89, 0.897] {
+        mounted.event(&mut core, "thumbTarget", json!([9, fraction]));
+        mounted.flush(&mut core);
+        for task in core.take_main_thread_tasks() {
+            task.run();
+        }
+        mounted.flush(&mut core);
+        let &(_, _, ticket, target) = mounted.requests.last().unwrap();
+        actual_y = target * (mounted.content[&outer].height - mounted.frames[&outer].size.height).0;
+        mounted.event(&mut core, "thumbApplied", json!([9, ticket, actual_y]));
+        mounted.flush(&mut core);
+    }
+    let height = mounted.content[&outer].height;
+    let (&anchor, &number) = mounted
+        .rows
+        .iter()
+        .filter(|(id, _)| {
+            let y = mounted.row_top(**id, outer);
+            y >= actual_y && y < actual_y + 600.0
+        })
+        .min_by_key(|(_, n)| **n)
+        .unwrap();
+    let top = mounted.row_top(anchor, outer);
+    let mut row_boxes = HashSet::new();
+    for &text in mounted.rows.keys() {
+        let mut row = text;
+        while mounted.parents[&row] != flow {
+            row = mounted.parents[&row];
+        }
+        row_boxes.insert(row);
+    }
+    assert!((16..160).contains(&row_boxes.len()));
+    // Replay a common translation for the current row layout callbacks.
+    // Cached offscreen neighbours receive no callback. No scrolling, input
+    // or change to text, margins or block heights occurs in this period.
+    for &row in &row_boxes {
+        let mut frame = mounted.frames[&row];
+        frame.origin.y += px(1.0);
+        assert!(core.component_event(row, EventKind::Layout, &EventPayload::Layout(frame)));
+    }
+    for _ in 0..24 {
+        mounted.drive(&mut core, 1);
+        assert_eq!(mounted.content[&outer].height, height);
+        assert_eq!(mounted.rows.get(&anchor), Some(&number));
+        assert_eq!(mounted.row_top(anchor, outer), top);
+    }
 }
 
 #[test]

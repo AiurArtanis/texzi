@@ -275,7 +275,11 @@ pub(super) fn has_block_window(rv: &Rv) -> bool {
 }
 
 fn document_flow(rv: Rv) -> AnyElement {
-    fn layout(root: impl ParentElement + Interactive + Styled, rv: Rv) -> AnyElement {
+    fn layout(
+        root: impl ParentElement + Interactive + Styled,
+        rv: Rv,
+        rows: Vec<AnyElement>,
+    ) -> AnyElement {
         let extent = rv.clone();
         root.flex_shrink_0()
             .on_layout(move |bounds: &Bounds<Points>| {
@@ -284,16 +288,19 @@ fn document_flow(rv: Rv) -> AnyElement {
                     extent.document_size.set(bounds.size);
                 }
             })
-            .children(doc_blocks(rv))
+            .children(rows)
             .into_element()
-    }
-    if os() != nsh_core::platform::Os::Windows {
-        return layout(view(), rv);
     }
     let doc = rv.clone();
     let windowed = computed(move || has_block_window(&doc));
     dynamic(move || {
-        if windowed.get() {
+        let windowed = windowed.get();
+        let rows = if windowed {
+            doc_blocks(rv.clone())
+        } else {
+            vec![blocks(rv.clone(), DOC)]
+        };
+        if windowed && os() == nsh_core::platform::Os::Windows {
             // The outer scroll handles all input. This intrinsic-height scope
             // contains the editor's bounded pages. Its native culler can make
             // both pages, even before the outer viewport moves to the second.
@@ -303,9 +310,10 @@ fn document_flow(rv: Rv) -> AnyElement {
                     .scrollbar(false)
                     .keyboard_taps(KeyboardTaps::Always),
                 rv.clone(),
+                rows,
             )
         } else {
-            layout(view(), rv.clone())
+            layout(view(), rv.clone(), rows)
         }
     })
 }
@@ -627,20 +635,40 @@ fn doc_blocks(rv: Rv) -> Vec<AnyElement> {
             |b: &BlockItem| b.id,
             move |item, _| {
                 let id = item.get_untracked().id;
-                let gap = move || {
-                    middle
-                        .get()
-                        .filter(|(before, _)| *before == id)
-                        .map_or(0.0, |(_, h)| h)
-                };
-                [
-                    when(
-                        move || gap() > 0.0,
-                        move || view().flex_shrink_0().h(move || px(gap())),
-                    )
-                    .into_element(),
-                    block(rv.clone(), item),
-                ]
+                let row = element_ref();
+                let measured = rv.clone();
+                effect(move || {
+                    let epoch = measured.block_layout.get();
+                    let node = item.get().node;
+                    let index = measured.block_heights.borrow();
+                    if index.index(id).is_none_or(|at| index.measured(at)) {
+                        return;
+                    }
+                    let measured = measured.clone();
+                    spawn(async move {
+                        if let Some(bounds) = row.measure().await
+                            && row.node().is_some()
+                            && measured.block_layout.get_untracked() == epoch
+                            && measured.current_top_block(id, &node)
+                        {
+                            measured.set_row_frame(id, bounds.frame);
+                        }
+                    });
+                });
+                // The wrapper's own height includes its block's margins.
+                // The spacer between two disjoint pages is outside that box.
+                let laid_out = rv.clone();
+                view()
+                    .element_ref(&row)
+                    .flex_shrink_0()
+                    .mt(move || {
+                        px(middle
+                            .get()
+                            .filter(|(before, _)| *before == id)
+                            .map_or(0.0, |(_, h)| h))
+                    })
+                    .on_layout(move |bounds: &Bounds<Points>| laid_out.set_row_frame(id, *bounds))
+                    .child(block(rv.clone(), item))
             },
         ),
         spacer(false),
@@ -732,15 +760,7 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
                     };
                     if block_ref.node().is_some()
                         && measured.block_layout.get_untracked() == epoch
-                        && measured.block_heights.borrow().index(id).is_some_and(|at| {
-                            measured
-                                .tree
-                                .borrow()
-                                .children
-                                .get(&DOC)
-                                .and_then(|items| items.get(at))
-                                .is_some_and(|it| it.node.ptr_eq(&node))
-                        })
+                        && measured.current_top_block(id, &node)
                     {
                         report_frame(&measured, bounds.frame);
                     }
@@ -2187,17 +2207,6 @@ impl Rv {
     /// Block (or slot) `id`'s frame in box `parent` (`None`: the content
     /// box).
     pub(crate) fn set_frame(&self, id: u64, parent: Option<u64>, frame: Bounds<Points>) {
-        let pitch_changed = parent == Some(DOC)
-            && self.block_heights.borrow_mut().measure(
-                id,
-                super::block_heights::Frame {
-                    top: frame.origin.y.0,
-                    height: frame.size.height.0,
-                },
-            );
-        if pitch_changed {
-            self.block_heights_rev.update(|r| *r += 1);
-        }
         let mut geo = self.geo.borrow_mut();
         if geo.frames.get(&id) == Some(&(parent, frame)) {
             return;
@@ -2206,6 +2215,33 @@ impl Rv {
         drop(geo);
         self.table_moved(id, parent);
         self.layout_rev.update(|r| *r += 1);
+    }
+
+    fn current_top_block(&self, id: u64, node: &Node) -> bool {
+        self.block_heights.borrow().index(id).is_some_and(|at| {
+            self.tree
+                .borrow()
+                .children
+                .get(&DOC)
+                .and_then(|items| items.get(at))
+                .is_some_and(|item| item.node.ptr_eq(node))
+        })
+    }
+
+    /// A mounted top-level row's position serves hit testing. Only its
+    /// footprint participates in the height index and changes the spacers.
+    fn set_row_frame(&self, id: u64, frame: Bounds<Points>) {
+        if self
+            .block_heights
+            .borrow_mut()
+            .measure(id, frame.size.height.0)
+        {
+            self.block_heights_rev.update(|r| *r += 1);
+        }
+        if self.geo.borrow_mut().row_origins.insert(id, frame.origin) != Some(frame.origin) {
+            self.table_moved(id, Some(DOC));
+            self.layout_rev.update(|r| *r += 1);
+        }
     }
 
     /// Where block `id`'s children start in its box (see

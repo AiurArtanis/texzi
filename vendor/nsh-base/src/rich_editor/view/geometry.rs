@@ -122,6 +122,9 @@ pub(crate) struct Geometry {
     /// content slot: its block, measured in the block's box); `None` for a
     /// frame in the content box.
     pub(crate) frames: HashMap<u64, (Option<u64>, Bounds<Points>)>,
+    /// Windowed top-level blocks sit inside margin-measuring row boxes.
+    /// Only mounted rows have a current position in the document.
+    pub(crate) row_origins: HashMap<u64, Point<Points>>,
     /// Where a block's children start in its box, when they sit in a
     /// holder that is not the block's own origin (a task item's content,
     /// after its checkbox): their frames are in the holder, not the block.
@@ -204,6 +207,12 @@ impl Geometry {
             at.y += frame.origin.y;
             id = match parent {
                 Some(p) => {
+                    if *p == DOC
+                        && let Some(row) = self.row_origins.get(&current)
+                    {
+                        at.x += row.x;
+                        at.y += row.y;
+                    }
                     // A slot is measured in its block's box, its holder's
                     // offset included.
                     if current != slot_id(*p)

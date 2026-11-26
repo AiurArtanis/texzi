@@ -1,6 +1,6 @@
-//! Prefix sums for the upstream rich-editor block window. Unknown heights
-//! use the running measured average, so measuring one block need not rewrite
-//! every spacer. Sums and estimates stay in f64 until passed to NSH layout.
+//! Prefix sums of the layout height occupied by each top-level block,
+//! including its margins. Moving a mounted range cannot change its heights.
+//! Unknown blocks use the measured average. Sums stay in f64 until layout.
 
 use std::collections::HashMap;
 
@@ -23,12 +23,6 @@ impl Measured {
             fallback
         }
     }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub(super) struct Frame {
-    pub top: f32,
-    pub height: f32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -61,12 +55,11 @@ impl<T: Copy + Default> Stamp<T> {
 pub(super) struct BlockHeights {
     ids: Vec<u64>,
     indices: HashMap<u64, usize>,
-    frames: Vec<Stamp<Option<Frame>>>,
+    pitches: Vec<Stamp<Option<f32>>>,
     sums: Vec<Stamp<Measured>>,
     heights: Measured,
-    gaps: Measured,
     epoch: u64,
-    fallback: Option<(f64, f64)>,
+    fallback: Option<f64>,
 }
 
 impl BlockHeights {
@@ -79,13 +72,13 @@ impl BlockHeights {
         let retained: HashMap<_, _> = self
             .ids
             .iter()
-            .zip(&self.frames)
+            .zip(&self.pitches)
             .filter_map(|(&id, f)| f.get(self.epoch).map(|f| (id, f)))
             .collect();
         self.ids.clear();
         self.ids.extend(ids);
         self.indices.clear();
-        self.frames.clear();
+        self.pitches.clear();
         self.sums.clear();
         self.sums.resize(
             self.ids.len() + 1,
@@ -95,18 +88,16 @@ impl BlockHeights {
             },
         );
         self.heights = Measured::default();
-        self.gaps = Measured::default();
         for (i, &id) in self.ids.iter().enumerate() {
             self.indices.insert(id, i);
             let current = retained.get(&id).copied();
-            self.frames.push(Stamp {
+            self.pitches.push(Stamp {
                 epoch: self.epoch,
                 value: current,
             });
-            let h = current.map(|f| f.height);
-            self.heights.replace(None, h);
+            self.heights.replace(None, current);
             let n = i + 1;
-            self.sums[n].value.replace(None, h);
+            self.sums[n].value.replace(None, current);
             let parent = n + n.isolate_lowest_one();
             if parent < self.sums.len() {
                 let part = self.sums[n].value;
@@ -114,20 +105,14 @@ impl BlockHeights {
                 self.sums[parent].value.known += part.known;
             }
         }
-        for i in 1..self.frames.len() {
-            self.gaps
-                .replace(None, gap(self.frames[i - 1].value, self.frames[i].value));
-        }
     }
 
     /// Width, DPI or typography changed. Old heights may guide the initial
     /// estimate, but none is a layout receipt in the new coordinate space.
     pub(super) fn reset_layout(&mut self) {
-        let (height, gap) = self.fallback.unwrap_or((24.0, 0.0));
-        self.fallback = Some((self.heights.average(height), self.gaps.average(gap)));
+        self.fallback = Some(self.heights.average(self.fallback.unwrap_or(24.0)));
         self.epoch += 1;
         self.heights = Measured::default();
-        self.gaps = Measured::default();
     }
 
     pub(super) fn index(&self, id: u64) -> Option<usize> {
@@ -135,55 +120,38 @@ impl BlockHeights {
     }
 
     pub(super) fn measured(&self, i: usize) -> bool {
-        self.frames[i].get(self.epoch).is_some()
+        self.pitches[i].get(self.epoch).is_some()
     }
 
     pub(super) fn invalidate(&mut self, id: u64) {
         self.update(id, None);
     }
 
-    /// Only two neighbouring gaps can change when a block is laid out.
-    pub(super) fn measure(&mut self, id: u64, new: Frame) -> bool {
-        self.update(id, Some(new))
+    pub(super) fn measure(&mut self, id: u64, pitch: f32) -> bool {
+        self.update(id, Some(pitch))
     }
 
-    fn update(&mut self, id: u64, new: Option<Frame>) -> bool {
+    fn update(&mut self, id: u64, new: Option<f32>) -> bool {
         let Some(&i) = self.indices.get(&id) else {
             return false;
         };
-        let old = std::mem::replace(self.frames[i].current(self.epoch), new);
+        let old = std::mem::replace(self.pitches[i].current(self.epoch), new);
         if old == new {
             return false;
         }
-        let left = i
-            .checked_sub(1)
-            .and_then(|j| self.frames[j].get(self.epoch));
-        let right = self.frames.get(i + 1).and_then(|f| f.get(self.epoch));
-        let gap_estimate = self.fallback.map_or(0.0, |v| v.1);
-        let old_gap = self.gaps.average(gap_estimate);
-        self.gaps.replace(gap(left, old), gap(left, new));
-        self.gaps.replace(gap(old, right), gap(new, right));
-        let old_height = old.map(|f| f.height);
-        let new_height = new.map(|f| f.height);
-        if old_height == new_height {
-            return self.gaps.average(gap_estimate) != old_gap;
-        }
-        self.heights.replace(old_height, new_height);
+        self.heights.replace(old, new);
         let mut n = i + 1;
         while n < self.sums.len() {
-            self.sums[n]
-                .current(self.epoch)
-                .replace(old_height, new_height);
+            self.sums[n].current(self.epoch).replace(old, new);
             n += n.isolate_lowest_one();
         }
         true
     }
 
     fn extent(&self, n: usize, measured: Measured) -> f64 {
-        let (height, gap) = self.fallback.unwrap_or((24.0, 0.0));
         measured.sum
-            + (n as f64 - measured.known as f64) * self.heights.average(height)
-            + n as f64 * self.gaps.average(gap)
+            + (n as f64 - measured.known as f64)
+                * self.heights.average(self.fallback.unwrap_or(24.0))
     }
 
     /// Offset of block `end`, or the total extent for `end == len`.
@@ -217,12 +185,6 @@ impl BlockHeights {
     }
 }
 
-fn gap(a: Option<Frame>, b: Option<Frame>) -> Option<f32> {
-    let a = a?;
-    let value = b?.top - (a.top + a.height);
-    (0.0..200.0).contains(&value).then_some(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,21 +194,9 @@ mod tests {
         let mut rows = BlockHeights::default();
         rows.sync([10, 11, 12, 13].into_iter());
         assert_eq!(rows.prefix(4), 96.0);
-        assert!(rows.measure(
-            10,
-            Frame {
-                top: 0.0,
-                height: 12.0
-            }
-        ));
-        assert!(rows.measure(
-            11,
-            Frame {
-                top: 16.0,
-                height: 20.0
-            }
-        ));
-        // Known heights 12,20; estimated 16,16. The measured gap is 4.
+        // Two known row boxes of 16 and 24, two estimated at 20.
+        assert!(rows.measure(10, 16.0));
+        assert!(rows.measure(11, 24.0));
         for (i, y) in [0.0, 16.0, 40.0, 60.0, 80.0].into_iter().enumerate() {
             assert_eq!(rows.prefix(i), y);
             if i > 0 {
@@ -254,23 +204,12 @@ mod tests {
                 assert_eq!(rows.preceding(y, true), i);
             }
         }
-        assert!(rows.measure(
-            11,
-            Frame {
-                top: 12.0,
-                height: 20.0
-            }
-        ));
+        assert!(rows.measure(10, 12.0));
+        assert!(rows.measure(11, 20.0));
         assert_eq!(rows.prefix(4), 64.0);
         rows.sync([11, 20, 21].into_iter());
         assert_eq!(rows.prefix(3), 60.0);
-        assert!(!rows.measure(
-            10,
-            Frame {
-                top: 0.0,
-                height: 2.0
-            }
-        ));
+        assert!(!rows.measure(10, 2.0));
         assert_eq!(rows.preceding(-1.0, false), 0);
         assert_eq!(rows.preceding(10_000.0, true), 3);
     }
@@ -279,39 +218,15 @@ mod tests {
     fn stale_layout_and_edited_content_are_estimates_until_measured() {
         let mut rows = BlockHeights::default();
         rows.sync([0, 1, 2, 3].into_iter());
-        rows.measure(
-            0,
-            Frame {
-                top: 0.0,
-                height: 12.0,
-            },
-        );
-        rows.measure(
-            1,
-            Frame {
-                top: 16.0,
-                height: 20.0,
-            },
-        );
+        rows.measure(0, 16.0);
+        rows.measure(1, 24.0);
         assert_eq!(rows.prefix(4), 80.0);
         rows.reset_layout();
         assert_eq!(rows.prefix(4), 80.0);
         assert!(!rows.measured(0) && !rows.measured(1));
-        rows.measure(
-            3,
-            Frame {
-                top: 120.0,
-                height: 36.0,
-            },
-        );
+        rows.measure(3, 40.0);
         assert_eq!(rows.prefix(4), 160.0);
-        rows.measure(
-            2,
-            Frame {
-                top: 85.0,
-                height: 32.0,
-            },
-        );
+        rows.measure(2, 34.0);
         assert_eq!(rows.prefix(4), 148.0);
         rows.invalidate(2);
         assert!(!rows.measured(2) && rows.measured(3));
