@@ -2785,7 +2785,11 @@ fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl Into
         .on_focus(move |_: &()| focused.set(true))
         .on_blur(move |_: &()| blurred.set(false))
         .on_press(move |_: &()| {
-            shell.second_active.set(second);
+            if shell.second_active.get() != second {
+                // Native menus preserve their text target. On a group change
+                // that target must first become this pane's own editor.
+                shell.focus_group(if second { 2 } else { 1 });
+            }
             shell.show_format_menu(doc.clone(), second, anchor, button_focused.clone());
         })
         .child(shell_glyph(FORMAT_ICON, 18.0))
