@@ -17,7 +17,7 @@ pub(super) fn tracing() -> bool {
     })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Grab {
     receiver: NodeId,
     gesture: u32,
@@ -42,7 +42,19 @@ impl ThumbScroll {
         })
     }
 
+    #[track_caller]
     fn reset(&self) {
+        if tracing() {
+            eprintln!(
+                "THUMB_DIAG {:?} core-reset caller={} grab={:?} ticket={} queued={:?} awaiting={}",
+                Instant::now(),
+                std::panic::Location::caller(),
+                self.grab.get(),
+                self.ticket.get(),
+                self.latest.get(),
+                self.awaiting_offset.get()
+            );
+        }
         self.grab.set(None);
         self.latest.set(None);
         self.awaiting_offset.set(false);
@@ -132,8 +144,16 @@ pub(super) fn receiver(rv: Rv) -> AnyElement {
 }
 
 impl Rv {
+    #[track_caller]
     pub(super) fn cancel_thumb(&self) {
         if let Some(grab) = self.thumb.grab.get() {
+            if tracing() {
+                eprintln!(
+                    "THUMB_DIAG {:?} core-cancel caller={} grab={grab:?}",
+                    Instant::now(),
+                    std::panic::Location::caller()
+                );
+            }
             self.thumb.reset();
             self.scroll
                 .command("texziCancelRichThumb", json!([grab.receiver, grab.gesture]));
@@ -144,6 +164,14 @@ impl Rv {
         let fraction = fraction.clamp(0.0, 1.0);
         // Coalesce samples but let the page already mounting finish.
         if self.thumb.destination_fraction.get_untracked().is_some() {
+            if tracing() && fraction >= 0.79 {
+                eprintln!(
+                    "THUMB_DIAG {:?} coalesced grab={grab:?} ticket={} fraction={fraction} awaiting={}",
+                    Instant::now(),
+                    self.thumb.ticket.get(),
+                    self.thumb.awaiting_offset.get()
+                );
+            }
             self.thumb.latest.set(Some(fraction));
             return;
         }
@@ -167,11 +195,31 @@ impl Rv {
         let ticket = self.thumb.ticket.get().wrapping_add(1);
         self.thumb.ticket.set(ticket);
         self.thumb.destination_fraction.set(Some(fraction));
-        let mounted = run_on_main_thread(|| ());
+        let trace = tracing() && (fraction >= 0.79 || ticket >= 95);
+        if trace {
+            eprintln!(
+                "THUMB_DIAG {:?} fence-submit grab={grab:?} ticket={ticket}",
+                Instant::now()
+            );
+        }
+        let mounted = run_on_main_thread(move || {
+            if trace {
+                eprintln!(
+                    "THUMB_DIAG {:?} fence-native grab={grab:?} ticket={ticket}",
+                    Instant::now()
+                );
+            }
+        });
         let rv = self.clone();
         self.owner.run(|| {
             spawn(async move {
+                if trace {
+                    eprintln!("THUMB_DIAG {:?} fence-wait grab={grab:?} ticket={ticket}", Instant::now());
+                }
                 let ready = mounted.await.is_ok();
+                if trace {
+                    eprintln!("THUMB_DIAG {:?} fence-return grab={grab:?} ticket={ticket} ready={ready} current={:?}/{} node={:?}", Instant::now(), rv.thumb.grab.get(), rv.thumb.ticket.get(), rv.scroll.node());
+                }
                 if rv.thumb.grab.get() != Some(grab) || rv.thumb.ticket.get() != ticket {
                     return;
                 }

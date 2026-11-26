@@ -333,6 +333,18 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
 
 /// `scrollTo` and `scrollToEnd`.
 pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) {
+    if surface.input.rich_thumb.get().is_some()
+        && rich_thumb::trace()
+        && let Command::ScrollTo { x, y, animated } = command
+    {
+        eprintln!(
+            "THUMB_DIAG {:?} ordinary-scroll node={} x={} y={} animated={animated}",
+            std::time::Instant::now(),
+            view.id(),
+            x.0,
+            y.0
+        );
+    }
     rich_thumb::supersede_view(surface, view);
     shared::command(&Host::new(surface, view), command);
 }
