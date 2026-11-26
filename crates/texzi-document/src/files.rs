@@ -282,7 +282,8 @@ fn decode_chunks(
                         }
                 }
                 Encoding::GbkWebEncodingRs0844 | Encoding::Gb18030WebEncodingRs0844 => {
-                    paged::gb_advance(data, 0, IMPORT_CHUNK).map_err(|_| FileError::InvalidBytes)?
+                    paged::gb_advance(data, 0, IMPORT_CHUNK, encoding)
+                        .map_err(|_| FileError::InvalidBytes)?
                 }
                 _ => IMPORT_CHUNK,
             }

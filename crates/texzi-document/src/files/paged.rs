@@ -148,6 +148,7 @@ impl PagedFile {
                 (Encoding::Utf16Be, 2)
             } else if let Some(
                 choice @ (Encoding::Utf8
+                | Encoding::GbkWebEncodingRs0844
                 | Encoding::Gb18030WebEncodingRs0844
                 | Encoding::Utf16Le
                 | Encoding::Utf16Be),
@@ -188,7 +189,7 @@ impl PagedFile {
         self.source.check(file.metadata()?)?;
         let guard = match (position, self.encoding) {
             (Position::Boundary(_), _) => 0,
-            (_, Encoding::Gb18030WebEncodingRs0844) => SYNC_BYTES,
+            (_, encoding) if gb_encoding(encoding) => SYNC_BYTES,
             _ => 4,
         };
         let base = offset.saturating_sub(guard as u64).max(self.first);
@@ -227,10 +228,10 @@ impl PagedFile {
                     end
                 }
             }
-            Encoding::Gb18030WebEncodingRs0844 => {
+            encoding if gb_encoding(encoding) => {
                 let mut end = 0;
                 while end < limit {
-                    let n = gb_width(&window[end..])?;
+                    let n = gb_width(&window[end..], encoding)?;
                     if end + n > limit {
                         break;
                     }
@@ -277,30 +278,35 @@ impl PagedFile {
                 }
                 Ok(at.min(bytes.len()))
             }
-            Encoding::Gb18030WebEncodingRs0844 => {
+            encoding if gb_encoding(encoding) => {
                 // These ASCII byte values cannot be a trail or digit in a GB18030 scalar.
                 let anchor = self.nearest(base + index as u64);
                 let ascii = bytes[..=index]
                     .iter()
                     .rposition(|&b| b < 0x30 || (0x3a..=0x3f).contains(&b) || b == 0x7f);
                 if let Some(at) = ascii.or_else(|| anchor.checked_sub(base).map(|n| n as usize)) {
-                    return gb_advance(bytes, at, index);
+                    return gb_advance(bytes, at, index, encoding);
                 }
                 // A GB18030 scalar is at most four bytes. Enumerate every possible
                 // initial phase, ruling out parses inconsistent with an established
                 // end (e.g. previous or last page) or an invalid byte sequence.
                 let stop = known_end.map_or(bytes.len(), |end| (end - base) as usize);
                 let mut unique = None;
-                for first in 0..=3 {
-                    let Ok(start) = gb_advance(bytes, first, index) else {
+                let max_tail = if encoding == Encoding::GbkWebEncodingRs0844 {
+                    1
+                } else {
+                    3
+                };
+                for first in 0..=max_tail {
+                    let Ok(start) = gb_advance(bytes, first, index, encoding) else {
                         continue;
                     };
                     let check_until = if known_end.is_some() {
                         stop
                     } else {
-                        stop.saturating_sub(3)
+                        stop.saturating_sub(max_tail)
                     };
-                    let Ok(end) = gb_advance(bytes, start, check_until) else {
+                    let Ok(end) = gb_advance(bytes, start, check_until, encoding) else {
                         continue;
                     };
                     if known_end.is_some() && end != stop {
@@ -309,7 +315,7 @@ impl PagedFile {
                     if unique.is_some_and(|old| old != start) {
                         return Err(io::Error::new(
                             io::ErrorKind::WouldBlock,
-                            "此段 GB18030 字符边界需要顺序校准。可继续查看当前页，或选择校准并定位。",
+                            "此段多字节字符边界需要顺序校准。可继续查看当前页，或选择校准并定位。",
                         ));
                     }
                     unique = Some(start);
@@ -321,7 +327,7 @@ impl PagedFile {
     }
 
     fn remember(&self, at: u64) {
-        if self.encoding != Encoding::Gb18030WebEncodingRs0844 {
+        if !gb_encoding(self.encoding) {
             return;
         }
         // At most one proven boundary per bucket even for a terabyte-scale file.
@@ -363,7 +369,7 @@ impl PagedFile {
     /// The caller reports progress and can cancel between steps, with no whole-file buffer.
     pub fn calibrate_step(&self, position: Position, start: u64) -> io::Result<Calibration> {
         let target = self.target(position);
-        if self.encoding != Encoding::Gb18030WebEncodingRs0844 || start > target {
+        if !gb_encoding(self.encoding) || start > target {
             return Err(invalid());
         }
         let to = target.min(start.saturating_add(SCAN_BYTES as u64));
@@ -376,7 +382,7 @@ impl PagedFile {
             file.seek(SeekFrom::Start(start))?;
             file.read_exact(&mut bytes)?;
         }
-        let at = start + gb_advance(&bytes, 0, wanted)? as u64;
+        let at = start + gb_advance(&bytes, 0, wanted, self.encoding)? as u64;
         self.remember(at);
         if at < target {
             Ok(Calibration::More(at))
@@ -387,9 +393,14 @@ impl PagedFile {
     }
 }
 
-pub(super) fn gb_advance(bytes: &[u8], mut at: usize, target: usize) -> io::Result<usize> {
+pub(super) fn gb_advance(
+    bytes: &[u8],
+    mut at: usize,
+    target: usize,
+    encoding: Encoding,
+) -> io::Result<usize> {
     while at < target {
-        at += gb_width(&bytes[at..])?;
+        at += gb_width(&bytes[at..], encoding)?;
     }
     Ok(at)
 }
@@ -403,10 +414,21 @@ pub(super) fn unit(bytes: &[u8], encoding: Encoding) -> u16 {
     }
 }
 
-fn gb_width(bytes: &[u8]) -> io::Result<usize> {
+fn gb_encoding(encoding: Encoding) -> bool {
+    matches!(
+        encoding,
+        Encoding::GbkWebEncodingRs0844 | Encoding::Gb18030WebEncodingRs0844
+    )
+}
+
+fn gb_width(bytes: &[u8], encoding: Encoding) -> io::Result<usize> {
     let width = match bytes {
         [0..=0x80, ..] => 1,
-        [0x81..=0xfe, 0x30..=0x39, 0x81..=0xfe, 0x30..=0x39, ..] => 4,
+        [0x81..=0xfe, 0x30..=0x39, 0x81..=0xfe, 0x30..=0x39, ..]
+            if encoding == Encoding::Gb18030WebEncodingRs0844 =>
+        {
+            4
+        }
         [0x81..=0xfe, 0x40..=0x7e | 0x80..=0xfe, ..] => 2,
         _ => return Err(invalid()),
     };
@@ -442,6 +464,46 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.0);
         }
+    }
+
+    #[test]
+    fn confirmed_gbk_after_an_ascii_sample_is_used_for_subsequent_pages() {
+        let original = "a\n".repeat(4096) + &"中晚记\n".repeat(8000);
+        let gbk = Encoding::GbkWebEncodingRs0844;
+        let bytes = encode(
+            &original,
+            Format {
+                encoding: gbk,
+                bom: false,
+            },
+        )
+        .unwrap();
+        let fixture = Fixture::new(&bytes);
+        let source = Arc::new(FileSource::open(&fixture.0).unwrap());
+        assert_eq!(
+            PagedFile::from_source(source.clone(), None)
+                .unwrap()
+                .encoding,
+            Encoding::Utf8
+        );
+        let reader = PagedFile::from_source(source, Some(gbk)).unwrap();
+        assert_eq!(reader.encoding, gbk);
+        let mut at = 0;
+        let mut all = String::new();
+        while at < reader.len {
+            let page = reader.read(Position::Boundary(at)).unwrap();
+            assert!(page.end > at);
+            at = page.end;
+            all.push_str(&page.text);
+        }
+        assert_eq!(all, original);
+        assert!(
+            reader
+                .read(Position::Before(reader.len))
+                .unwrap()
+                .text
+                .ends_with("中晚记\n")
+        );
     }
 
     #[test]

@@ -101,12 +101,29 @@ impl LargeFile {
         self.import_state.set(ImportState::Idle);
     }
 
-    fn mark_line_limit(&self, encoding: Encoding) {
-        let mut known = self.limited_encodings.borrow_mut();
-        if !known.contains(&encoding) {
-            known.push(encoding);
+    fn mark_line_limit(self: &Rc<Self>, owner: Owner, encoding: Encoding) {
+        if !self.limited_encodings.borrow().contains(&encoding) {
+            self.limited_encodings.borrow_mut().push(encoding);
         }
+        self.choice.set(Some(encoding));
         self.import_state.set(ImportState::LineLimit);
+        if self
+            .reader
+            .borrow()
+            .as_ref()
+            .is_some_and(|reader| reader.encoding != encoding)
+        {
+            // The full decode can identify a legacy codec beyond an ASCII-only first page.
+            // Invalidate an in-flight navigation before replacing the sampled reader.
+            let at = self
+                .page
+                .with(|page| page.as_ref().map_or(0, |page| page.start));
+            self.generation.set(self.generation.get().wrapping_add(1));
+            self.reading.set(false);
+            self.reader.borrow_mut().take();
+            self.page.set(None);
+            self.load(owner, Position::Near(at), None);
+        }
     }
 
     fn cancelled(&self, token: &Arc<AtomicBool>) {
@@ -143,6 +160,7 @@ impl LargeFile {
         }
         let view = self.clone();
         let generation = self.generation.get();
+        let encoding = encoding_name(reader.encoding);
         self.reading.set(true);
         owner.run(|| {
             spawn(async move {
@@ -157,7 +175,7 @@ impl LargeFile {
                         Ok(Ok(Calibration::More(at))) => {
                             from = at;
                             view.message
-                                .set(format!("正在校准 GB18030 字符边界 · 已到字节 {at}"));
+                                .set(format!("正在校准 {encoding} 字符边界 · 已到字节 {at}"));
                             // Yield between bounded reads, with a visible and cancellable operation.
                             let _ = next_frame().await;
                             if view.generation.get() != generation {
@@ -166,7 +184,7 @@ impl LargeFile {
                         }
                         Ok(Ok(Calibration::Ready(page))) => {
                             view.message.set(format!(
-                                "GB18030 · 字节 {}–{} / {}",
+                                "{encoding} · 字节 {}–{} / {}",
                                 page.start, page.end, view.len
                             ));
                             view.page.set(Some(Rc::new(page)));
@@ -248,12 +266,7 @@ impl LargeFile {
                         view.message.set(error.to_string());
                     }
                     Ok(Ok((reader, Ok(page)))) => {
-                        let label = match reader.encoding {
-                            Encoding::Utf8 => "UTF-8",
-                            Encoding::Utf16Le => "UTF-16 LE",
-                            Encoding::Utf16Be => "UTF-16 BE",
-                            _ => "GB18030",
-                        };
+                        let label = encoding_name(reader.encoding);
                         view.message.set(format!(
                             "{label} · 字节 {}–{} / {}",
                             page.start, page.end, reader.len
@@ -266,6 +279,16 @@ impl LargeFile {
                 }
             })
         });
+    }
+}
+
+fn encoding_name(encoding: Encoding) -> &'static str {
+    match encoding {
+        Encoding::Utf8 => "UTF-8",
+        Encoding::Utf16Le => "UTF-16 LE",
+        Encoding::Utf16Be => "UTF-16 BE",
+        Encoding::GbkWebEncodingRs0844 => "GBK",
+        _ => "GB18030",
     }
 }
 
@@ -295,8 +318,7 @@ impl Shell {
         let (doc, large) = self.owner.run(|| {
             let large = LargeFile::new(path.clone(), source);
             if let Some(encoding) = limited_encoding {
-                large.choice.set(Some(encoding));
-                large.mark_line_limit(encoding);
+                large.mark_line_limit(self.owner, encoding);
             }
             let doc = self.make_document(
                 id,
@@ -469,7 +491,7 @@ impl Shell {
                             }
                         }
                         Err(PrepareError::LineLimit(encoding)) => {
-                            job.large.mark_line_limit(encoding)
+                            job.large.mark_line_limit(shell.owner, encoding)
                         }
                         Err(error) => job.large.message.set(format!("完整编辑加载失败：{error}")),
                     }
