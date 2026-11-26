@@ -271,7 +271,6 @@ fn bind_shell_shortcuts(run: Rc<dyn Fn(&str)>) {
 fn await_shell_modal<F: std::future::Future + 'static>(
     owner: &Owner,
     modal: Rc<Cell<bool>>,
-    auto_saving: Signal<Option<u64>>,
     show: impl FnOnce() -> F,
     done: impl FnOnce(F::Output) + 'static,
 ) {
@@ -323,6 +322,7 @@ struct Shell {
     chord_generation: Cell<u64>,
     source_ref: Cell<Option<ComponentRef<Editor>>>,
     modal: Rc<Cell<bool>>,
+    auto_saving: Signal<Option<u64>>,
     split: Signal<Option<Rc<Document>>>,
     split_down: Signal<bool>,
     second_active: Signal<bool>,
