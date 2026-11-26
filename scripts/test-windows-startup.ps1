@@ -18,7 +18,8 @@ public static class TexziStartup {
 }
 '@
 
-$scratch = Join-Path ([IO.Path]::GetTempPath()) ("texzi-startup-" + [guid]::NewGuid())
+$temp = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath([IO.Path]::GetTempPath()))
+$scratch = Join-Path $temp ("texzi-startup-" + [guid]::NewGuid())
 $local = Join-Path $scratch 'local'
 $roaming = Join-Path $scratch 'roaming'
 $folder = Join-Path $scratch 'fixtures'
@@ -67,7 +68,7 @@ function Find-Editor([string]$Marker) {
     foreach ($edit in $edits) {
         $value = $null
         if ($edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$value) -and
-            !$value.Current.IsReadOnly -and ($value.Current.Value.Contains($Marker) -or (Has-Text $Marker))) { return $value }
+            !$value.Current.IsReadOnly -and (([string]$value.Current.Value).Contains($Marker) -or (Has-Text $Marker))) { return $value }
     }
 }
 
@@ -106,3 +107,6 @@ try {
     if ($stderr.IsCompletedSuccessfully) { Write-Host $stderr.Result }
     $proc.Dispose()
 }
+$owned = Get-Item -LiteralPath $scratch
+if ($owned.Parent.FullName -ne $temp -or $owned.FullName -ne $scratch) { throw "Unexpected fixture directory $scratch" }
+Remove-Item -LiteralPath $owned.FullName -Recurse -Force

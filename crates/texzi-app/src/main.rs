@@ -80,6 +80,8 @@ mod app {
     use nsh_core::prelude::*;
     use nsh_platform_windows as platform;
 
+    const WINDOW_TITLE: &str = "texzi — 原生编辑";
+
     pub(crate) fn rich_classes() -> nsh_base::rich_editor::view::RichEditorClasses {
         use std::collections::BTreeMap;
         let mut classes = nsh_base::rich_editor::view::RichEditorClasses::default();
@@ -121,6 +123,7 @@ mod app {
         nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#20242b","background":"#ffffff","muted":"#f3f4f6","muted-foreground":"#616975","border":"#dee2e8","accent":"#edf1f6","accent-foreground":"#20242b","input":"#dee2e8"},"dark":{"foreground":"#e5e9f0","background":"#191d23","muted":"#20242b","muted-foreground":"#a7b0bd","border":"#3b4350","accent":"#303845","accent-foreground":"#e5e9f0","input":"#3b4350"}}}"##)).expect("application palette"));
         nsh_core::element::desktop::window()
             .id("main")
+            .title(WINDOW_TITLE)
             .default_size(size(px(960.0), px(640.0)))
             .content(crate::app_shell::view_shell)
     }
@@ -134,7 +137,7 @@ mod app {
         platform::run_app(
             platform::AppSource::Rust(platform::Root::of::<Window>().main_window(main_window)),
             platform::AppOptions {
-                title: "texzi — 原生编辑".to_owned(),
+                title: WINDOW_TITLE.to_owned(),
                 app_id: "dev.texzi.tx00".to_owned(),
                 size: (960, 640),
                 ..Default::default()
