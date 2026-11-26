@@ -338,6 +338,8 @@ pub(crate) struct Input {
     /// ([`keyboard_context_menu_opened`]), so that it does not go on to the
     /// window an embedded surface is in.
     context_key: Cell<bool>,
+    /// The one rich scroll grab whose mounted target can still be applied.
+    pub(crate) rich_thumb: Cell<Option<crate::scroll::rich_thumb::Grab>>,
     /// Next touch identifier.
     next_id: Cell<u32>,
     /// Next press generation (invalidates callbacks of earlier ones).
@@ -363,7 +365,7 @@ enum Mode {
     /// mouse), from where the drag began.
     Thumb(NshView, (f32, f32)),
     /// A windowed document mounts the requested body before moving its offset.
-    VirtualThumb(NshView, crate::scroll::VirtualThumb),
+    VirtualThumb(NshView, crate::scroll::rich_thumb::VirtualThumb),
     /// One of two fingers pinching / rotating.
     TwoFinger,
 }
@@ -1306,6 +1308,9 @@ fn wheel_event(surface: &Rc<Surface>, event: &WheelEvent) -> bool {
 /// A wheel event from the window.
 pub(crate) fn wheel(surface: &Rc<Surface>, event: WheelEvent) {
     let (x, y) = (event.x, event.y);
+    if event.dx != 0.0 || event.dy != 0.0 {
+        crate::scroll::rich_thumb::supersede_input(surface);
+    }
     if raw_wheel(surface, &event) {
         return;
     }
@@ -1354,6 +1359,9 @@ pub(crate) fn menu_key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
 
 fn dispatch_key(surface: &Rc<Surface>, event: KeyEvent, from_menu: bool) -> bool {
     let input = &surface.input;
+    if crate::scroll::key_move(&event).is_some() {
+        crate::scroll::rich_thumb::supersede_input(surface);
+    }
     if MODIFIER_KEYS.contains(&event.vk) && !event.repeat {
         modifiers_changed(surface, event.modifiers);
     } else if event.down {
@@ -1665,6 +1673,7 @@ fn down(
     clicks: u32,
     modifiers: Modifiers,
 ) {
+    crate::scroll::rich_thumb::supersede_input(surface);
     // A release we never saw (the window lost the capture).
     if let Some(stale) = take(surface, key) {
         finish(surface, stale, true);
@@ -1722,10 +1731,11 @@ fn down(
             gate: None,
             pinch: None,
             pressed: Vec::new(),
-            mode: crate::scroll::VirtualThumb::capture(&view, y).map_or_else(
-                || Mode::Thumb(view.clone(), (x, y)),
-                |drag| Mode::VirtualThumb(view.clone(), drag),
-            ),
+            mode: crate::scroll::rich_thumb::VirtualThumb::capture(surface, &view, y, id)
+                .map_or_else(
+                    || Mode::Thumb(view.clone(), (x, y)),
+                    |drag| Mode::VirtualThumb(view.clone(), drag),
+                ),
             moved: false,
         };
         p.velocity.add(time, point(Points(x), Points(y)));
@@ -2019,7 +2029,7 @@ fn up(surface: &Rc<Surface>, key: Key, at: Option<(f32, f32)>, time: f64, cancel
             let view = view.clone();
             crate::scroll::thumb_move(surface, &view, x - origin.0, y - origin.1);
         }
-        if let Mode::VirtualThumb(_, drag) = &mut p.mode {
+        if !cancelled && let Mode::VirtualThumb(_, drag) = &mut p.mode {
             drag.move_to(surface, y);
         }
         p.x = x;
@@ -2060,7 +2070,9 @@ fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
             let (vx, vy) = p.velocity.velocity();
             crate::scroll::drag_end(surface, &view, vx, vy);
         }
-        Mode::Thumb(view, _) | Mode::VirtualThumb(view, _) => {
+        Mode::Thumb(view, _) => crate::scroll::thumb_end(surface, &view),
+        Mode::VirtualThumb(view, drag) => {
+            drag.finish(surface, cancelled);
             crate::scroll::thumb_end(surface, &view)
         }
         Mode::Idle | Mode::Free => {
@@ -2077,16 +2089,6 @@ fn finish(surface: &Rc<Surface>, mut p: Pointer, cancelled: bool) {
             }
         }
     }
-}
-
-/// A mounted destination is applied without ending a captured indicator drag.
-pub(crate) fn dragging_virtual_thumb(surface: &Surface, target: &NshView) -> bool {
-    surface
-        .input
-        .pointers
-        .borrow()
-        .iter()
-        .any(|p| matches!(&p.mode, Mode::VirtualThumb(view, _) if view.id() == target.id()))
 }
 
 /// Sends the touches of the reporting pointers, `changed` being the one

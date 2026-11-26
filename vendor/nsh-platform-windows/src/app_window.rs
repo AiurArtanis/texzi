@@ -868,6 +868,7 @@ pub(crate) fn handle(
         }
         WM_ERASEBKGND => Some(Some(LRESULT(1))),
         WM_SIZE => {
+            crate::scroll::rich_thumb::cancel_window(surface, hwnd);
             // The frame's material follows the zoom state.
             crate::shell::zoom_changed(hwnd);
             if let Some(window) = &window {
@@ -882,6 +883,7 @@ pub(crate) fn handle(
             Some(Some(LRESULT(0)))
         }
         WM_DPICHANGED => {
+            crate::scroll::rich_thumb::cancel_window(surface, hwnd);
             // In full screen it keeps covering its monitor.
             if !crate::window::is_full_screen(hwnd) {
                 // SAFETY: `lparam` is the suggested window rectangle.

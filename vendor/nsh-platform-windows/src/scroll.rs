@@ -17,11 +17,13 @@
 //! [`ViewState::child_origin`] places each child at the mirror image of
 //! its frame, and keys are mirrored here.
 
+pub(crate) mod rich_thumb;
+
 use std::rc::Rc;
 
 use nsh_core::{
-    Color, Command, EventKind, EventPayload, NodeId, Point, Points, ScrollBehavior, Size,
-    StickyCell, ViewKind,
+    Color, Command, EventKind, EventPayload, Point, Points, ScrollBehavior, Size, StickyCell,
+    ViewKind,
     geometry::{Percentage, Radians, point},
     scroll::{self as shared, INDICATOR_THICK, KeyMove, ScrollHost, ScrollState},
 };
@@ -288,6 +290,7 @@ pub(crate) fn content(surface: &Rc<Surface>, view: &NshView, size: Size<Points>)
 
 /// `ScrollBy`.
 pub(crate) fn scroll_by(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32) {
+    rich_thumb::supersede_view(surface, view);
     shared::scroll_by(&Host::new(surface, view), point(Points(dx), Points(dy)));
 }
 
@@ -330,41 +333,7 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
 
 /// `scrollTo` and `scrollToEnd`.
 pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) {
-    if let Command::ScrollTo {
-        y, animated: false, ..
-    } = command
-        && let Some(receiver) = thumb_receiver(view)
-    {
-        if crate::input::dragging_virtual_thumb(surface, view) {
-            let state = view.state();
-            let s = state.scroll.as_ref().expect("scroll view");
-            let max = s.max(state.frame.size).y.0.max(0.0);
-            let delta = (y.0 + s.behavior.content_inset.top.0).clamp(0.0, max) - s.y.0;
-            drop(state);
-            // ScrollBy retains the indicator, pointer capture and drag phase.
-            scroll_by(surface, view, 0.0, delta);
-        } else {
-            shared::command(&Host::new(surface, view), command);
-        }
-        let state = view.state();
-        let actual = state
-            .scroll
-            .as_ref()
-            .expect("scroll view")
-            .reported(state.frame.size)
-            .y
-            .0;
-        drop(state);
-        surface.event(
-            receiver,
-            EventKind::NativeEvent,
-            EventPayload::Native {
-                name: "thumbApplied".into(),
-                data: serde_json::json!([y.0, actual]),
-            },
-        );
-        return;
-    }
+    rich_thumb::supersede_view(surface, view);
     shared::command(&Host::new(surface, view), command);
 }
 
@@ -444,66 +413,6 @@ pub(crate) fn hovered(surface: &Rc<Surface>, view: &NshView, x: f32, y: f32) {
 /// The mouse grabbed `view`'s indicator ([`grabs_thumb`]).
 pub(crate) fn thumb_begin(surface: &Rc<Surface>, view: &NshView) {
     shared::thumb_begin(&Host::new(surface, view));
-}
-
-/// The rich editor appends this receiver only while its block list is virtual.
-fn thumb_receiver(view: &NshView) -> Option<NodeId> {
-    view.with_children(|children| {
-        children
-            .last()
-            .filter(|child| {
-                child.state().props.test_id.as_deref() == Some("texzi.rich.thumb-target")
-            })
-            .map(NshView::id)
-    })
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct VirtualThumb {
-    receiver: NodeId,
-    origin: f32,
-    start: f32,
-    travel: f32,
-    last: f32,
-}
-
-impl VirtualThumb {
-    pub(crate) fn capture(view: &NshView, origin: f32) -> Option<Self> {
-        let receiver = thumb_receiver(view)?;
-        let visible = view.visible_bounds();
-        let state = view.state();
-        let scroll = state.scroll.as_ref()?;
-        let max = scroll.max(state.frame.size).y.0;
-        let (_, travel) = scroll.thumb_within(state.frame.size, visible)?;
-        if scroll.horizontal || max <= 0.0 || travel.0 <= 0.0 {
-            return None;
-        }
-        let start = (scroll.y.0 / max).clamp(0.0, 1.0);
-        Some(Self {
-            receiver,
-            origin,
-            start,
-            travel: travel.0,
-            last: start,
-        })
-    }
-
-    pub(crate) fn move_to(&mut self, surface: &Rc<Surface>, y: f32) {
-        // Each sample is absolute relative to the original grab. Collapsing
-        // intermediate events never loses distance or changes the release point.
-        let target = (self.start + (y - self.origin) / self.travel).clamp(0.0, 1.0);
-        if target != self.last {
-            self.last = target;
-            surface.event(
-                self.receiver,
-                EventKind::NativeEvent,
-                EventPayload::Native {
-                    name: "thumbTarget".into(),
-                    data: target.into(),
-                },
-            );
-        }
-    }
 }
 
 /// The grabbed indicator was dragged by `(dx, dy)` points since it was
@@ -663,7 +572,7 @@ pub(crate) fn wheel_settle(surface: &Rc<Surface>, view: &NshView) {
 // The keyboard.
 
 /// What a key scrolls: whether along the horizontal axis, and how.
-fn key_move(event: &KeyEvent) -> Option<(bool, KeyMove)> {
+pub(crate) fn key_move(event: &KeyEvent) -> Option<(bool, KeyMove)> {
     let m = event.modifiers;
     if !event.down || m.alt || m.meta {
         return None;
@@ -834,6 +743,94 @@ mod tests {
             s.horizontal = horizontal;
         }
         view
+    }
+
+    #[test]
+    fn only_the_latest_rich_grab_can_apply_a_mounted_page() {
+        use crate::scroll::rich_thumb::{VirtualThumb, command};
+        use serde_json::json;
+        let surface = Surface::new(Default::default());
+        let view = scroll_view(300.0, 400.0, (300.0, 10_000.0), false);
+        let marker = |id| {
+            let child = NshView::new(id, ViewKind::View);
+            child.state_mut().props.test_id = Some("texzi.rich.thumb-target".into());
+            child.insert_before(&view, None);
+            child
+        };
+        let original = marker(3);
+        let grab = |id| VirtualThumb::capture(&surface, &view, 0.0, id).unwrap();
+        let apply = |node, gesture, ticket, target| {
+            command(
+                &surface,
+                &view,
+                "texziApplyRichThumb",
+                &json!([node, gesture, ticket, target]),
+            );
+        };
+        let pos = || view.state().scroll.as_ref().unwrap().y.0;
+        let first = grab(17);
+        first.finish(&surface, false);
+        apply(3, 17, 1, 9800.0);
+        assert_eq!(pos(), 9600.0, "the released target is clamped and applied");
+        apply(3, 17, 1, 1200.0);
+        assert_eq!(pos(), 9600.0, "duplicate ticket");
+        let second = grab(18);
+        first.finish(&surface, true);
+        apply(3, 17, 2, 800.0);
+        assert_eq!(
+            pos(),
+            9600.0,
+            "a previous grab cannot take back the viewport"
+        );
+        apply(3, 18, 3, 2100.0);
+        second.finish(&surface, true);
+        apply(3, 18, 4, 4800.0);
+        assert_eq!(pos(), 2100.0, "lost capture");
+        grab(19).finish(&surface, false);
+        crate::input::wheel(
+            &surface,
+            crate::input::WheelEvent {
+                x: 0.0,
+                y: 0.0,
+                dx: 0.0,
+                dy: 40.0,
+                precise: false,
+                modifiers: Default::default(),
+                time: 0.0,
+            },
+        );
+        apply(3, 19, 5, 4800.0);
+        assert_eq!(
+            pos(),
+            2100.0,
+            "wheel after release supersedes its queued target"
+        );
+        grab(20);
+        let _new_layout = marker(4);
+        apply(original.id(), 20, 6, 6600.0);
+        assert_eq!(
+            pos(),
+            2100.0,
+            "the destination was measured for an older document"
+        );
+        grab(21);
+        super::command(
+            &surface,
+            &view,
+            &Command::ScrollTo {
+                x: Points::ZERO,
+                y: Points(150.0),
+                animated: false,
+            },
+        );
+        apply(4, 21, 7, 6600.0);
+        let state = view.state();
+        let scroll = state.scroll.as_ref().unwrap();
+        assert_eq!(scroll.y.0, 150.0);
+        assert_eq!(
+            scroll.applied, 1,
+            "only the actual Core scroll counts as issued"
+        );
     }
 
     #[test]

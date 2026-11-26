@@ -499,6 +499,16 @@ impl Mounter {
             Command::SetJsResponder { .. } | Command::ClearJsResponder => {
                 crate::input::command(surface, id, command);
             }
+            Command::Native { name, args }
+                if matches!(
+                    name.as_ref(),
+                    "texziApplyRichThumb" | "texziCancelRichThumb"
+                ) =>
+            {
+                if let Some(view) = view.filter(|view| view.kind() == ViewKind::Scroll) {
+                    crate::scroll::rich_thumb::command(surface, view, name, args);
+                }
+            }
             Command::Reload
             | Command::GoBack
             | Command::GoForward

@@ -1,10 +1,12 @@
-//! The Windows scrollbar can cross thousands of unmounted blocks in one
-//! pointer move. Keep the displayed and requested pages until the platform
-//! has mounted the destination and acknowledged its actual scroll offset.
+//! A Windows scrollbar can cross thousands of unmounted blocks in one
+//! pointer move. Keep both pages until Windows applies the mounted target.
+//! A grab belongs to one receiver, which is replaced when the document or
+//! its layout changes. Late commands and receipts carry that identity.
 
 use std::{cell::Cell, rc::Rc, sync::OnceLock, time::Instant};
 
-use nsh_core::{EventKind, EventPayload, prelude::*};
+use nsh_core::{EventKind, EventPayload, NodeId, prelude::*};
+use serde_json::json;
 
 use super::{controller::Rv, render::has_block_window};
 
@@ -15,8 +17,15 @@ pub(super) fn tracing() -> bool {
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Grab {
+    receiver: NodeId,
+    gesture: u32,
+}
+
 pub(super) struct ThumbScroll {
     pub destination: Signal<Option<Points>>,
+    grab: Cell<Option<Grab>>,
     latest: Cell<Option<f32>>,
     ticket: Cell<u64>,
     awaiting_offset: Cell<bool>,
@@ -26,32 +35,59 @@ impl ThumbScroll {
     pub fn new() -> Rc<Self> {
         Rc::new(Self {
             destination: signal(None),
+            grab: Cell::default(),
             latest: Cell::default(),
             ticket: Cell::default(),
             awaiting_offset: Cell::default(),
         })
     }
 
-    pub fn cancel(&self) {
-        self.ticket.set(self.ticket.get().wrapping_add(1));
+    fn reset(&self) {
+        self.grab.set(None);
         self.latest.set(None);
         self.awaiting_offset.set(false);
-        // The receiver also cleans up when its editor's owner is disposed.
         self.destination.try_set(None);
     }
 }
 
-/// A direct child identifies only a currently windowed rich scroller to
-/// its Windows thumb. It occupies no space and never participates in input.
+/// A direct child identifies a windowed rich scroller and the geometry
+/// its absolute targets belong to. Ordinary height measurements keep the
+/// receiver. Document edits, reflow and viewport resizes replace it.
 pub(super) fn receiver(rv: Rv) -> AnyElement {
     let doc = rv.clone();
-    when(
-        move || has_block_window(&doc),
-        move || {
-            let thumb = rv.thumb.clone();
-            cleanup(move || thumb.cancel());
+    let geometry = computed(move || {
+        if has_block_window(&doc) {
+            let size = doc.viewport.get();
+            vec![(
+                doc.doc_rev.get(),
+                doc.block_layout.get(),
+                size.width.0.to_bits(),
+                size.height.0.to_bits(),
+            )]
+        } else {
+            Vec::new()
+        }
+    });
+    each(
+        geometry,
+        |key| *key,
+        move |_, _| {
+            let current = element_ref();
+            let bound = Rc::new(Cell::new(None));
+            let bound_at_cleanup = bound.clone();
+            let editor = rv.clone();
+            cleanup(move || {
+                // The keyed receiver's old owner can be disposed after replacement.
+                if let (Some(node), Some(grab)) = (bound_at_cleanup.get(), editor.thumb.grab.get())
+                    && node == grab.receiver
+                {
+                    editor.cancel_thumb();
+                }
+            });
             let rv = rv.clone();
+            let handle = current.clone();
             view()
+                .element_ref(&current)
                 .absolute()
                 .w(px(0.0))
                 .h(px(0.0))
@@ -62,31 +98,50 @@ pub(super) fn receiver(rv: Rv) -> AnyElement {
                     let EventPayload::Native { name, data } = event else {
                         return;
                     };
+                    let (Some(receiver), Some(gesture)) = (
+                        handle.node(),
+                        data[0].as_u64().and_then(|n| u32::try_from(n).ok()),
+                    ) else {
+                        return;
+                    };
+                    let grab = Grab { receiver, gesture };
                     match name.as_ref() {
-                        "thumbTarget" => {
-                            if let Some(fraction) = data.as_f64() {
-                                rv.request_thumb(fraction as f32);
+                        "thumbBegin" => {
+                            bound.set(Some(receiver));
+                            rv.thumb.reset();
+                            rv.thumb.grab.set(Some(grab));
+                        }
+                        "thumbTarget" if rv.thumb.grab.get() == Some(grab) => {
+                            if let Some(fraction) = data[1].as_f64() {
+                                rv.request_thumb(grab, fraction as f32);
                             }
                         }
-                        "thumbApplied" => {
-                            if let (Some(request), Some(actual)) =
-                                (data[0].as_f64(), data[1].as_f64())
+                        "thumbApplied" if rv.thumb.grab.get() == Some(grab) => {
+                            if let (Some(ticket), Some(actual)) =
+                                (data[1].as_u64(), data[2].as_f64())
                             {
-                                rv.thumb_applied(px(request as f32), px(actual as f32));
+                                rv.thumb_applied(grab, ticket, px(actual as f32));
                             }
                         }
+                        "thumbCancel" if rv.thumb.grab.get() == Some(grab) => rv.thumb.reset(),
                         _ => {}
                     }
                 })
         },
     )
-    .into_element()
 }
 
 impl Rv {
-    fn request_thumb(&self, fraction: f32) {
-        // A fast pointer can request several destinations before one is
-        // ready. Finish the in-flight page and then take the latest one.
+    pub(super) fn cancel_thumb(&self) {
+        if let Some(grab) = self.thumb.grab.get() {
+            self.thumb.reset();
+            self.scroll
+                .command("texziCancelRichThumb", json!([grab.receiver, grab.gesture]));
+        }
+    }
+
+    fn request_thumb(&self, grab: Grab, fraction: f32) {
+        // Coalesce samples but let the page already mounting finish.
         if self.thumb.destination.get_untracked().is_some() {
             self.thumb.latest.set(Some(fraction));
             return;
@@ -97,9 +152,10 @@ impl Rv {
         let target = px(max * fraction.clamp(0.0, 1.0));
         if tracing() {
             eprintln!(
-                "TEXZI_THUMB {:?} request node={:?} fraction={fraction} shown={} target={} max={max}",
+                "TEXZI_THUMB {:?} request node={} gesture={} shown={} target={} max={max}",
                 Instant::now(),
-                self.scroll.node(),
+                grab.receiver,
+                grab.gesture,
                 self.scroll_y.get_untracked().0,
                 target.0
             );
@@ -115,40 +171,34 @@ impl Rv {
         self.owner.run(|| {
             spawn(async move {
                 let ready = mounted.await.is_ok();
-                if rv.thumb.ticket.get() != ticket {
+                if rv.thumb.grab.get() != Some(grab) || rv.thumb.ticket.get() != ticket {
                     return;
                 }
                 if !ready || rv.scroll.node().is_none() {
-                    rv.thumb.cancel();
+                    rv.cancel_thumb();
                     return;
                 }
                 rv.thumb.awaiting_offset.set(true);
                 if tracing() {
-                    eprintln!(
-                        "TEXZI_THUMB {:?} mount-applied node={:?} target={}",
-                        Instant::now(),
-                        rv.scroll.node(),
-                        target.0
-                    );
+                    eprintln!("TEXZI_THUMB {:?} mount-applied node={} gesture={} ticket={ticket} target={}",
+                        Instant::now(), grab.receiver, grab.gesture, target.0);
                 }
-                rv.scroll.scroll_to(Point::new(px(0.0), target), false);
+                rv.scroll.command("texziApplyRichThumb", json!([grab.receiver, grab.gesture, ticket, target.0]));
             })
         });
     }
 
-    fn thumb_applied(&self, requested: Points, actual: Points) {
-        if !self.thumb.awaiting_offset.get()
-            || self.thumb.destination.get_untracked() != Some(requested)
-        {
+    fn thumb_applied(&self, grab: Grab, ticket: u64, actual: Points) {
+        if !self.thumb.awaiting_offset.get() || self.thumb.ticket.get() != ticket {
             return;
         }
         batch(|| {
             if tracing() {
                 eprintln!(
-                    "TEXZI_THUMB {:?} offset-applied node={:?} requested={} actual={}",
+                    "TEXZI_THUMB {:?} offset-applied node={} gesture={} ticket={ticket} actual={}",
                     Instant::now(),
-                    self.scroll.node(),
-                    requested.0,
+                    grab.receiver,
+                    grab.gesture,
                     actual.0
                 );
             }
@@ -157,7 +207,7 @@ impl Rv {
             self.thumb.awaiting_offset.set(false);
             self.thumb.destination.set(None);
             if let Some(fraction) = self.thumb.latest.take() {
-                self.request_thumb(fraction);
+                self.request_thumb(grab, fraction);
             }
         });
     }

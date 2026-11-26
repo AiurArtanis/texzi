@@ -1476,6 +1476,7 @@ fn handle(
         }
         WM_ERASEBKGND => return Some(LRESULT(1)),
         WM_SIZE => {
+            crate::scroll::rich_thumb::cancel_window(surface, hwnd);
             // Filled first: the frame below waits for the layout, and DWM
             // shows the window's redirection surface past the last frame
             // meanwhile, black unless filled (DWM never shows a window swap
@@ -1489,6 +1490,7 @@ fn handle(
             surface.paint();
         }
         WM_DPICHANGED => {
+            crate::scroll::rich_thumb::cancel_window(surface, hwnd);
             // In full screen it keeps covering its monitor.
             if !is_full_screen(hwnd) {
                 // SAFETY: `lparam` is the suggested window rectangle.

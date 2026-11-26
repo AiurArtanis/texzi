@@ -28,7 +28,7 @@ struct Mounted {
     scrolls: HashSet<NodeId>,
     parents: HashMap<NodeId, NodeId>,
     rows: HashMap<NodeId, usize>,
-    offsets: Vec<f32>,
+    offsets: Vec<(NodeId, u32, u64, f32)>,
 }
 
 impl Mounted {
@@ -62,9 +62,14 @@ impl Mounted {
                         }
                         MountItem::Command {
                             id,
-                            command: Command::ScrollTo { y, .. },
-                        } if Some(id) == self.scroll => {
-                            self.offsets.push(y.0);
+                            command: Command::Native { name, args },
+                        } if Some(id) == self.scroll && name.as_ref() == "texziApplyRichThumb" => {
+                            self.offsets.push((
+                                args[0].as_u64().unwrap() as NodeId,
+                                args[1].as_u64().unwrap() as u32,
+                                args[2].as_u64().unwrap(),
+                                args[3].as_f64().unwrap() as f32,
+                            ));
                         }
                         _ => {}
                     }
@@ -120,7 +125,9 @@ fn a_fast_thumb_keeps_both_pages_until_their_mount_and_scroll_are_acknowledged()
     assert!(mounted.contains(1) && !mounted.contains(4096));
     mounted.offsets.clear();
 
-    mounted.event(&mut core, "thumbTarget", json!(1.0));
+    let receiver = mounted.receiver.unwrap();
+    mounted.event(&mut core, "thumbBegin", json!([21]));
+    mounted.event(&mut core, "thumbTarget", json!([21, 1.0]));
     mounted.flush(&mut core);
     assert!(
         mounted.contains(1) && mounted.contains(4096),
@@ -136,17 +143,22 @@ fn a_fast_thumb_keeps_both_pages_until_their_mount_and_scroll_are_acknowledged()
         "the platform has not applied the target mount"
     );
 
-    mounted.event(&mut core, "thumbTarget", json!(0.5));
-    mounted.event(&mut core, "thumbTarget", json!(0.25));
+    mounted.event(&mut core, "thumbTarget", json!([21, 0.5]));
+    mounted.event(&mut core, "thumbTarget", json!([21, 0.25]));
     for task in core.take_main_thread_tasks() {
         task.run();
     }
     mounted.flush(&mut core);
-    let [to] = mounted.offsets[..] else {
+    let [(node, 21, ticket, to)] = mounted.offsets[..] else {
         panic!("expected one mounted target: {:?}", mounted.offsets)
     };
+    assert_eq!(node, receiver);
     assert!(to > 10_000.0 && mounted.contains(1) && mounted.contains(4096));
-    mounted.event(&mut core, "thumbApplied", json!([to, to]));
+    mounted.event(&mut core, "thumbApplied", json!([20, ticket, to]));
+    mounted.event(&mut core, "thumbApplied", json!([21, ticket + 1, to]));
+    mounted.flush(&mut core);
+    assert!(mounted.contains(1) && mounted.contains(4096));
+    mounted.event(&mut core, "thumbApplied", json!([21, ticket, to]));
     mounted.flush(&mut core);
     assert!(!mounted.contains(1) && !mounted.contains(2048) && mounted.contains(4096));
     assert!(
@@ -154,4 +166,31 @@ fn a_fast_thumb_keeps_both_pages_until_their_mount_and_scroll_are_acknowledged()
         "latest queued target"
     );
     assert!(mounted.rows.len() < 512);
+
+    // The quarter-page request is waiting for its mount. A reflow must
+    // discard that destination even when its earlier fence runs later.
+    core.set_viewport(Size::new(px(520.0), px(420.0)));
+    mounted.flush(&mut core);
+    assert_ne!(mounted.receiver, Some(receiver));
+    for task in core.take_main_thread_tasks() {
+        task.run();
+    }
+    mounted.flush(&mut core);
+    assert_eq!(mounted.offsets.len(), 1, "stale layout issued a command");
+    assert!(!mounted.rows.values().any(|&n| (900..1150).contains(&n)));
+
+    mounted.event(&mut core, "thumbBegin", json!([22]));
+    mounted.event(&mut core, "thumbTarget", json!([22, 0.5]));
+    mounted.flush(&mut core);
+    mounted.event(&mut core, "thumbCancel", json!([22]));
+    mounted.event(&mut core, "thumbBegin", json!([23]));
+    mounted.event(&mut core, "thumbTarget", json!([23, 0.25]));
+    for task in core.take_main_thread_tasks() {
+        task.run();
+    }
+    mounted.flush(&mut core);
+    assert_eq!(mounted.offsets.len(), 2);
+    let (new_node, new_grab, _, _) = mounted.offsets[1];
+    assert_eq!(Some(new_node), mounted.receiver);
+    assert_eq!(new_grab, 23);
 }

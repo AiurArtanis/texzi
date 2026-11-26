@@ -3003,9 +3003,7 @@ impl Rv {
     }
 
     pub(crate) fn set_viewport_scroll(&self, y: f32) {
-        if self.thumb.destination.get_untracked().is_some() {
-            self.thumb.cancel();
-        }
+        self.cancel_thumb();
         let max = (self.content_height.get_untracked() - self.viewport.get_untracked().height)
             .0
             .max(0.0);
