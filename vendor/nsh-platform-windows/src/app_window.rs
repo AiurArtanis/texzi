@@ -92,6 +92,8 @@ pub(crate) struct AppWindow {
     placed: RefCell<Vec<(Rc<dyn Hosted>, RECT)>>,
     composed: RefCell<Vec<Rc<dyn Hosted>>>,
     swap: RefCell<Option<crate::gfx::SwapChain>>,
+    /// Successful presents in this window, including across swap-chain changes.
+    presentation: Cell<u64>,
     /// The scale of the swap chain's target.
     target_scale: Cell<f32>,
     /// Its client area in pixels, and its scale.
@@ -124,6 +126,23 @@ fn get(surface: &Surface, id: NodeId) -> Option<Rc<AppWindow>> {
         .iter()
         .find(|w| w.id == id)
         .cloned()
+}
+
+/// Observes this window's own swap chain and optionally requests a frame.
+pub(crate) fn presentation(surface: &Surface, id: NodeId, request: bool) -> Option<u64> {
+    let window = get(surface, id)?;
+    // SAFETY: the window is retained on its UI thread.
+    if window.closed.get()
+        || !unsafe { IsWindowVisible(window.hwnd) }.as_bool()
+        || unsafe { IsIconic(window.hwnd) }.as_bool()
+    {
+        return None;
+    }
+    let frame = window.presentation.get();
+    if request {
+        invalidate(&window);
+    }
+    Some(frame)
 }
 
 /// Whether dialog root `id` is shown in a window of its own.
@@ -347,6 +366,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         placed: RefCell::default(),
         composed: RefCell::default(),
         swap: RefCell::new(None),
+        presentation: Cell::new(0),
         target_scale: Cell::new(0.0),
         pixels: Cell::new((0, 0)),
         scale: Cell::new(1.0),
@@ -596,6 +616,7 @@ fn paint(surface: &Rc<Surface>, window: &AppWindow) {
             base: window.composition.as_deref(),
             composition: web.as_deref(),
             swap: &mut window.swap.borrow_mut(),
+            presentation: &window.presentation,
             target_scale: &window.target_scale,
             size: window.pixels.get(),
             scale: window.scale.get(),
@@ -1017,6 +1038,7 @@ mod tests {
             placed: RefCell::default(),
             composed: RefCell::default(),
             swap: RefCell::new(None),
+            presentation: Cell::new(0),
             target_scale: Cell::new(0.0),
             pixels: Cell::new((0, 0)),
             scale: Cell::new(1.0),
@@ -1098,6 +1120,7 @@ mod tests {
                 placed: RefCell::default(),
                 composed: RefCell::default(),
                 swap: RefCell::new(None),
+                presentation: Cell::new(0),
                 target_scale: Cell::new(0.0),
                 pixels: Cell::new((0, 0)),
                 scale: Cell::new(1.0),

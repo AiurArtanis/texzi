@@ -35,6 +35,7 @@ jobs:
           cargo fmt --all -- --check
           cargo test --workspace --release --locked --target x86_64-pc-windows-msvc -- --test-threads=1
           cargo build -p texzi-app --release --locked --target x86_64-pc-windows-msvc
+          ./scripts/test-windows-startup.ps1 -Exe target/x86_64-pc-windows-msvc/release/texzi-app.exe
           python scripts/verify-windows-identity.py --exe target/x86_64-pc-windows-msvc/release/texzi-app.exe --ico crates/texzi-app/assets/app.ico --report windows-identity.json
           Get-Content -LiteralPath windows-identity.json
           ./scripts/package-windows.ps1

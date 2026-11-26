@@ -1856,6 +1856,7 @@ pub(crate) struct WindowFrame<'a> {
     pub(crate) composition: Option<&'a Composition>,
     /// Its swap chain, and the scale of the chain's target.
     pub(crate) swap: &'a mut Option<gfx::SwapChain>,
+    pub(crate) presentation: &'a std::cell::Cell<u64>,
     pub(crate) target_scale: &'a std::cell::Cell<f32>,
     /// Its client area in pixels, and its pixels per point.
     pub(crate) size: (u32, u32),
@@ -1878,6 +1879,7 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
         base,
         composition,
         swap,
+        presentation,
         target_scale,
         size,
         scale,
@@ -1930,7 +1932,9 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
         }
     };
     let window = Some((root, size));
-    match draw_into(
+    let fps = surface.fps();
+    let started = fps.as_ref().map(|_| std::time::Instant::now());
+    let drawn = draw_into(
         surface,
         &gfx,
         &target,
@@ -1939,7 +1943,9 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
         composition,
         None,
         window,
-    ) {
+    );
+    let painted = started.map(|s| s.elapsed());
+    match drawn {
         Ok(drawn) => {
             if let Some(c) = composition
                 && let Err(err) = c.present(drawn.layers.len())
@@ -1949,11 +1955,16 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
                 device_lost(surface);
                 return false;
             }
+            let showing = fps.as_ref().map(|_| std::time::Instant::now());
             if let Err(err) = chain.present(None) {
                 log::warn!("present failed: {err}");
                 *swap = None;
                 device_lost(surface);
                 return false;
+            }
+            presentation.set(presentation.get().wrapping_add(1));
+            if let (Some(fps), Some(painted), Some(showing)) = (fps, painted, showing) {
+                fps.painted(painted, showing.elapsed());
             }
             crate::surface::items_placed(placed, drawn.items, None);
             crate::surface::composed_placed(composed, composition, drawn.composed, &drawn.layers);

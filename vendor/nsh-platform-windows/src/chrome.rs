@@ -2399,6 +2399,10 @@ pub(crate) fn show_popup(surface: &Rc<Surface>, hwnd: HWND) {
     else {
         return;
     };
+    // A menu requested through the host can be tracked by an app window.
+    // Dispatch its edit role through that window's focus and key bindings.
+    let _root =
+        crate::window::app_window_root(hwnd).and_then(|id| crate::app_window::enter(surface, id));
     let mut entries = Vec::new();
     let mut icons = Vec::new();
     let bitmaps: Rc<RefCell<IconBitmaps>> = Rc::default();

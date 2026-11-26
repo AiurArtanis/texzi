@@ -119,7 +119,10 @@ mod app {
     #[component]
     pub fn Window() -> impl IntoElement {
         nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#20242b","background":"#ffffff","muted":"#f3f4f6","muted-foreground":"#616975","border":"#dee2e8","accent":"#edf1f6","accent-foreground":"#20242b","input":"#dee2e8"},"dark":{"foreground":"#e5e9f0","background":"#191d23","muted":"#20242b","muted-foreground":"#a7b0bd","border":"#3b4350","accent":"#303845","accent-foreground":"#e5e9f0","input":"#3b4350"}}}"##)).expect("application palette"));
-        crate::app_shell::view_shell()
+        nsh_core::element::desktop::window()
+            .id("main")
+            .default_size(size(px(960.0), px(640.0)))
+            .content(crate::app_shell::view_shell)
     }
 
     pub fn run() -> std::process::ExitCode {

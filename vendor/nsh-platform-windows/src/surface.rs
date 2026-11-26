@@ -160,17 +160,25 @@ pub fn node_presentation(id: NodeId, baseline: Option<u64>) -> Option<(u64, bool
         let surface = active.borrow().upgrade()?;
         let view = surface.view(id)?;
         let bounds = view.visible_bounds();
-        if bounds.size.width.0 <= 0.0
-            || bounds.size.height.0 <= 0.0
-            || unsafe { windows::Win32::UI::WindowsAndMessaging::IsIconic(surface.hwnd()) }
-                .as_bool()
-        {
+        if bounds.size.width.0 <= 0.0 || bounds.size.height.0 <= 0.0 {
             return None;
         }
-        let frame = surface.presentation.get();
-        if baseline.is_none() {
-            surface.invalidate_view(&view);
-        }
+        let owner = crate::app_window::window_of(&surface, &view);
+        let frame = if owner == nsh_core::ROOT_ID {
+            use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
+            let hwnd = surface.hwnd();
+            // SAFETY: the host window belongs to this surface's UI thread.
+            if !unsafe { IsWindowVisible(hwnd) }.as_bool() || unsafe { IsIconic(hwnd) }.as_bool() {
+                return None;
+            }
+            let frame = surface.presentation.get();
+            if baseline.is_none() {
+                surface.invalidate_view(&view);
+            }
+            frame
+        } else {
+            crate::app_window::presentation(&surface, owner, baseline.is_none())?
+        };
         Some((frame, baseline.is_some_and(|baseline| frame != baseline)))
     })
 }
