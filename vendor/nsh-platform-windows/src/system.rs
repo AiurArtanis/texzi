@@ -1347,6 +1347,7 @@ fn add_overlay(surface: &Rc<Surface>, serial: u64, kind: OverlayKind) {
     // synchronously send the window messages while it cancels.
     if dialog.recovered.is_some() {
         crate::text_input::cancel_recovery_composition(surface, dialog.window);
+        crate::text_input::update_ime(surface);
         if let Some(hwnd) = crate::app_window::hwnd_of(surface, dialog.window) {
             crate::native::take_keyboard_in(hwnd);
         }
@@ -1449,6 +1450,14 @@ fn drop_overlay(surface: &Surface, serial: u64) {
             root.remove_native(&overlay.kind.item());
         }
         let OverlayKind::Dialog(dialog) = overlay.kind;
+        if dialog.recovered.is_some()
+            && crate::app_window::hwnd_of(surface, dialog.window).is_some()
+        {
+            // Closing a native window removes it from the AppWindow list
+            // first. A card ending on a live window restores only the IME
+            // for the still-eligible logical field, if there is one.
+            crate::text_input::update_ime(surface);
+        }
         if dialog.recovered.is_some() || recovery_blocks_background(surface, dialog.window) {
             crate::access::recovery_changed(surface, dialog.window);
         }

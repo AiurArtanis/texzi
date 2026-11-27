@@ -1253,13 +1253,23 @@ mod tests {
         (hwnd, view)
     }
 
+    fn has_ime(hwnd: HWND) -> bool {
+        use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
+        // SAFETY: checks whether `hwnd` currently holds an associated IMC.
+        unsafe {
+            let himc = ImmGetContext(hwnd);
+            if himc.is_invalid() {
+                return false;
+            }
+            let _ = ImmReleaseContext(hwnd, himc);
+            true
+        }
+    }
+
     #[test]
     fn only_the_window_of_the_focused_field_takes_the_ime() {
         use nsh_core::InputConfig;
-        use windows::Win32::UI::{
-            Input::Ime::{ImmGetContext, ImmReleaseContext},
-            WindowsAndMessaging::{GetSystemMetrics, SM_IMMENABLED},
-        };
+        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_IMMENABLED};
 
         // SAFETY: plain system metric query.
         assert_ne!(
@@ -1267,18 +1277,6 @@ mod tests {
             0,
             "IMM is not enabled on this machine"
         );
-
-        let has_ime = |hwnd: HWND| -> bool {
-            // SAFETY: checks whether `hwnd` currently holds an associated IMC.
-            unsafe {
-                let himc = ImmGetContext(hwnd);
-                if himc.is_invalid() {
-                    return false;
-                }
-                let _ = ImmReleaseContext(hwnd, himc);
-                true
-            }
-        };
 
         let app = crate::app::AppView::new(None, Default::default()).unwrap();
         let surface = app.surface();
@@ -1378,8 +1376,10 @@ mod tests {
             unsafe { SendMessageW(hwnd, message, Some(WPARAM(param)), Some(LPARAM(flags))) };
         };
 
+        let host = surface.hwnd();
         text_input::focus(&old);
         assert!(text_input::focused(surface).as_ref() == Some(&old));
+        assert!(has_ime(hwnd_a) && has_ime(host) && !has_ime(hwnd_b));
         text_input::seed_recovery_preedit_for_test(surface, &old);
         // Queue a printable before presenting, dispatch it only with the
         // recovery card up, like a translated character delayed in the queue.
@@ -1387,6 +1387,12 @@ mod tests {
         unsafe { PostMessageW(Some(hwnd_a), WM_CHAR, WPARAM('x' as usize), LPARAM(0)).unwrap() };
         let (_, mut reply) =
             show_recovery_for_access_test(surface, 7, false, RecoveredDraftDetails::default());
+        assert!(!has_ime(hwnd_a) && !has_ime(host));
+        text_input::window_focus(surface, true);
+        assert!(
+            !has_ime(hwnd_a) && !has_ime(host),
+            "activation keeps the card detached"
+        );
         let mut queued = MSG::default();
         // SAFETY: a local out value and this test's own hidden window.
         unsafe {
@@ -1407,6 +1413,7 @@ mod tests {
         );
 
         text_input::focus(&other);
+        assert!(!has_ime(hwnd_a) && has_ime(hwnd_b) && has_ime(host));
         send(hwnd_b, WM_CHAR, 'B' as usize, 0);
         assert_eq!(contents(&other), "OTHERB");
         // Even when another window has focus, this HWND's queued message
@@ -1415,16 +1422,33 @@ mod tests {
         assert_eq!(contents(&other), "OTHERB");
 
         text_input::focus(&old);
+        assert!(!has_ime(hwnd_a) && !has_ime(hwnd_b) && !has_ime(host));
         assert!(recovery_accessibility(surface, 7).unwrap().invoke(0));
         surface.ui_thread().dispatch_pending_calls();
         assert_eq!(reply.try_recv().unwrap(), RecoveredDraftChoice::Continue);
         assert!(text_input::focused(surface).as_ref() == Some(&old));
+        assert!(has_ime(hwnd_a) && has_ime(host) && !has_ime(hwnd_b));
         send(hwnd_a, WM_CHAR, 'Z' as usize, 0);
         assert_eq!(contents(&old), "OLDZ");
         assert_eq!(contents(&other), "OTHERB");
 
-        text_input::stopped(surface);
+        // The picker can rebuild the card while a different workbench has
+        // a preedit in the same thread. Opening and closing A must not cancel it.
+        text_input::focus(&other);
+        text_input::seed_recovery_preedit_for_test(surface, &other);
+        let (_, mut second) =
+            show_recovery_for_access_test(surface, 7, true, RecoveredDraftDetails::default());
+        assert!(!has_ime(hwnd_a) && has_ime(hwnd_b) && has_ime(host));
+        assert_eq!(text_input::trace_composition(surface, hwnd_b), (true, true));
         assert!(removed(surface, &root_a));
+        assert!(matches!(
+            second.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(has_ime(hwnd_b) && has_ime(host));
+        assert_eq!(text_input::trace_composition(surface, hwnd_b), (true, true));
+
+        text_input::stopped(surface);
         assert!(removed(surface, &root_b));
         drop(root_a);
         drop(root_b);
