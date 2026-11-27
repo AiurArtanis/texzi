@@ -360,7 +360,7 @@ fn byte(rope: &Rope, p: EditorPosition) -> usize {
     let u = (rope.char_to_utf16_cu(start) + p.column as usize).min(rope.char_to_utf16_cu(end));
     rope.char_to_byte(rope.utf16_cu_to_char(u))
 }
-fn position(rope: &Rope, byte: usize) -> EditorPosition {
+pub(super) fn position(rope: &Rope, byte: usize) -> EditorPosition {
     let c = rope.byte_to_char(byte.min(rope.len_bytes()));
     let line = rope.char_to_line(c);
     EditorPosition::new(

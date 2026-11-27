@@ -206,19 +206,62 @@ fn target(s: &Shell) -> Option<Rc<Document>> {
     s.current()
         .filter(|doc| doc.editable_body_ready() && bound(s, doc))
 }
-fn source_mode(s: &Shell, doc: &Document) -> bool {
+fn source_mode(s: &Rc<Shell>, doc: &Rc<Document>) -> bool {
     if doc.gate.busy() || s.find_panel.editing() {
         s.find_panel.status.set("请先完成或取消中文组合".into());
         return false;
     }
-    let switching = doc.displayed_rich();
+    if !doc.displayed_rich() {
+        return true;
+    }
+    let caret_top = doc.viewport_caret_top();
+    let viewport_anchor = if caret_top.is_none() {
+        doc.rich_reference
+            .api::<RichEditorApi>()
+            .and_then(|api| api.visible_document_range())
+            .and_then(|range| {
+                doc.gate
+                    .find_source_position(range.start.midpoint(range.end))
+            })
+    } else {
+        None
+    };
     doc.gate.to_source();
     if doc.displayed_rich() {
         s.find_panel.status.set(doc.gate.status.get());
         return false;
     }
-    if switching {
-        s.notice.set("已切换到源码查找".into());
+    s.notice.set("已切换到源码查找".into());
+    if let Ok((snapshot, epoch)) = doc.source.search_snapshot() {
+        let revision = snapshot.revision;
+        let anchor = viewport_anchor.map(|byte| view::position(snapshot.body.source(), byte));
+        let shell = Rc::downgrade(s);
+        let doc = doc.clone();
+        s.owner.run(|| {
+            spawn(async move {
+                let _ = next_frame().await;
+                let Some(shell) = shell.upgrade() else { return };
+                if !bound(&shell, &doc)
+                    || doc.displayed_rich()
+                    || shell.modal.get()
+                    || !doc
+                        .source
+                        .search_snapshot()
+                        .is_ok_and(|(current, view_epoch)| {
+                            current.revision == revision && view_epoch == epoch
+                        })
+                {
+                    return;
+                }
+                if let Some(api) = doc.reference.api::<EditorApi>() {
+                    if let Some(anchor) = anchor {
+                        api.reveal_position(anchor, true);
+                    } else {
+                        api.reveal_primary_caret(caret_top);
+                    }
+                }
+            });
+        });
     }
     true
 }

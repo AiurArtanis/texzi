@@ -162,6 +162,11 @@ impl RenderedText {
 }
 
 impl ModeGate {
+    pub(crate) fn find_source_position(&self, rich: usize) -> Option<usize> {
+        let active = self.active.borrow();
+        active.as_ref()?.projection.borrow().source_position(rich)
+    }
+
     pub(crate) fn find_rich_root(&self) -> Option<(Node, Range<usize>)> {
         let active = self.active.borrow();
         let owner = active.as_ref()?;
