@@ -1044,7 +1044,7 @@ impl Drop for RecoveredOverlayGuard {
     }
 }
 
-fn recovery_window(surface: &Surface, host: NodeId) -> Option<(NodeId, u64)> {
+pub(crate) fn recovery_window(surface: &Surface, host: NodeId) -> Option<(NodeId, u64)> {
     let view = surface.view(host).filter(|view| view.attached())?;
     let window = crate::app_window::window_of(surface, &view);
     let frame = crate::app_window::presentation(surface, window, false)?;
@@ -3339,6 +3339,7 @@ mod tests {
 
     thread_local! {
         static RECOVERY_RESULT: Cell<Option<Option<RecoveredDraftChoice>>> = const { Cell::new(None) };
+        static RECOVERY_PICKER_CANCELLED: Cell<Option<bool>> = const { Cell::new(None) };
     }
 
     #[nsh_core::element::component]
@@ -3366,6 +3367,20 @@ mod tests {
                         let _ = recovery_options().show();
                     }),
             )
+            .child(
+                view()
+                    .h(px(24.0))
+                    .label("recovery picker trigger")
+                    .on_press(move || {
+                        let reply = crate::file_requests::pick_recovered_draft_save_path(
+                            &host,
+                            nsh_core::file_dialog::SaveDialog::default(),
+                        );
+                        spawn(async move {
+                            RECOVERY_PICKER_CANCELLED.set(Some(matches!(reply.await, Ok(None))));
+                        });
+                    }),
+            )
     }
 
     #[test]
@@ -3377,13 +3392,14 @@ mod tests {
             platform::Os,
         };
         RECOVERY_RESULT.set(None);
+        RECOVERY_PICKER_CANCELLED.set(None);
         let viewport = size(px(800.0), px(600.0));
         let mut core = Core::new(ApproxTextEngine, viewport);
         let mut environment = CoreEnvironment::default();
         environment.os = Os::Windows;
         core.set_environment(environment);
         core.mount_root(&Root::new::<RecoveryBindingFixture>(|| ()));
-        let mut controls = [ROOT_ID; 2];
+        let mut controls = [ROOT_ID; 3];
         for _ in 0..3 {
             core.run_component_tasks();
             if let Some(batch) = core.commit() {
@@ -3392,6 +3408,7 @@ mod tests {
                         match props.accessibility.label.as_deref() {
                             Some("recovery trigger") => controls[0] = id,
                             Some("ordinary trigger") => controls[1] = id,
+                            Some("recovery picker trigger") => controls[2] = id,
                             _ => {}
                         }
                     }
@@ -3443,6 +3460,29 @@ mod tests {
         surface.run_engine_task(tasks.into_iter().next().unwrap());
         core.run_component_tasks();
         assert_eq!(RECOVERY_RESULT.get(), Some(None));
+
+        let missing = Surface::new(Environment::default());
+        for target in [&surface, &missing] {
+            RECOVERY_PICKER_CANCELLED.set(None);
+            assert!(core.component_event(controls[2], EventKind::Press, &EventPayload::None));
+            core.run_component_tasks();
+            assert!(core.commit().is_none_or(|batch| {
+                !batch.items.iter().any(|item| {
+                    matches!(
+                        item,
+                        MountItem::Command {
+                            command: Command::FileRequest { .. },
+                            ..
+                        }
+                    )
+                })
+            }));
+            let mut picker_tasks = core.take_main_thread_tasks().into_iter();
+            target.run_engine_task(picker_tasks.next().expect("the typed picker task"));
+            assert!(picker_tasks.next().is_none());
+            core.run_component_tasks();
+            assert_eq!(RECOVERY_PICKER_CANCELLED.get(), Some(true));
+        }
 
         assert!(core.component_event(controls[1], EventKind::Press, &EventPayload::None));
         core.run_component_tasks();
