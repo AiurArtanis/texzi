@@ -250,6 +250,10 @@ pub struct EditorDecoration {
     /// The inline style of the range's text, over `class`.
     #[prop(skip_none)]
     pub style: Option<Style>,
+    /// A stroke around the range on each display row. An empty range draws
+    /// a narrow position marker. The stroke does not participate in layout.
+    #[prop(skip_none)]
+    pub outline_color: Option<Hsla>,
     /// Tailwind classes of the rows of the lines it covers (a background).
     #[prop(skip_none)]
     pub line_class: Option<SharedString>,

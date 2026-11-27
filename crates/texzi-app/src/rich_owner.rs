@@ -1,8 +1,10 @@
 //! UI-thread dispatcher: rich states are projections, never a second history.
+mod find;
 use crate::{
     editor_owner::NativeView,
     rich_projection::{Projection, manager},
 };
+pub(crate) use find::RenderedText;
 use nsh_base::{
     editor::{ExternalDocument, ExternalEditKind, ExternalSelections, ExternalSnapshot},
     rich_editor::{
@@ -29,7 +31,7 @@ pub struct RichOwner {
     id: u64,
     native: Rc<NativeView>,
     projection: RefCell<Projection>,
-    revision: Cell<u64>,
+    revision: Signal<u64>,
     epoch: Cell<u64>,
     session: EditorSession,
     pub status: Signal<String>,
@@ -125,7 +127,7 @@ impl RichOwner {
             id,
             native,
             projection: RefCell::new(p),
-            revision: Cell::new(s.revision),
+            revision: signal(s.revision),
             epoch: Cell::new(s.view_epoch),
             session: session.clone(),
             status,
@@ -170,7 +172,9 @@ impl RichOwner {
     /// tree only, keeping the one body/history and the mapped view selection.
     fn refresh_external(&self) -> Result<(), String> {
         let current = self.native.snapshot()?;
-        if current.revision == self.revision.get() && current.view_epoch == self.epoch.get() {
+        if current.revision == self.revision.get_untracked()
+            && current.view_epoch == self.epoch.get()
+        {
             return Ok(());
         }
         let previous = self.session.state();
@@ -195,80 +199,11 @@ impl RichOwner {
     pub fn session(&self) -> EditorSession {
         self.session.clone()
     }
-    fn find_literal(&self, query: &str, previous: bool) -> Result<(usize, usize), String> {
-        if query.is_empty() {
-            return Err("请输入查找文字".into());
-        }
-        self.refresh_external()?;
-        let state = self.session.state();
-        let mut text = String::new();
-        let mut positions = std::collections::BTreeMap::new();
-        fn flatten(
-            node: &nsh_base::rich_editor::model::Node,
-            pos: usize,
-            root: bool,
-            text: &mut String,
-            positions: &mut std::collections::BTreeMap<usize, usize>,
-        ) {
-            if let Some(value) = node.text() {
-                let mut offset = pos;
-                positions.insert(text.len(), offset);
-                for ch in value.chars() {
-                    text.push(ch);
-                    offset += ch.len_utf16();
-                    positions.insert(text.len(), offset);
-                }
-            } else if node.ty().name() == "hardBreak" {
-                positions.insert(text.len(), pos);
-                text.push('\n');
-                positions.insert(text.len(), pos + 1);
-            } else {
-                if node.is_textblock() && node.child_count() == 0 {
-                    positions.insert(text.len(), pos + 1);
-                }
-                let mut offset = if root { pos } else { pos + 1 };
-                for i in 0..node.child_count() {
-                    let child = node.child(i);
-                    if i > 0 && child.is_block() {
-                        text.push(if node.ty().name() == "tableRow" {
-                            '\t'
-                        } else {
-                            '\n'
-                        });
-                    }
-                    flatten(child, offset, false, text, positions);
-                    offset += child.node_size();
-                }
-            }
-        }
-        flatten(state.doc(), 0, true, &mut text, &mut positions);
-        let hits: Vec<_> = text
-            .match_indices(query)
-            .filter_map(|(at, _)| {
-                Some((*positions.get(&at)?, *positions.get(&(at + query.len()))?))
-            })
-            .collect();
-        if hits.is_empty() {
-            return Ok((0, 0));
-        }
-        let index = if previous {
-            hits.iter()
-                .rposition(|(_, z)| *z <= state.selection().from())
-                .unwrap_or(hits.len() - 1)
-        } else {
-            hits.iter()
-                .position(|(a, _)| *a >= state.selection().to())
-                .unwrap_or(0)
-        };
-        let (a, z) = hits[index];
-        let mut tr = state.tr();
-        tr.set_selection(TextSelection::create(state.doc(), a, Some(z)));
-        self.dispatch(&self.session, tr)?;
-        Ok((index + 1, hits.len()))
-    }
     fn activate(&self) -> Result<(), String> {
         let current = self.native.snapshot()?;
-        if current.revision != self.revision.get() || current.view_epoch != self.epoch.get() {
+        if current.revision != self.revision.get_untracked()
+            || current.view_epoch != self.epoch.get()
+        {
             return Err("准备期间原文已变化，已保留当前模式".into());
         }
         let state = self.session.state();
@@ -292,7 +227,9 @@ impl RichOwner {
     }
     fn dispatch(&self, session: &EditorSession, mut tr: Transaction) -> Result<(), String> {
         let mut current = self.native.snapshot()?;
-        if current.revision != self.revision.get() || current.view_epoch != self.epoch.get() {
+        if current.revision != self.revision.get_untracked()
+            || current.view_epoch != self.epoch.get()
+        {
             return Err("富文本视图版本已过期，请切回源码后重新打开富文本".into());
         }
         let old = session.state();
@@ -433,10 +370,10 @@ impl RichOwner {
                 Ok(update) => update,
                 Err(error) => {
                     if let Some((typed_state, typed_applied, typed_projection)) = typed_fallback {
-                        self.revision.set(current.revision);
                         self.epoch.set(current.view_epoch);
                         drop(p);
                         *self.projection.borrow_mut() = typed_projection;
+                        self.revision.set(current.revision);
                         session.commit(typed_state, &typed_applied);
                         self.native.notify();
                         return Err(format!("已保留文字输入；自动格式未执行：{error}"));
@@ -444,10 +381,10 @@ impl RichOwner {
                     return Err(error);
                 }
             };
-            self.revision.set(update.snapshot.revision);
             self.epoch.set(update.snapshot.view_epoch);
             drop(p);
             *self.projection.borrow_mut() = projected;
+            self.revision.set(update.snapshot.revision);
             self.native.notify();
         } else if !selection_matches(&p, &next, &current.selections) {
             let a = p
@@ -486,11 +423,13 @@ impl RichOwner {
             return;
         }
         drop(p);
-        match self
-            .native
-            .history(self.revision.get(), self.epoch.get(), undo)
-        {
-            Ok(u) => {
+        match self.native.clone().request_history(
+            self.revision.get_untracked(),
+            self.epoch.get(),
+            undo,
+        ) {
+            Ok(None) => {}
+            Ok(Some(u)) => {
                 let state = self.session.state();
                 match Projection::parse(state.schema(), u.snapshot.rope.to_string()).and_then(|p| {
                     let mut config = EditorStateConfig::new(state.schema().clone())
@@ -503,9 +442,9 @@ impl RichOwner {
                     Ok((p, new))
                 }) {
                     Ok((p, new)) => {
-                        self.revision.set(u.snapshot.revision);
                         self.epoch.set(u.snapshot.view_epoch);
                         *self.projection.borrow_mut() = p;
+                        self.revision.set(u.snapshot.revision);
                         self.session.update_state(new);
                         // Source history can restore a fence-syntax position.
                         // Also synchronize this logical view to the nearest
@@ -685,6 +624,23 @@ pub struct ModeGate {
     pub status: Signal<String>,
 }
 impl ModeGate {
+    pub(crate) fn bind_history_pane(
+        self: &Rc<Self>,
+        shell: Owner,
+        active: impl Fn() -> bool + 'static,
+    ) {
+        let active = Rc::new(active);
+        for (view, rich) in [(&self.source, false), (&self.rich, true)] {
+            let gate = Rc::downgrade(self);
+            let active = active.clone();
+            view.bind_history_target(shell, self.status, move || {
+                active()
+                    && gate
+                        .upgrade()
+                        .is_some_and(|g| g.rich_mode.get() == rich && !g.busy())
+            });
+        }
+    }
     pub fn new(source: Rc<NativeView>, rich: Rc<NativeView>) -> Rc<Self> {
         Rc::new(Self {
             source,
@@ -698,15 +654,30 @@ impl ModeGate {
     pub(crate) fn rich_cursor_status(&self) -> Option<String> {
         self.rich.cursor_status()
     }
-    pub(crate) fn recovery_selection(&self) -> Option<ExternalSelections> {
+    pub(crate) fn visible_text_root(
+        &self,
+        revision: u64,
+    ) -> Option<nsh_base::rich_editor::model::Node> {
+        self.with_visible_projection(revision, |projection| projection.doc.clone())
+    }
+    pub(crate) fn with_visible_projection<T>(
+        &self,
+        revision: u64,
+        inspect: impl FnOnce(&Projection) -> T,
+    ) -> Option<T> {
+        let active = self.active.borrow();
+        let owner = active.as_ref()?;
+        (owner.revision.get() == revision).then(|| inspect(&owner.projection.borrow()))
+    }
+    pub(crate) fn selection_view(&self) -> &NativeView {
         if self.rich_mode.get() {
             &self.rich
         } else {
             &self.source
         }
-        .snapshot()
-        .ok()
-        .map(|snapshot| snapshot.selections)
+    }
+    pub(crate) fn recovery_selection(&self) -> Option<ExternalSelections> {
+        self.selection_view().snapshot().ok().map(|s| s.selections)
     }
     pub fn busy(&self) -> bool {
         self.source.is_composing() || self.rich.is_composing()
@@ -725,7 +696,7 @@ impl ModeGate {
             .iter()
             .filter(|block| block.opaque)
             .map(|block| RawBlockAction {
-                revision: owner.revision.get(),
+                revision: owner.revision.get_untracked(),
                 source: block.source.clone(),
                 line: p.source[..block.source.start]
                     .bytes()
@@ -759,7 +730,7 @@ impl ModeGate {
             .ok_or("正文视图尚未准备完成")?;
         let rich = self.rich.snapshot()?;
         let source = self.source.snapshot()?;
-        if action.revision != owner.revision.get()
+        if action.revision != owner.revision.get_untracked()
             || action.revision != rich.revision
             || action.revision != source.revision
         {
@@ -802,7 +773,7 @@ impl ModeGate {
         let owner = active.as_ref().ok_or("正文视图尚未准备完成")?;
         let rich = self.rich.snapshot()?;
         let source = self.source.snapshot()?;
-        if action.revision != owner.revision.get()
+        if action.revision != owner.revision.get_untracked()
             || action.revision != rich.revision
             || action.revision != source.revision
             || !owner
@@ -996,30 +967,13 @@ impl ModeGate {
             let owner = active.as_ref().ok_or("正文视图尚未准备完成")?;
             owner.history(undo);
             let status = owner.status.get();
-            if !status.is_empty() {
+            if !status.is_empty() && !owner.native.loading_history_status(&status) {
                 return Err(status);
             }
         } else {
-            let current = self.source.snapshot()?;
-            self.source
-                .history(current.revision, current.view_epoch, undo)?;
-            self.source.notify();
+            self.source.undo_redo(undo)?;
         }
         Ok(())
-    }
-    pub fn find_literal(&self, query: &str, previous: bool) -> Result<(usize, usize), String> {
-        if self.busy() {
-            return Err("请先完成或取消中文组合".into());
-        }
-        if self.rich_mode.get() {
-            self.active
-                .borrow()
-                .as_ref()
-                .ok_or("正文视图未就绪")?
-                .find_literal(query, previous)
-        } else {
-            self.source.find_literal(query, previous)
-        }
     }
     pub fn source_mounted(&self) {
         self.active.borrow_mut().take();
@@ -1177,9 +1131,24 @@ mod tests {
             });
             gate.to_rich();
             assert!(gate.rich_mode.get(), "{}", gate.status.get());
-            assert_eq!(gate.find_literal("apple\npear", false).unwrap(), (1, 1));
-            assert_eq!(gate.find_literal("example.invalid", false).unwrap(), (0, 0));
-            assert_eq!(gate.find_literal("label", false).unwrap(), (1, 1));
+            assert_eq!(
+                crate::app_shell::find_panel::fixtures::find_rich(&gate, &source, "apple\npear")
+                    .unwrap(),
+                (1, 1)
+            );
+            assert_eq!(
+                crate::app_shell::find_panel::fixtures::find_rich(
+                    &gate,
+                    &source,
+                    "example.invalid"
+                )
+                .unwrap(),
+                (0, 0)
+            );
+            assert_eq!(
+                crate::app_shell::find_panel::fixtures::find_rich(&gate, &source, "label").unwrap(),
+                (1, 1)
+            );
             assert!(gate.rich_mode.get());
             assert_eq!(bytes(&source), raw.as_bytes());
             assert_eq!(

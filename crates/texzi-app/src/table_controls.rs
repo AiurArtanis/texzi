@@ -6,10 +6,14 @@ use nsh_base::{
         commands::BoxCommand,
         model::{Fragment, Node},
         state::{EditorState, TextSelection, Transaction, TransactionOrigin},
-        tables::{commands as tables, selected_rect},
+        tables::{CellSelection, Rect, TableRect, commands as tables, selected_rect},
+        view::TableAnchor,
     },
 };
-use nsh_core::{element::view as box_view, prelude::*};
+use nsh_core::{
+    element::{scroll, view as box_view},
+    prelude::*,
+};
 use serde_json::{Value, json};
 use std::{cell::RefCell, rc::Rc};
 
@@ -28,6 +32,7 @@ pub(crate) enum TableAction {
     AlignCenter,
     AlignRight,
     Header,
+    CancelHeader,
     DeleteTable,
 }
 impl TableAction {
@@ -44,26 +49,18 @@ impl TableAction {
             Self::AlignCenter => "alignCenter",
             Self::AlignRight => "alignRight",
             Self::Header => "header",
+            Self::CancelHeader => "cancelHeader",
             Self::DeleteTable => "deleteTable",
         }
     }
     pub(crate) fn parse(value: &str) -> Option<Self> {
-        [
-            Self::RowBefore,
-            Self::RowAfter,
-            Self::DeleteRow,
-            Self::ColumnBefore,
-            Self::ColumnAfter,
-            Self::DeleteColumn,
-            Self::AlignDefault,
-            Self::AlignLeft,
-            Self::AlignCenter,
-            Self::AlignRight,
-            Self::Header,
-            Self::DeleteTable,
-        ]
-        .into_iter()
-        .find(|action| action.name() == value)
+        if value == Self::CancelHeader.name() {
+            return Some(Self::CancelHeader);
+        }
+        ACTIONS
+            .into_iter()
+            .map(|(_, _, action)| action)
+            .find(|action| action.name() == value)
     }
 }
 
@@ -88,8 +85,8 @@ pub(crate) fn cell_position(doc: &Node, block: usize, row: usize, col: usize) ->
     )
 }
 
-/// Run the installed NSH command, then maintain GFM's single first header row
-/// and column-wide paragraph alignment. This same deterministic operation is
+/// Run the installed NSH command, maintaining the table's first-row header
+/// state and column-wide paragraph alignment. This same deterministic operation is
 /// replayed by the source bridge; a metadata label alone grants no write.
 pub(crate) fn action_transaction(
     state: &EditorState,
@@ -119,6 +116,9 @@ pub(crate) fn action_transaction(
         })
     {
         return Err("该表格包含跨行、跨列或复杂内容，请编辑源码".into());
+    }
+    if action == TableAction::CancelHeader {
+        return cancel_header_transaction(state, block, row, col, old);
     }
     let mut selection = state.tr();
     selection.set_selection(TextSelection::create(state.doc(), position, None));
@@ -198,6 +198,7 @@ pub(crate) fn action_transaction(
             TableAction::AlignRight => alignments[col] = json!("right"),
             _ => {}
         }
+        let header = action == TableAction::Header || row_has_header(old.child(0));
         let table = tr.doc().child(block).clone();
         let mut row_pos = table_pos + 1;
         for r in 0..table.child_count() {
@@ -205,7 +206,11 @@ pub(crate) fn action_transaction(
             let mut cell_pos = row_pos + 1;
             for (c, alignment) in alignments.iter().enumerate() {
                 let cell = rich_row.child(c);
-                let name = if r == 0 { "tableHeader" } else { "tableCell" };
+                let name = if header && r == 0 {
+                    "tableHeader"
+                } else {
+                    "tableCell"
+                };
                 if cell.ty().name() != name {
                     let ty = state.schema().node_type(name).ok_or("缺少表格单元格类型")?;
                     tr.set_node_markup(cell_pos, Some(ty), Some(cell.attrs().clone()), None)
@@ -233,12 +238,60 @@ pub(crate) fn action_transaction(
             cell_position(tr.doc(), block, target_row, target_col).ok_or("表格结果位置无效")?;
         tr.set_selection(TextSelection::create(tr.doc(), caret, None));
     }
+    stamp_action(&mut tr, block, row, col, action);
+    Ok(tr)
+}
+
+fn cancel_header_transaction(
+    state: &EditorState,
+    block: usize,
+    row: usize,
+    col: usize,
+    table: &Node,
+) -> Result<Transaction, String> {
+    let rich_row = table.child(row);
+    if !row_has_header(rich_row) {
+        return Err("当前行没有表头单元格".into());
+    }
+    let ordinary = state
+        .schema()
+        .node_type("tableCell")
+        .ok_or("缺少普通单元格类型")?;
+    let mut at = cell_position(state.doc(), block, row, 0).ok_or("表格位置已失效")? - 2;
+    let mut tr = state.tr();
+    for column in 0..rich_row.child_count() {
+        let cell = rich_row.child(column);
+        if cell.ty().name() == "tableHeader" {
+            tr.set_node_markup(at, Some(ordinary.clone()), Some(cell.attrs().clone()), None)
+                .map_err(|error| error.to_string())?;
+        }
+        at += cell.node_size();
+    }
+    // Header and ordinary cells have the same shape. Mapping the existing
+    // selection through the transaction keeps an in-cell caret or range.
+    stamp_action(&mut tr, block, row, col, TableAction::CancelHeader);
+    Ok(tr)
+}
+
+pub(crate) fn active_header_cell(state: &EditorState, table: &TableRect) -> Option<Rect> {
+    if let Some(cells) = state.selection().as_custom::<CellSelection>() {
+        let offset = cells.head_cell().pos.checked_sub(table.table_start)?;
+        table.map.try_find_cell(offset)
+    } else {
+        Some(table.rect)
+    }
+}
+
+fn row_has_header(row: &Node) -> bool {
+    (0..row.child_count()).any(|column| row.child(column).ty().name() == "tableHeader")
+}
+
+fn stamp_action(tr: &mut Transaction, block: usize, row: usize, col: usize, action: TableAction) {
     tr.set_meta(
         META,
         json!({"block":block,"row":row,"column":col,"action":action.name()}),
     );
     tr.set_origin(TransactionOrigin::User);
-    Ok(tr)
 }
 
 struct Draft {
@@ -247,12 +300,15 @@ struct Draft {
     block: usize,
     row: usize,
     column: usize,
+    header_cell: (usize, usize),
+    header_action: TableAction,
+    header_enabled: bool,
 }
 pub(crate) struct TableControls {
     gate: Rc<ModeGate>,
     source: Rc<NativeView>,
     draft: RefCell<Option<Draft>>,
-    open: Signal<bool>,
+    anchor: Signal<Option<TableAnchor>>,
 }
 impl TableControls {
     pub(crate) fn new(gate: Rc<ModeGate>, source: Rc<NativeView>) -> Rc<Self> {
@@ -260,7 +316,7 @@ impl TableControls {
             gate,
             source,
             draft: RefCell::new(None),
-            open: signal(false),
+            anchor: signal(None),
         })
     }
     pub(crate) fn begin(&self) -> Result<(), String> {
@@ -285,24 +341,73 @@ impl TableControls {
                 at + 1 == rect.table_start
             })
             .ok_or("嵌套表格请编辑源码")?;
+        let active = active_header_cell(&state, &rect).ok_or("表格选区位置已失效")?;
+        let (row, column) = (rect.rect.top, rect.rect.left);
+        let header_cell = (active.top, active.left);
+        let cell = cell_position(state.doc(), block, active.top, active.left)
+            .and_then(|position| position.checked_sub(2))
+            .ok_or("无法定位当前表格单元格")?;
+        let header_action = if row_has_header(state.doc().child(block).child(active.top)) {
+            TableAction::CancelHeader
+        } else {
+            TableAction::Header
+        };
+        let header_enabled = (header_action == TableAction::Header || active.top == 0)
+            && projection.supports_table_header_edit(block);
         *self.draft.borrow_mut() = Some(Draft {
             revision: snapshot.revision,
             doc: state.doc().clone(),
             block,
-            row: rect.rect.top,
-            column: rect.rect.left,
+            row,
+            column,
+            header_cell,
+            header_action,
+            header_enabled,
         });
         self.gate.status.set(String::new());
-        self.open.set(true);
+        self.anchor.set(Some(TableAnchor {
+            revision: state.revision(),
+            table: rect.table_start - 1,
+            cell,
+        }));
         Ok(())
     }
     pub(crate) fn cancel(&self) {
-        self.draft.borrow_mut().take();
-        self.open.set(false);
+        if self.draft.borrow_mut().take().is_some() {
+            self.anchor.set(None);
+        }
     }
     pub(crate) fn is_open(&self) -> bool {
-        self.open.get()
+        self.anchor().is_some()
     }
+    pub(crate) fn anchor(&self) -> Option<TableAnchor> {
+        self.anchor.get()
+    }
+    pub(crate) fn status(&self) -> Signal<String> {
+        self.gate.status
+    }
+    // A single row-dependent header button shares one slot in both surfaces.
+    pub(crate) fn buttons(
+        &self,
+    ) -> [(&'static str, &'static str, TableAction, bool); ACTIONS.len()] {
+        let draft = self.draft.borrow();
+        ACTIONS.map(|(label, short, action)| {
+            if action != TableAction::Header {
+                return (label, short, action, true);
+            }
+            match draft.as_ref() {
+                Some(draft) if draft.header_action == TableAction::CancelHeader => (
+                    "取消当前行表头",
+                    "取消表头",
+                    TableAction::CancelHeader,
+                    draft.header_enabled,
+                ),
+                Some(draft) => (label, short, action, draft.header_enabled),
+                None => (label, short, action, false),
+            }
+        })
+    }
+
     pub(crate) fn apply(&self, action: TableAction) -> Result<(), String> {
         if self.gate.busy() {
             return Err("请先完成或取消中文组合，再应用表格操作".into());
@@ -315,30 +420,63 @@ impl TableControls {
         let state = session.state();
         let draft_guard = self.draft.borrow();
         let draft = draft_guard.as_ref().ok_or("请先打开表格面板")?;
-        if snapshot.revision != draft.revision || state.doc() != &draft.doc {
+        if snapshot.revision != draft.revision
+            || self
+                .anchor
+                .get_untracked()
+                .is_none_or(|target| target.revision != state.revision())
+            || state.doc() != &draft.doc
+        {
             return Err("表格面板版本已过期，请取消后重新打开".into());
         }
-        let tr = action_transaction(&state, draft.block, draft.row, draft.column, action)?;
+        let (row, column) = if matches!(action, TableAction::Header | TableAction::CancelHeader) {
+            if action != draft.header_action || !draft.header_enabled {
+                return Err("当前行不能保真切换表头，请编辑源码".into());
+            }
+            draft.header_cell
+        } else {
+            (draft.row, draft.column)
+        };
+        let tr = action_transaction(&state, draft.block, row, column, action)?;
+        drop(draft_guard);
         self.gate.status.set(String::new());
         session.dispatch(tr).map_err(|e| e.to_string())?;
         let status = self.gate.status.get();
         if !status.is_empty() {
             return Err(status);
         }
-        drop(draft_guard);
         self.cancel();
         Ok(())
     }
-    fn report(&self, result: Result<(), String>) {
+    pub(crate) fn report(&self, result: Result<(), String>) {
         if let Err(error) = result {
             self.gate.status.set(error);
         }
     }
 }
 
-pub fn dialog(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl IntoElement {
+pub(crate) const ACTIONS: [(&str, &str, TableAction); 12] = [
+    ("上方插入行", "上插行", TableAction::RowBefore),
+    ("下方插入行", "下插行", TableAction::RowAfter),
+    ("删除当前行", "删行", TableAction::DeleteRow),
+    ("左侧插入列", "左插列", TableAction::ColumnBefore),
+    ("右侧插入列", "右插列", TableAction::ColumnAfter),
+    ("删除当前列", "删列", TableAction::DeleteColumn),
+    ("当前列默认对齐", "默认对齐", TableAction::AlignDefault),
+    ("当前列左对齐", "左对齐", TableAction::AlignLeft),
+    ("当前列居中", "居中", TableAction::AlignCenter),
+    ("当前列右对齐", "右对齐", TableAction::AlignRight),
+    ("将当前行设为表头", "设为表头", TableAction::Header),
+    ("删除表格", "删除表格", TableAction::DeleteTable),
+];
+
+pub fn dialog(
+    controls: Rc<TableControls>,
+    fallback: impl Fn() -> bool + 'static,
+    return_focus: Rc<dyn Fn()>,
+) -> impl IntoElement {
     dynamic(move || {
-        if !controls.open.get() {
+        if !fallback() || !controls.is_open() {
             return None;
         }
         let dismiss = controls.clone();
@@ -347,7 +485,7 @@ pub fn dialog(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl I
         let cancel_focus = return_focus.clone();
         let status = controls.gate.status;
         let mut body = box_view()
-            .w(px(420.0))
+            .w_full()
             .p(px(16.0))
             .gap(px(6.0))
             .bg(crate::app_shell::background)
@@ -356,24 +494,12 @@ pub fn dialog(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl I
             .child(text(
                 "对当前单元格所在行或列操作；删除最后一行或列会留下可输入的空段。",
             ));
-        for (label, action) in [
-            ("上方插入行", TableAction::RowBefore),
-            ("下方插入行", TableAction::RowAfter),
-            ("删除当前行", TableAction::DeleteRow),
-            ("左侧插入列", TableAction::ColumnBefore),
-            ("右侧插入列", TableAction::ColumnAfter),
-            ("删除当前列", TableAction::DeleteColumn),
-            ("当前列默认对齐", TableAction::AlignDefault),
-            ("当前列左对齐", TableAction::AlignLeft),
-            ("当前列居中", TableAction::AlignCenter),
-            ("当前列右对齐", TableAction::AlignRight),
-            ("将当前行设为表头", TableAction::Header),
-            ("删除表格", TableAction::DeleteTable),
-        ] {
+        for (label, _, action, enabled) in controls.buttons() {
             let apply = controls.clone();
             let focus = return_focus.clone();
             body = body.child(
                 nsh_base::button()
+                    .disabled(!enabled)
                     .child(text(label))
                     .on_press(move |_: &()| {
                         let result = apply.apply(action);
@@ -393,14 +519,20 @@ pub fn dialog(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl I
                     dismiss_focus();
                 })
                 .child(
-                    body.child(text(move || status.get())).child(
-                        nsh_base::button()
-                            .child(text("取消"))
-                            .on_press(move |_: &()| {
-                                cancel.cancel();
-                                cancel_focus();
-                            }),
-                    ),
+                    scroll()
+                        .w(px(420.0))
+                        .max_w(relative(1.0))
+                        .max_h(relative(0.85))
+                        .child(
+                            body.child(text(move || status.get())).child(
+                                nsh_base::button()
+                                    .child(text("取消"))
+                                    .on_press(move |_: &()| {
+                                        cancel.cancel();
+                                        cancel_focus();
+                                    }),
+                            ),
+                        ),
                 )
                 .into_element(),
         )

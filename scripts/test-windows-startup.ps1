@@ -103,7 +103,7 @@ try {
         if ($visible.Count -eq 1) { $visible[0] }
     }
     $handle = [IntPtr]$workbench.Current.NativeWindowHandle
-    Wait-For 'the workbench search' { Find-Named '搜索文件或命令' } | Out-Null
+    Wait-For 'the workbench search' { Find-Named '搜索文件、命令或设置' } | Out-Null
     Invoke-Named '切换到源码'
     Wait-For 'Markdown source' { (Find-Named '返回所见即所得') -and (Has-Text 'TEXZI-STARTUP-HEADING') } | Out-Null
     Edit-AndWaitForSave 'body.md'

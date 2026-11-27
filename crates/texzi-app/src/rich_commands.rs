@@ -74,6 +74,16 @@ fn current_context(
     source: &NativeView,
     writable: bool,
 ) -> Result<(EditorState, Projection), String> {
+    let state = current_state(gate, writable)?;
+    let snapshot = source.snapshot()?;
+    let projection = Projection::parse(state.schema(), snapshot.rope.to_string())?;
+    if state.doc() != &projection.doc {
+        return Err("正文版本已变化，请重新执行命令".into());
+    }
+    Ok((state, projection))
+}
+
+fn current_state(gate: &ModeGate, writable: bool) -> Result<EditorState, String> {
     if gate.busy() {
         return Err("请先完成或取消中文组合，再执行 Markdown 命令".into());
     }
@@ -87,13 +97,7 @@ fn current_context(
     if session.composing() {
         return Err("请先完成或取消中文组合，再执行 Markdown 命令".into());
     }
-    let state = session.state();
-    let snapshot = source.snapshot()?;
-    let projection = Projection::parse(state.schema(), snapshot.rope.to_string())?;
-    if state.doc() != &projection.doc {
-        return Err("正文版本已变化，请重新执行命令".into());
-    }
-    Ok((state, projection))
+    Ok(session.state())
 }
 
 fn task_target(state: &EditorState) -> Result<(usize, bool), String> {
@@ -201,24 +205,29 @@ pub(crate) fn availability(
     check_context(&state, &projection, id)
 }
 
-/// One local snapshot and projection for one palette build. Results are not
-/// cached across actions; execution still reads and validates the live state.
-pub(crate) fn availability_all(
+/// Only visible palette rows use the mounted projection for their current revision.
+/// A command still revalidates the live source when invoked.
+pub(crate) fn availability_all<'a>(
     gate: &ModeGate,
     source: &NativeView,
     writable: bool,
-) -> BTreeMap<String, Result<(), String>> {
-    let context = current_context(gate, source, writable);
-    COMMAND_IDS
-        .iter()
-        .map(|id| {
-            let available = match &context {
-                Ok((state, projection)) => check_context(state, projection, id),
-                Err(error) => Err(error.clone()),
-            };
-            ((*id).to_owned(), available)
+    ids: &[&'a str],
+) -> BTreeMap<&'a str, Result<(), String>> {
+    const STALE: &str = "正文版本已变化，请重新执行命令";
+    let results = current_state(gate, writable).and_then(|state| {
+        let snapshot = source.body_snapshot().ok_or(STALE)?;
+        gate.with_visible_projection(snapshot.revision.0, |projection| {
+            if state.doc() != &projection.doc {
+                return Err(STALE.to_owned());
+            }
+            Ok(ids
+                .iter()
+                .map(|&id| (id, check_context(&state, projection, id)))
+                .collect())
         })
-        .collect()
+        .ok_or_else(|| STALE.to_owned())?
+    });
+    results.unwrap_or_else(|error| ids.iter().map(|&id| (id, Err(error.clone()))).collect())
 }
 
 fn parameter<'a>(args: &'a Value, name: &str, choices: &[&str]) -> Result<&'a str, String> {
@@ -658,7 +667,7 @@ mod tests {
             let (source, gate) = setup("plain\r\n\r\n<keep>raw</keep>\n");
             let before = audit(&source);
             for writable in [true, false] {
-                let all = availability_all(&gate, &source, writable);
+                let all = availability_all(&gate, &source, writable, COMMAND_IDS);
                 assert_eq!(all.len(), COMMAND_IDS.len());
                 for id in COMMAND_IDS {
                     assert_eq!(

@@ -165,8 +165,10 @@ impl Ed {
             .or_else(|| props.default_value.get_untracked())
             .unwrap_or_default();
         let name = props.language.get_untracked();
-        let (language, syntax) =
-            untracked(|| super::languages::resolve(name.as_deref().unwrap_or("")));
+        let override_name = props.highlight_language.get_untracked();
+        let (language, syntax) = untracked(|| {
+            super::languages::resolve_editor(name.as_deref(), override_name.as_deref())
+        });
         let options = options_of(&props, language);
         let mut state = State::new(&text, language, options, font, measure);
         if let Some(external) = use_context::<super::ExternalBuffer>() {
@@ -289,7 +291,9 @@ impl Ed {
             let name = ed.props.language.get();
             // The engine's languages too: a registration since finds the
             // language again.
-            let (language, syntax) = super::languages::resolve(name.as_deref().unwrap_or(""));
+            let override_name = ed.props.highlight_language.get();
+            let (language, syntax) =
+                super::languages::resolve_editor(name.as_deref(), override_name.as_deref());
             let changed = {
                 let mut st = ed.st.borrow_mut();
                 let changed = !std::ptr::eq(st.language, language) || !st.syntax.same(&syntax);
@@ -1782,18 +1786,28 @@ impl Ed {
             let start = first_line.saturating_sub(GUESS_CONTEXT);
             let start_offset = st.buffer.line_start(start);
             let version = st.buffer.version();
-            let rope = st.buffer.rope().clone();
             let h = st.highlighter.as_mut()?;
-            let guess = (first_line > h.frontier().saturating_add(GUESS_DISTANCE))
-                .then(|| h.guess(&rope, start, start_offset, last_line))
-                .flatten();
-            // The lines in view first, shown as soon as they are done (not
-            // a slice later), then on past them.
-            let to = match h.frontier() <= last_line {
-                true => last_line,
-                false => last_line + LOOKAHEAD,
+            let (guess, to) = if h.windowed() {
+                let visible = rows.start.min(count - 1)..rows.end.max(rows.start + 1).min(count);
+                let last = h.set_window(
+                    visible.map(|row| st.display.row(row).line),
+                    st.buffer.line_count(),
+                );
+                (h.guess_window(&st.buffer), last)
+            } else {
+                let guess = (first_line > h.frontier().saturating_add(GUESS_DISTANCE))
+                    .then(|| h.guess(st.buffer.rope(), start, start_offset, last_line))
+                    .flatten();
+                // The lines in view first, shown as soon as they are done
+                // (not a slice later), then on past them.
+                let to = if h.frontier() <= last_line {
+                    last_line
+                } else {
+                    last_line + LOOKAHEAD
+                };
+                (guess, to)
             };
-            let job = h.job(&rope, to, SLICE);
+            let job = h.job(st.buffer.rope(), to, SLICE);
             (guess, job, version)
         };
         if guess.is_none() && job.is_none() {

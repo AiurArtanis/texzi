@@ -71,13 +71,18 @@ impl NativeView {
             .ok_or("没有主选区")?;
         self.menu_select(&s, vec![selection], 0)
     }
-    pub fn undo_redo(&self, undo: bool) -> Result<(), String> {
+    pub fn undo_redo(self: &Rc<Self>, undo: bool) -> Result<(), String> {
         if self.is_composing() {
             return Err("请先完成或取消中文组合".into());
         }
         let s = self.snapshot()?;
-        self.history(s.revision, s.view_epoch, undo)?;
-        self.notify();
+        if self
+            .clone()
+            .request_history(s.revision, s.view_epoch, undo)?
+            .is_some()
+        {
+            self.notify();
+        }
         Ok(())
     }
     pub fn go_to_line(&self, line: usize) -> Result<(), String> {
@@ -159,84 +164,6 @@ impl NativeView {
         ranges.push(next);
         let primary = ranges.len() - 1;
         self.menu_select(&s, ranges, primary)
-    }
-    pub fn find_literal(&self, query: &str, previous: bool) -> Result<(usize, usize), String> {
-        if query.is_empty() {
-            return Err("请输入查找文字".into());
-        }
-        let s = self.snapshot()?;
-        let raw = s.rope.to_string();
-        let hits: Vec<_> = raw
-            .match_indices(query)
-            .map(|(at, _)| (at, at + query.len()))
-            .collect();
-        if hits.is_empty() {
-            return Ok((0, 0));
-        }
-        let (a, b) = s.selections.ranges[s.selections.primary];
-        let index = if previous {
-            hits.iter()
-                .rposition(|(_, end)| *end <= a.min(b))
-                .unwrap_or(hits.len() - 1)
-        } else {
-            hits.iter()
-                .position(|(start, _)| *start >= a.max(b))
-                .unwrap_or(0)
-        };
-        self.menu_select(&s, vec![hits[index]], 0)?;
-        Ok((index + 1, hits.len()))
-    }
-    pub fn replace_literal(
-        &self,
-        query: &str,
-        replacement: &str,
-        all: bool,
-    ) -> Result<usize, String> {
-        if self.is_composing() {
-            return Err("请先完成或取消中文组合".into());
-        }
-        if query.is_empty() {
-            return Err("请输入查找文字".into());
-        }
-        let s = self.snapshot()?;
-        let raw = s.rope.to_string();
-        let at = s.selections.ranges[s.selections.primary]
-            .0
-            .min(s.selections.ranges[s.selections.primary].1);
-        let hits: Vec<_> = raw
-            .match_indices(query)
-            .map(|(at, _)| at..at + query.len())
-            .collect();
-        let edits: Vec<_> = if all {
-            hits
-        } else {
-            hits.iter()
-                .find(|r| r.start >= at)
-                .or(hits.first())
-                .cloned()
-                .into_iter()
-                .collect()
-        };
-        let count = edits.len();
-        if count == 0 {
-            return Ok(0);
-        }
-        let first = edits[0].start;
-        self.edit(
-            s.revision,
-            s.view_epoch,
-            edits
-                .into_iter()
-                .map(|r| (r, replacement.to_owned()))
-                .collect(),
-            ExternalSelections {
-                primary: 0,
-                ranges: vec![(first, first + replacement.len())],
-            },
-            ExternalEditKind::Other,
-        )?;
-        self.notify();
-        Ok(count)
     }
     pub fn duplicate_line(&self) -> Result<(), String> {
         if self.is_composing() {
@@ -394,12 +321,18 @@ mod tests {
         let native = NativeView::fixture("甲 apple\napple 乙\n");
         let original = native.snapshot().unwrap();
         native.go_to_line(2).unwrap();
-        assert_eq!(native.find_literal("apple", false).unwrap(), (2, 2));
+        assert_eq!(
+            crate::app_shell::find_panel::fixtures::find_source(&native, "apple").unwrap(),
+            (2, 2)
+        );
         native.select_next_match(true).unwrap();
         assert_eq!(native.snapshot().unwrap().selections.ranges.len(), 2);
         assert_eq!(native.snapshot().unwrap().revision, original.revision);
         assert!(!native.is_dirty().unwrap());
-        assert_eq!(native.replace_literal("apple", "梨", true).unwrap(), 2);
+        assert_eq!(
+            crate::app_shell::find_panel::fixtures::replace_source(&native, "apple", "梨").unwrap(),
+            2
+        );
         assert_eq!(native.text().unwrap(), "甲 梨\n梨 乙\n");
         native.undo_redo(true).unwrap();
         assert_eq!(native.text().unwrap(), original.rope.to_string());
@@ -417,7 +350,7 @@ mod tests {
         native.undo_redo(true).unwrap();
         let before = native.snapshot().unwrap();
         assert!(native.go_to_line(0).is_err());
-        assert!(native.replace_literal("", "坏", true).is_err());
+        assert!(crate::app_shell::find_panel::fixtures::replace_source(&native, "", "坏").is_err());
         let after = native.snapshot().unwrap();
         assert_eq!(before.rope, after.rope);
         assert_eq!(before.revision, after.revision);

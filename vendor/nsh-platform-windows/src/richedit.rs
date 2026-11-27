@@ -399,6 +399,13 @@ impl Editor {
         }
     }
 
+    /// The host has explicitly cancelled the old preedit. Forget any
+    /// notifications that otherwise could publish that preedit as an edit.
+    pub(crate) fn discard_composition_notes(&self) {
+        self.host().composing.set(false);
+        self.take_notes();
+    }
+
     /// Read-only synchronous host state, before deferred input processing.
     pub(crate) fn composing(&self) -> bool {
         self.host().composing.get()

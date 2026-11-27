@@ -1,6 +1,14 @@
+use super::session_recovery::{ArchiveLocation, ArchiveState};
 use super::*;
-use crate::editor_owner::{MAX_EDIT_BYTES, PrepareError, line_limit_message};
-use std::collections::VecDeque;
+use crate::editor_owner::{
+    MAX_EDIT_BYTES, PrepareError, PreparedFile, SourcePreparation, line_limit_message,
+};
+use crate::origami::{local_glass_description, local_glass_surface};
+use std::{
+    collections::VecDeque,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 use texzi_document::files::{
     Encoding,
     paged::{Calibration, FileSource, Page, PagedFile, Position},
@@ -12,6 +20,7 @@ const HUGE_BYTES: u64 = 200 * MIB;
 // Editing owns decoded text, provenance, a Rope and a save-conflict baseline.
 // Only one such import runs at a time. Files above this bound stay seekable.
 pub(super) const SOURCE_ONLY_BYTES: u64 = 50_000_000;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(125);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImportState {
@@ -20,6 +29,52 @@ enum ImportState {
     Cancelling,
     Cancelled,
     LineLimit,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImportProgress {
+    PreparingPreview,
+    Queued,
+    VerifyingSource,
+    RestoringDraft,
+    PreparingSource(SourcePreparation),
+    Attaching,
+}
+
+impl ImportProgress {
+    fn read_amount(self, total: u64) -> Option<u64> {
+        match self {
+            Self::PreparingSource(SourcePreparation::Reading(read))
+                if total > 0 && read <= total =>
+            {
+                Some(read)
+            }
+            _ => None,
+        }
+    }
+
+    fn read_percent(self, total: u64) -> Option<u32> {
+        self.read_amount(total)
+            .map(|read| (u128::from(read) * 100 / u128::from(total)) as u32)
+    }
+
+    fn label(self, total: u64) -> String {
+        match self {
+            Self::PreparingPreview => "正在准备首屏预览…".into(),
+            Self::Queued => "等待完整加载…".into(),
+            Self::VerifyingSource => "正在校验原文件…".into(),
+            Self::RestoringDraft => "正在准备恢复草稿…".into(),
+            Self::PreparingSource(SourcePreparation::Reading(read)) => {
+                self.read_percent(total).map_or_else(
+                    || "正在读取文件…".into(),
+                    |percent| format!("正在读取 · {read} / {total} B · {percent}%"),
+                )
+            }
+            Self::PreparingSource(SourcePreparation::Decoding) => "正在解码文件…".into(),
+            Self::PreparingSource(SourcePreparation::Building) => "正在构建编辑模型…".into(),
+            Self::Attaching => "正在打开编辑视图…".into(),
+        }
+    }
 }
 
 pub(super) fn requires_editable(id: &str) -> bool {
@@ -40,6 +95,35 @@ pub(super) fn requires_editable(id: &str) -> bool {
             && !matches!(id, "texzi.find.inFolder" | "texzi.find.close"))
 }
 
+#[derive(PartialEq)]
+struct VisiblePage {
+    data: Page,
+    encoding: Encoding,
+    first: u64,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct InspectorMessage {
+    text: String,
+    is_error: bool,
+}
+
+impl InspectorMessage {
+    fn info(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            is_error: false,
+        }
+    }
+
+    fn error(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            is_error: true,
+        }
+    }
+}
+
 pub(super) struct LargeFile {
     source: Arc<FileSource>,
     choice: Cell<Option<Encoding>>,
@@ -51,15 +135,23 @@ pub(super) struct LargeFile {
     pub(super) restored_view: Option<session_recovery::EditorView>,
     pub(super) restored_draft: Signal<Option<session_recovery::Draft>>,
     reader: RefCell<Option<Arc<PagedFile>>>,
-    page: Signal<Option<Rc<Page>>>,
-    message: Signal<String>,
+    page: Signal<Option<Rc<VisiblePage>>>,
+    message: Signal<InspectorMessage>,
     reading: Signal<bool>,
     import_state: Signal<ImportState>,
+    import_progress: Signal<Option<Arc<Mutex<ImportProgress>>>>,
     generation: Cell<u64>,
     cancel: RefCell<Option<Arc<AtomicBool>>>,
 }
 
 impl LargeFile {
+    pub(super) fn visible_byte_position(&self) -> Option<String> {
+        self.page.with(|page| {
+            let data = &page.as_ref()?.data;
+            Some(byte_range_label(data.start, data.end, self.len))
+        })
+    }
+
     pub(super) fn new(
         path: PathBuf,
         source: Arc<FileSource>,
@@ -80,13 +172,14 @@ impl LargeFile {
             restored_draft: signal(restored_draft),
             reader: Default::default(),
             page: signal(None),
-            message: signal(if len >= HUGE_BYTES {
-                "选择只读分页查看，或尝试载入完整编辑模型。".into()
+            message: signal(InspectorMessage::info(if len >= HUGE_BYTES {
+                ""
             } else {
-                "正在准备首屏…".into()
-            }),
+                "正在准备首屏…"
+            })),
             reading: signal(false),
             import_state: signal(ImportState::Idle),
+            import_progress: signal_with(None, SignalEquals::Never),
             generation: Cell::new(0),
             cancel: Default::default(),
         })
@@ -119,9 +212,8 @@ impl LargeFile {
 
     pub(super) fn finish_recovery_limit(&self, shell: &Rc<Shell>, doc: &Document, reason: &str) {
         session_recovery::retain_limited_draft(shell, doc, reason);
-        self.message.set(session_recovery::retained_draft_message(
-            shell,
-            &format!("草稿未能载入（{reason}）"),
+        self.message.set(InspectorMessage::error(
+            session_recovery::retained_draft_message(shell, &format!("草稿未能载入（{reason}）")),
         ));
     }
 
@@ -130,6 +222,7 @@ impl LargeFile {
             cancel.store(true, Ordering::Relaxed);
         }
         self.import_state.set(ImportState::Idle);
+        self.import_progress.set(None);
     }
 
     fn mark_line_limit(self: &Rc<Self>, owner: Owner, encoding: Encoding) {
@@ -148,7 +241,7 @@ impl LargeFile {
             // Invalidate an in-flight navigation before replacing the sampled reader.
             let at = self
                 .page
-                .with(|page| page.as_ref().map_or(0, |page| page.start));
+                .with(|page| page.as_ref().map_or(0, |page| page.data.start));
             self.generation.set(self.generation.get().wrapping_add(1));
             self.reading.set(false);
             self.reader.borrow_mut().take();
@@ -167,7 +260,6 @@ impl LargeFile {
         {
             self.cancel_import();
             self.import_state.set(ImportState::Cancelled);
-            self.message.set("已取消完整加载，可继续分页查看".into());
         }
     }
 
@@ -177,6 +269,15 @@ impl LargeFile {
         self.reader.borrow_mut().take();
         self.page.set(None);
         self.reading.set(false);
+    }
+
+    fn show_page(&self, data: Page, reader: &PagedFile) {
+        self.page.set(Some(Rc::new(VisiblePage {
+            data,
+            encoding: reader.encoding,
+            first: reader.first,
+        })));
+        self.message.set(InspectorMessage::default());
     }
 
     fn calibrate(self: &Rc<Self>, owner: Owner) {
@@ -191,22 +292,34 @@ impl LargeFile {
         }
         let view = self.clone();
         let generation = self.generation.get();
-        let encoding = encoding_name(reader.encoding);
+        let encoding = reader.encoding;
+        let label = encoding_name(encoding);
         self.reading.set(true);
         owner.run(|| {
             spawn(async move {
+                if view.generation.get() != generation {
+                    return;
+                }
                 let mut from = reader.scan_start(pos);
+                let mut sampled_at = Instant::now();
+                view.message.set(InspectorMessage::info(format!(
+                    "正在校准 {label} 字符边界 · 已到字节 {from}"
+                )));
                 loop {
-                    let reader = reader.clone();
-                    let step = blocking(move || reader.calibrate_step(pos, from)).await;
+                    let scan = reader.clone();
+                    let step = blocking(move || scan.calibrate_step(pos, from)).await;
                     if view.generation.get() != generation {
                         return;
                     }
                     match step {
                         Ok(Ok(Calibration::More(at))) => {
                             from = at;
-                            view.message
-                                .set(format!("正在校准 {encoding} 字符边界 · 已到字节 {at}"));
+                            if sampled_at.elapsed() >= PROGRESS_INTERVAL {
+                                sampled_at = Instant::now();
+                                view.message.set(InspectorMessage::info(format!(
+                                    "正在校准 {label} 字符边界 · 已到字节 {at}"
+                                )));
+                            }
                             // Yield between bounded reads, with a visible and cancellable operation.
                             let _ = next_frame().await;
                             if view.generation.get() != generation {
@@ -214,20 +327,18 @@ impl LargeFile {
                             }
                         }
                         Ok(Ok(Calibration::Ready(page))) => {
-                            view.message.set(format!(
-                                "{encoding} · 字节 {}–{} / {}",
-                                page.start, page.end, view.len
-                            ));
-                            view.page.set(Some(Rc::new(page)));
+                            view.show_page(page, &reader);
                             view.pending_seek.set(None);
                             break;
                         }
                         Ok(Err(e)) => {
-                            view.message.set(format!("校准失败：{e}"));
+                            view.message
+                                .set(InspectorMessage::error(format!("校准失败：{e}")));
                             break;
                         }
                         Err(e) => {
-                            view.message.set(format!("校准未完成：{e}"));
+                            view.message
+                                .set(InspectorMessage::error(format!("校准未完成：{e}")));
                             break;
                         }
                     }
@@ -247,8 +358,9 @@ impl LargeFile {
                 .as_ref()
                 .is_some_and(|reader| reader.first != 0 && reader.encoding != selected)
             {
-                self.message
-                    .set("所选编码与文件 BOM 不一致，已保留当前编码和页面。".into());
+                self.message.set(InspectorMessage::error(
+                    "所选编码与文件 BOM 不一致，已保留当前编码和页面。",
+                ));
                 return;
             }
             self.cancel_import();
@@ -261,7 +373,8 @@ impl LargeFile {
         let choice = encoding.or(self.choice.get());
         let generation = self.generation.get();
         self.reading.set(true);
-        self.message.set("正在读取请求的页面…".into());
+        self.message
+            .set(InspectorMessage::info("正在读取请求的页面…"));
         let view = self.clone();
         owner.run(|| {
             spawn(async move {
@@ -292,21 +405,28 @@ impl LargeFile {
                     Ok(Ok((reader, Err(error)))) => {
                         if error.kind() == std::io::ErrorKind::WouldBlock {
                             view.pending_seek.set(Some(pos));
+                            let at = match pos {
+                                Position::Boundary(at)
+                                | Position::Near(at)
+                                | Position::Before(at) => at,
+                            };
+                            view.message
+                                .set(InspectorMessage::info(format!("请求位置 {at} B · {error}")));
+                        } else {
+                            view.message.set(InspectorMessage::error(error.to_string()));
                         }
                         *view.reader.borrow_mut() = Some(reader);
-                        view.message.set(error.to_string());
                     }
                     Ok(Ok((reader, Ok(page)))) => {
-                        let label = encoding_name(reader.encoding);
-                        view.message.set(format!(
-                            "{label} · 字节 {}–{} / {}",
-                            page.start, page.end, reader.len
-                        ));
-                        *view.reader.borrow_mut() = Some(reader);
-                        view.page.set(Some(Rc::new(page)));
+                        *view.reader.borrow_mut() = Some(reader.clone());
+                        view.show_page(page, &reader);
                     }
-                    Ok(Err(e)) => view.message.set(format!("读取失败：{e}")),
-                    Err(e) => view.message.set(format!("读取任务未完成：{e}")),
+                    Ok(Err(e)) => view
+                        .message
+                        .set(InspectorMessage::error(format!("读取失败：{e}"))),
+                    Err(e) => view
+                        .message
+                        .set(InspectorMessage::error(format!("读取任务未完成：{e}"))),
                 }
             })
         });
@@ -327,6 +447,7 @@ struct Import {
     doc: Rc<Document>,
     large: Rc<LargeFile>,
     cancel: Arc<AtomicBool>,
+    progress: Arc<Mutex<ImportProgress>>,
 }
 
 #[derive(Default)]
@@ -348,6 +469,9 @@ impl Shell {
         self.remember(&path);
         let id = self.next.get();
         self.next.set(id + 1);
+        let restored_archive = restored_view.is_some()
+            && restored_draft.is_none()
+            && session_recovery::restoring_archived_original(self, id, &path);
         let initial_rich = self.initial_markdown_rich(
             Some(&path),
             size,
@@ -374,8 +498,10 @@ impl Shell {
             (doc, large)
         });
         self.show_new(doc.clone());
-        if size < HUGE_BYTES {
+        if size < HUGE_BYTES || restored_archive {
             large.load(self.owner, Position::Boundary(0), None);
+        }
+        if size < HUGE_BYTES && !restored_archive {
             self.queue_import(doc.clone(), large);
         }
         doc
@@ -383,10 +509,9 @@ impl Shell {
 
     fn queue_import(self: &Rc<Self>, doc: Rc<Document>, large: Rc<LargeFile>) {
         if large.len > MAX_EDIT_BYTES {
-            large.message.set(format!(
-                "文件超过 {} MiB 完整编辑预算，可只读分页查看。",
-                MAX_EDIT_BYTES / MIB
-            ));
+            large
+                .message
+                .set(InspectorMessage::error(byte_limit_message()));
             return;
         }
         if matches!(
@@ -396,7 +521,9 @@ impl Shell {
             return;
         }
         let cancel = Arc::new(AtomicBool::new(false));
+        let progress = Arc::new(Mutex::new(ImportProgress::PreparingPreview));
         *large.cancel.borrow_mut() = Some(cancel.clone());
+        large.import_progress.set(Some(progress.clone()));
         large.import_state.set(ImportState::Loading);
         if large.page.with(Option::is_none) && !large.reading.get() {
             large.load(self.owner, Position::Boundary(0), None);
@@ -418,11 +545,13 @@ impl Shell {
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                shell
-                    .imports
-                    .jobs
-                    .borrow_mut()
-                    .push_back(Import { doc, large, cancel });
+                *progress.lock().unwrap() = ImportProgress::Queued;
+                shell.imports.jobs.borrow_mut().push_back(Import {
+                    doc,
+                    large,
+                    cancel,
+                    progress,
+                });
                 shell.next_import();
             })
         });
@@ -441,7 +570,7 @@ impl Shell {
             .is_some_and(|active| Arc::ptr_eq(active, &token))
         {
             file.import_state.set(ImportState::Cancelling);
-            file.message.set("正在取消完整加载…".into());
+            file.import_progress.set(None);
         } else {
             // Neither a preview still preparing nor a queued import owns a full model.
             self.imports
@@ -473,18 +602,26 @@ impl Shell {
                 let source = job.large.source.clone();
                 let encoding = job.large.choice.get();
                 let draft = job.large.restored_draft.get_untracked();
+                let progress = job.progress.clone();
                 let result = blocking(move || {
-                    if let Some(draft) = draft {
-                        return draft.prepare(&source, &path, MAX_EDIT_BYTES, &cancel);
-                    }
-                    source.verify_path(&path).map_err(|e| e.to_string())?;
-                    crate::editor_owner::PreparedFile::from_source(
-                        &source,
-                        MAX_EDIT_BYTES,
-                        &cancel,
-                        encoding,
-                    )
-                    .map(|prepared| (prepared, true))
+                    let report = |stage| *progress.lock().unwrap() = stage;
+                    let prepared = if let Some(draft) = draft {
+                        report(ImportProgress::RestoringDraft);
+                        draft.prepare(&source, &path, MAX_EDIT_BYTES, &cancel)
+                    } else {
+                        report(ImportProgress::VerifyingSource);
+                        source.verify_path(&path).map_err(|e| e.to_string())?;
+                        PreparedFile::from_source_with_progress(
+                            &source,
+                            MAX_EDIT_BYTES,
+                            &cancel,
+                            encoding,
+                            |stage| report(ImportProgress::PreparingSource(stage)),
+                        )
+                        .map(|prepared| (prepared, true))
+                    }?;
+                    report(ImportProgress::Attaching);
+                    Ok(prepared)
                 })
                 .await;
                 if job.cancel.load(Ordering::Relaxed) {
@@ -527,6 +664,7 @@ impl Shell {
                                 view.restore_source(&source);
                             }
                             let doc = shell.make_document(job.doc.id, source, path, None, false);
+                            doc.import_complete.set(named);
                             if let Some(view) = restored {
                                 view.restore_in_mode(&doc, start_rich);
                             }
@@ -549,17 +687,14 @@ impl Shell {
                                     restored.is_some_and(|view| view.rich && view.has_scroll()),
                                 );
                             }
-                            if shell
-                                .current()
-                                .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                            if !named
+                                && shell
+                                    .current()
+                                    .is_some_and(|current| Rc::ptr_eq(&current, &doc))
                             {
-                                shell.notice.set(if !named {
-                                    "原文件无法重新关联 · 草稿已恢复到未命名标签".into()
-                                } else if job.large.len > SOURCE_ONLY_BYTES {
-                                    "大文件已用源码打开 · 已关闭语法高亮".into()
-                                } else {
-                                    "大文件加载完成 · 可编辑".into()
-                                });
+                                shell
+                                    .notice
+                                    .set("原文件无法重新关联 · 草稿已恢复到未命名标签".into());
                             }
                         }
                         Err(PrepareError::LineLimit(encoding)) => {
@@ -587,7 +722,7 @@ impl Shell {
                             } else {
                                 format!("完整编辑加载失败：{error}")
                             };
-                            job.large.message.set(message);
+                            job.large.message.set(InspectorMessage::error(message));
                         }
                     }
                 }
@@ -598,10 +733,333 @@ impl Shell {
     }
 }
 
-fn action(label: &'static str, click: impl Fn() + 'static) -> impl IntoElement {
+fn byte_range_label(start: u64, end: u64, total: u64) -> String {
+    format!("字节 [{start}, {end}) / {total} B")
+}
+
+fn byte_limit_message() -> String {
+    format!(
+        "文件超过 {} MiB 完整编辑预算，可只读分页查看。",
+        MAX_EDIT_BYTES / MIB
+    )
+}
+
+fn action(label: &'static str, click: impl Fn() + 'static) -> nsh_base::ButtonElement {
     nsh_base::button()
+        .h(px(metric("field")))
+        .px(px(8.0))
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .border(border_width)
+        .border_color(|| color("chrome-edge"))
+        .bg(|| color("paper"))
+        .text_color(|| color("ink-1"))
+        .text_size(px(font_size("meta")))
+        .app_class(CONTROL_STATES)
+        .accessibility_label(label)
         .child(text(label))
         .on_press(move |_: &()| click())
+}
+
+#[derive(Clone, Copy)]
+enum ArchiveAction {
+    Copy,
+    OpenDirectory,
+}
+
+fn act_on_archive(
+    shell: &Shell,
+    preview: u64,
+    original: Option<&Path>,
+    action: ArchiveAction,
+    missing: Signal<bool>,
+    feedback: Signal<Option<InspectorMessage>>,
+) {
+    let Some(location) = session_recovery::archive_location(shell, preview).filter(|archive| {
+        archive.state == ArchiveState::Written && archive.matches_original(original)
+    }) else {
+        feedback.set(Some(InspectorMessage::error("恢复记录位置不可用")));
+        return;
+    };
+    shell.owner.run(|| {
+        spawn(async move {
+            let path = match blocking(move || location.record_file().map(Path::to_owned)).await {
+                Ok(Ok(path)) => path,
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing.try_set(true);
+                    feedback.try_set(Some(InspectorMessage::error("找不到恢复记录文件")));
+                    return;
+                }
+                Ok(Err(error)) => {
+                    feedback.try_set(Some(InspectorMessage::error(format!(
+                        "无法定位恢复记录文件 · {error}"
+                    ))));
+                    return;
+                }
+                Err(error) => {
+                    feedback.try_set(Some(InspectorMessage::error(format!(
+                        "无法核对恢复记录位置 · {error}"
+                    ))));
+                    return;
+                }
+            };
+            let outcome = match action {
+                ArchiveAction::Copy => {
+                    match nsh_core::element::set_clipboard(display_path(&path)).await {
+                        nsh_core::element::ClipboardWrite::Written => {
+                            InspectorMessage::info("已复制恢复记录路径")
+                        }
+                        _ => InspectorMessage::error("无法复制恢复记录路径 · 系统剪贴板未确认写入"),
+                    }
+                }
+                ArchiveAction::OpenDirectory => {
+                    let Some(parent) = path.parent() else {
+                        feedback.try_set(Some(InspectorMessage::error(
+                            "无法打开恢复记录所在目录 · 缺少父目录",
+                        )));
+                        return;
+                    };
+                    match nsh_core::element::open_path(parent.to_owned()).await {
+                        Ok(()) => InspectorMessage::info("已打开恢复记录所在目录"),
+                        Err(error) => {
+                            InspectorMessage::error(format!("无法打开恢复记录所在目录 · {error}"))
+                        }
+                    }
+                }
+            };
+            missing.try_set(false);
+            feedback.try_set(Some(outcome));
+        });
+    });
+}
+
+fn archive_banner(
+    shell: Rc<Shell>,
+    preview: u64,
+    original: Signal<Option<PathBuf>>,
+) -> impl IntoElement {
+    let full_paths = signal(false);
+    let missing = signal(false);
+    let feedback = signal(None::<InspectorMessage>);
+    dynamic(move || {
+        let archive = session_recovery::archive_location(&shell, preview)
+            .filter(|archive| original.with(|path| archive.matches_original(path.as_deref())))?;
+        let written = archive.state == ArchiveState::Written;
+        let copy = shell.clone();
+        let location = shell.clone();
+        let status = match &archive.state {
+            ArchiveState::Writing => "正在写入恢复记录".into(),
+            ArchiveState::Unavailable => "恢复记录位置不可用".into(),
+            ArchiveState::Written => "草稿已写入此窗口的恢复记录，原文件以只读方式打开".into(),
+            ArchiveState::Failed(error) => format!("无法写入恢复记录 · {error}"),
+        };
+        let failed = matches!(archive.state, ArchiveState::Failed(_));
+        Some(
+            view()
+                .relative()
+                .min_w(px(0.0))
+                .gap(px(6.0))
+                .p(|| px(10.0 + border_width().0))
+                .role(AccessibilityRole::Group)
+                .label("草稿归档")
+                .child(local_glass_surface(px(8.0)))
+                .child(
+                    view()
+                        .absolute()
+                        .inset(border_width)
+                        .rounded(px(7.0))
+                        .pointer_events(PointerEvents::None)
+                        .accessible(false)
+                        .bg(|| color("apricot-soft")),
+                )
+                .child(
+                    text(archive.reason.clone())
+                        .text_size(px(font_size("meta")))
+                        .text_color(|| color("warning-fg")),
+                )
+                .child(
+                    text(move || {
+                        if missing.get() {
+                            "找不到恢复记录文件".to_owned()
+                        } else {
+                            status.clone()
+                        }
+                    })
+                    .text_size(px(font_size("meta")))
+                    .text_color(move || {
+                        color(if failed || missing.get() {
+                            "error-fg"
+                        } else {
+                            "ink-1"
+                        })
+                    }),
+                )
+                .child(archive_paths(&archive, written, full_paths))
+                .child(when(written, move || {
+                    let copy = copy.clone();
+                    let location = location.clone();
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap(px(6.0))
+                        .child(action("复制恢复记录路径", move || {
+                            let original = original.get_untracked();
+                            act_on_archive(
+                                &copy,
+                                preview,
+                                original.as_deref(),
+                                ArchiveAction::Copy,
+                                missing,
+                                feedback,
+                            );
+                        }))
+                        .child(action("打开所在目录", move || {
+                            let original = original.get_untracked();
+                            act_on_archive(
+                                &location,
+                                preview,
+                                original.as_deref(),
+                                ArchiveAction::OpenDirectory,
+                                missing,
+                                feedback,
+                            );
+                        }))
+                }))
+                .child(when(
+                    move || !missing.get() && feedback.with(Option::is_some),
+                    move || {
+                        text(move || {
+                            feedback.with(|result| {
+                                result
+                                    .as_ref()
+                                    .map(|result| result.text.clone())
+                                    .unwrap_or_default()
+                            })
+                        })
+                        .text_size(px(font_size("meta")))
+                        .text_color(move || {
+                            color(
+                                if feedback
+                                    .with(|result| result.as_ref().is_some_and(|r| r.is_error))
+                                {
+                                    "error-fg"
+                                } else {
+                                    "success-fg"
+                                },
+                            )
+                        })
+                    },
+                )),
+        )
+    })
+}
+
+fn archive_paths(
+    archive: &ArchiveLocation,
+    written: bool,
+    full: Signal<bool>,
+) -> impl IntoElement + use<> {
+    let original = archive
+        .original
+        .as_deref()
+        .map(display_path)
+        .unwrap_or_else(|| "无原文件路径".into());
+    let record = if written {
+        display_path(&archive.record)
+    } else {
+        "恢复记录位置不可用".into()
+    };
+    view()
+        .gap(px(4.0))
+        .children(
+            [
+                text(format!("原文件 · {original}")),
+                text(format!("恢复记录 · {record}")),
+            ]
+            .into_iter()
+            .map(move |line| {
+                line.min_w(px(0.0))
+                    .max_w(relative(1.0))
+                    .number_of_lines(move || if full.get() { 0u32 } else { 1u32 })
+                    .text_overflow(EllipsizeMode::Middle)
+                    .text_size(px(font_size("meta")))
+                    .text_color(local_glass_description("muted-readable"))
+            }),
+        )
+        .child(
+            nsh_base::button()
+                .items_start()
+                .h(px(metric("field")))
+                .app_class(CONTROL_STATES)
+                .on_press(move |_: &()| full.update(|full| *full = !*full))
+                .child(text(move || {
+                    if full.get() {
+                        "收起路径"
+                    } else {
+                        "显示完整路径"
+                    }
+                })),
+        )
+}
+
+fn import_progress(
+    source: Signal<Option<Arc<Mutex<ImportProgress>>>>,
+    total: u64,
+) -> impl IntoElement {
+    let progress = signal(ImportProgress::PreparingPreview);
+    effect(move || {
+        if source.with(Option::is_some) {
+            let sample = move || {
+                let Some(stage) = source
+                    .with_untracked(|source| source.as_ref()?.try_lock().ok().map(|stage| *stage))
+                else {
+                    return;
+                };
+                if progress.get_untracked() != stage {
+                    progress.set(stage);
+                }
+            };
+            sample();
+            let timer = set_interval(PROGRESS_INTERVAL, sample);
+            cleanup(move || timer.cancel());
+        }
+    });
+    view()
+        .gap(px(4.0))
+        .child(
+            text(move || progress.get().label(total))
+                .tabular_nums()
+                .text_size(px(font_size("meta")))
+                .text_color(local_glass_description("muted-readable")),
+        )
+        .child(
+            nsh_base::progress()
+                .accessibility_label(move || {
+                    let stage = progress.get();
+                    let label = stage.read_amount(total).map_or_else(
+                        || format!("完整加载阶段，{}", stage.label(total)),
+                        |read| format!("源文件读取进度，已读 {read} 字节，共 {total} 字节"),
+                    );
+                    Some(SharedString::from(label))
+                })
+                .value(move || progress.get().read_percent(total).unwrap_or(0) as f32)
+                .indeterminate(move || progress.get().read_percent(total).is_none())
+                .track_style(|s| {
+                    s.h(px(4.0))
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(|| color("seam-strong"))
+                })
+                .indicator_style(move |s| {
+                    let s = crate::origami::ribbon(s.h_full().rounded_full());
+                    if progress.get().read_percent(total).is_none() {
+                        s.w(px(0.0))
+                    } else {
+                        s
+                    }
+                }),
+        )
 }
 
 pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -> impl IntoElement {
@@ -614,172 +1072,401 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let page = file.page;
     let message = file.message;
     let import_state = file.import_state;
+    let progress = file.import_progress;
     let bytes = file.len;
+    let name = doc.name();
+    let original = doc.path;
+    let inspector_label = format!("大文件导入检视舱，{name}");
     let open = file.clone();
-    let import = file.clone();
     let start = shell.clone();
+    let import = file.clone();
     let cancel = file.clone();
     let cancel_shell = shell.clone();
-    let calibration = file.clone();
     let close = shell.clone();
-    let show_bytes = file.clone();
+    let archive = shell.clone();
+    let description = local_glass_description("muted-readable");
+
+    let heading = view()
+        .flex_row()
+        .flex_wrap()
+        .justify_between()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            view()
+                .max_w(relative(1.0))
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    text(name)
+                        .min_w(px(0.0))
+                        .max_w(relative(1.0))
+                        .number_of_lines(1)
+                        .text_overflow(EllipsizeMode::Tail)
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(|| color("ink-1")),
+                )
+                .child(
+                    text(format!("{:.1} MiB", bytes as f64 / MIB as f64))
+                        .tabular_nums()
+                        .text_size(px(font_size("meta")))
+                        .text_color(|| color("success-fg")),
+                )
+                .child(
+                    text("只读分页")
+                        .text_size(px(font_size("meta")))
+                        .text_color(description),
+                )
+                .child(when(
+                    move || {
+                        matches!(
+                            import_state.get(),
+                            ImportState::Cancelling | ImportState::Cancelled
+                        )
+                    },
+                    move || {
+                        text(move || {
+                            if import_state.get() == ImportState::Cancelling {
+                                "正在取消完整加载"
+                            } else {
+                                "已取消完整加载"
+                            }
+                        })
+                        .text_size(px(font_size("meta")))
+                        .text_color(description)
+                    },
+                )),
+        )
+        .child(
+            view()
+                .max_w(relative(1.0))
+                .flex_row()
+                .flex_wrap()
+                .gap(px(8.0))
+                .child(when(
+                    move || page.with(Option::is_none),
+                    move || {
+                        let open = open.clone();
+                        action("只读分页查看", move || {
+                            open.load(owner, Position::Boundary(0), None);
+                        })
+                    },
+                ))
+                .child(when(
+                    move || {
+                        bytes <= MAX_EDIT_BYTES
+                            && matches!(
+                                import_state.get(),
+                                ImportState::Idle | ImportState::Cancelled
+                            )
+                    },
+                    move || {
+                        let start = start.clone();
+                        let doc = doc.clone();
+                        let import = import.clone();
+                        action("尝试完整编辑", move || {
+                            start.queue_import(doc.clone(), import.clone());
+                        })
+                    },
+                ))
+                .child(when(
+                    move || {
+                        matches!(
+                            import_state.get(),
+                            ImportState::Loading | ImportState::Cancelling
+                        )
+                    },
+                    move || {
+                        let cancel = cancel.clone();
+                        let shell = cancel_shell.clone();
+                        action("取消完整加载", move || {
+                            shell.cancel_full_import(&cancel)
+                        })
+                        .disabled(move || import_state.get() == ImportState::Cancelling)
+                        .border_color(|| color("error-fg"))
+                        .text_color(|| color("error-fg"))
+                    },
+                ))
+                .child(action("关闭文件", move || close.close_tab(id))),
+        );
+
+    let page_details = when(
+        move || page.with(Option::is_some),
+        move || {
+            let range = move || page.with(|page| page.as_ref().map(|p| (p.data.start, p.data.end)));
+            view()
+                .min_w(px(0.0))
+                .max_w(relative(1.0))
+                .flex_row()
+                .flex_wrap()
+                .gap(px(8.0))
+                .child(
+                    text(move || {
+                        range().map_or_else(String::new, |(start, end)| {
+                            byte_range_label(start, end, bytes)
+                        })
+                    })
+                    .label(move || {
+                        range().map_or_else(String::new, |(start, end)| {
+                            format!("从 {start} 字节到 {end} 字节之前，源文件共 {bytes} 字节")
+                        })
+                    })
+                    .min_w(px(0.0))
+                    .max_w(relative(1.0))
+                    .tabular_nums()
+                    .text_size(px(font_size("meta")))
+                    .text_color(description),
+                )
+                .child(
+                    text(move || {
+                        page.with(|page| {
+                            page.as_ref().map_or_else(String::new, |p| {
+                                format!("当前编码 · {}", encoding_name(p.encoding))
+                            })
+                        })
+                    })
+                    .min_w(px(0.0))
+                    .max_w(relative(1.0))
+                    .text_size(px(font_size("meta")))
+                    .text_color(description),
+                )
+        },
+    );
+
     let navigator = file.clone();
-    let navigate = move |label, get: fn(&Page, u64) -> Position| {
+    let navigate = move |label, toward_end, get: fn(&Page, u64) -> Position| {
         let file = navigator.clone();
         action(label, move || {
             if let Some(page) = file.page.get() {
-                file.load(owner, get(&page, bytes), None);
+                file.load(owner, get(&page.data, bytes), None);
             }
+        })
+        .disabled(move || {
+            page.with(|page| {
+                page.as_ref().is_none_or(|p| {
+                    if toward_end {
+                        p.data.end >= bytes
+                    } else {
+                        p.data.start <= p.first
+                    }
+                })
+            })
         })
     };
     let jump = {
         let file = file.clone();
         move || match input.get().trim().parse::<u64>() {
             Ok(at) if at < bytes => file.load(owner, Position::Near(at), None),
-            _ => file.message.set(format!(
+            _ => file.message.set(InspectorMessage::error(format!(
                 "请输入 0 至 {} 之间的字节位置",
-                bytes.saturating_sub(1)
-            )),
+                bytes.saturating_sub(1),
+            ))),
         }
     };
-    let codec = |label, encoding| {
-        let file = file.clone();
+    let codec_file = file.clone();
+    let codec = move |label, encoding| {
+        let file = codec_file.clone();
+        let current = move || page.with(|p| p.as_ref().is_some_and(|p| p.encoding == encoding));
         action(label, move || {
-            let start = file.page.with(|p| p.as_ref().map_or(0, |p| p.start));
+            let start = file.page.with(|p| p.as_ref().map_or(0, |p| p.data.start));
             file.load(owner, Position::Near(start), Some(encoding));
         })
+        .selected(current)
+        .selected_style(|s| {
+            s.bg(|| color("selected-bg"))
+                .text_color(|| color("selected-text"))
+        })
     };
-    view()
-        .flex_1()
-        .min_w(px(0.))
-        .min_h(px(0.))
-        .overflow_hidden()
-        .p(px(8.))
-        .gap(px(4.))
-        .child(
-            text(format!(
-                "{} · {:.1} MiB",
-                doc.name(),
-                bytes as f64 / MIB as f64
-            ))
-            .number_of_lines(1),
-        )
-        .child(
-            view()
-                .flex_row()
-                .flex_wrap()
-                .gap(px(4.))
-                .child(action("只读分页查看", move || {
-                    open.load(owner, Position::Boundary(0), None)
-                }))
-                .child(when(
-                    move || import_state.get() != ImportState::LineLimit,
-                    move || {
-                        let start = start.clone();
-                        let doc = doc.clone();
-                        let import = import.clone();
-                        action("尝试完整编辑", move || {
-                            start.queue_import(doc.clone(), import.clone())
-                        })
-                    },
-                ))
-                .child(when(
-                    move || import_state.get() == ImportState::Loading,
-                    move || {
-                        action("取消完整加载", {
-                            let cancel = cancel.clone();
-                            let shell = cancel_shell.clone();
-                            move || shell.cancel_full_import(&cancel)
-                        })
-                    },
-                ))
-                .child(action("关闭文件", move || close.close_tab(id))),
-        )
-        .child(when(
-            move || import_state.get() == ImportState::LineLimit,
-            || text(line_limit_message()).number_of_lines(2),
-        ))
-        .child(text(move || message.get()).number_of_lines(2))
-        .child(when(move || calibration.pending_seek.get().is_some(), {
-            let file = file.clone();
-            move || {
-                let begin = file.clone();
-                let cancel = file.clone();
-                view()
-                    .flex_row()
-                    .child(action("校准并定位", move || begin.calibrate(owner)))
-                    .child(action("取消定位", move || {
-                        cancel
-                            .generation
-                            .set(cancel.generation.get().wrapping_add(1));
-                        cancel.pending_seek.set(None);
-                        cancel.reading.set(false);
-                        cancel.message.set("已取消定位，保留当前页".into());
-                    }))
-            }
-        }))
+    let calibration = file.clone();
+    let controls = view()
+        .flex_row()
+        .flex_wrap()
+        .justify_between()
+        .items_center()
+        .gap(px(8.0))
         .child(when(
             move || page.with(Option::is_some),
             move || {
                 let jump_submit = jump.clone();
                 let jump_button = jump.clone();
                 view()
+                    .max_w(relative(1.0))
                     .flex_row()
                     .flex_wrap()
-                    .gap(px(4.))
-                    .child(navigate("首页", |_, _| Position::Boundary(0)))
-                    .child(navigate("上一页", |p, _| {
+                    .gap(px(8.0))
+                    .child(navigate("首页", false, |_, _| Position::Boundary(0)))
+                    .child(navigate("上一页", false, |p, _| {
                         if p.start < 4 {
                             Position::Boundary(0)
                         } else {
                             Position::Before(p.start)
                         }
                     }))
-                    .child(navigate("下一页", |p, len| {
-                        if p.end < len {
-                            Position::Boundary(p.end)
-                        } else {
-                            Position::Boundary(p.start)
-                        }
+                    .child(navigate("下一页", true, |p, _| {
+                        Position::Boundary(p.end)
                     }))
-                    .child(navigate("末页", |_, len| Position::Before(len)))
+                    .child(navigate("末页", true, |_, len| Position::Before(len)))
                     .child(
                         nsh_core::element::input()
                             .label("文件字节位置")
-                            .w(px(145.))
+                            .h(px(metric("field")))
+                            .w(px(145.0))
+                            .max_w(relative(1.0))
+                            .px(px(8.0))
+                            .tabular_nums()
+                            .rounded(px(6.0))
+                            .border(border_width)
+                            .border_color(|| color("chrome-edge"))
+                            .bg(|| color("paper"))
+                            .text_color(|| color("ink-1"))
+                            .app_class(CONTROL_STATES)
                             .placeholder("字节位置")
                             .value(move || input.get())
                             .on_change(move |s: &str| input.set(s.into()))
                             .on_submit(move |_: &str| jump_submit()),
                     )
-                    .child(action("转到", jump_button))
+                    .child(action("转到", jump_button).accessibility_hint("转到填入的文件字节位置"))
             },
         ))
         .child(
             view()
+                .max_w(relative(1.0))
                 .flex_row()
                 .flex_wrap()
-                .gap(px(4.))
+                .gap(px(8.0))
+                .role(AccessibilityRole::Group)
+                .label("分页编码")
                 .child(codec("UTF-8", Encoding::Utf8))
                 .child(codec("GB18030", Encoding::Gb18030WebEncodingRs0844))
                 .child(codec("UTF-16 LE", Encoding::Utf16Le))
                 .child(codec("UTF-16 BE", Encoding::Utf16Be)),
+        );
+    let calibration_actions = when(move || calibration.pending_seek.get().is_some(), {
+        let file = file.clone();
+        move || {
+            let begin = file.clone();
+            let cancel = file.clone();
+            view()
+                .flex_row()
+                .flex_wrap()
+                .gap(px(8.0))
+                .child(action("校准并定位", move || begin.calibrate(owner)))
+                .child(action("取消定位", move || {
+                    cancel
+                        .generation
+                        .set(cancel.generation.get().wrapping_add(1));
+                    cancel.pending_seek.set(None);
+                    cancel.reading.set(false);
+                    cancel
+                        .message
+                        .set(InspectorMessage::info("已取消定位，保留当前页"));
+                }))
+        }
+    });
+
+    view()
+        .flex_1()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .rounded(px(metric("paperRadius")))
+        .overflow_hidden()
+        .child(
+            scroll()
+                .w_full()
+                .max_h(relative(0.60))
+                .min_h(px(0.0))
+                .child(
+                    view()
+                        .min_w(px(0.0))
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .gap(px(8.0))
+                        .child(
+                            // An explicit group keeps the inspector text and its controls separately readable.
+                            view()
+                                .relative()
+                                .min_w(px(0.0))
+                                .role(AccessibilityRole::Group)
+                                .label(inspector_label)
+                                .rounded(px(metric("paperRadius")))
+                                .p(|| px(14.0 + border_width().0))
+                                .gap(px(8.0))
+                                .child(local_glass_surface(px(metric("paperRadius"))))
+                                .child(heading)
+                                .child(when(
+                                    move || import_state.get() == ImportState::Loading,
+                                    move || import_progress(progress, bytes),
+                                ))
+                                .child(page_details)
+                                .child(controls)
+                                .child(when(bytes > MAX_EDIT_BYTES, || {
+                                    text(byte_limit_message())
+                                        .text_size(px(font_size("meta")))
+                                        .text_color(|| color("error-fg"))
+                                }))
+                                .child(when(
+                                    move || import_state.get() == ImportState::LineLimit,
+                                    || {
+                                        text(line_limit_message())
+                                            .text_size(px(font_size("meta")))
+                                            .text_color(|| color("error-fg"))
+                                    },
+                                ))
+                                .child(when(
+                                    move || message.with(|message| !message.text.is_empty()),
+                                    move || {
+                                        text(move || message.with(|message| message.text.clone()))
+                                            .text_size(px(font_size("meta")))
+                                            .text_color(move || {
+                                                if message.with(|message| message.is_error) {
+                                                    color("error-fg")
+                                                } else {
+                                                    description()
+                                                }
+                                            })
+                                    },
+                                ))
+                                .child(calibration_actions),
+                        )
+                        .child(archive_banner(archive, id, original)),
+                ),
         )
         .child(dynamic(move || {
-            let page = show_bytes.page.get()?;
+            let page = file.page.get()?;
             Some(
                 nsh_base::editor::editor()
                     .element_ref(&body)
                     .component_ref(&reference)
-                    .default_value(Some(SharedString::from(page.text.clone())))
+                    .default_value(Some(SharedString::from(page.data.text.clone())))
                     .read_only(true)
                     .line_numbers(false)
                     .soft_wrap(false)
                     .on_focus(move |_: &()| focus.set(false))
                     .flex_1()
                     .w_full()
-                    .min_h(px(0.))
-                    .min_w(px(0.)),
+                    .min_h(px(0.0))
+                    .min_w(px(0.0)),
             )
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn determinate_progress_describes_only_a_valid_read_for_this_source() {
+        let reading = ImportProgress::PreparingSource(SourcePreparation::Reading(38));
+        assert_eq!(reading.read_amount(100), Some(38));
+        assert_eq!(reading.read_percent(100), Some(38));
+        assert_eq!(reading.label(100), "正在读取 · 38 / 100 B · 38%");
+        assert_eq!(reading.read_percent(38), Some(100));
+        assert_eq!(reading.read_percent(37), None);
+        assert_eq!(reading.read_percent(0), None);
+        let decoding = ImportProgress::PreparingSource(SourcePreparation::Decoding);
+        assert_eq!(decoding.read_percent(100), None);
+        assert_eq!(decoding.label(100), "正在解码文件…");
+    }
 }

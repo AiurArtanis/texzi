@@ -151,6 +151,9 @@ pub(crate) struct DrawCx<'a> {
     /// backdrop filters can read it ([`crate::decor`]); false in passes
     /// drawn offscreen for a filtered or 3D-transformed view.
     pub(crate) backdrop: bool,
+    /// P2 copies are allowed only in a full pass of their own AppWindow.
+    pub(crate) local_glass: Option<crate::decor::local_glass::FrameBudget>,
+    local_glass_device_error: Option<windows::core::Error>,
     /// The opacity of what is drawn now (the views' around it, multiplied).
     pub(crate) alpha: f32,
     /// The opacity [`DrawCx::solid`] multiplies into its colors: a
@@ -260,6 +263,8 @@ impl<'a> DrawCx<'a> {
             drawn: Vec::new(),
             offscreen: false,
             backdrop: true,
+            local_glass: None,
+            local_glass_device_error: None,
             alpha: 1.0,
             fade: 1.0,
             composed: Vec::new(),
@@ -296,6 +301,33 @@ impl<'a> DrawCx<'a> {
         cx.group_area = self.group_area;
         cx.records = self.records;
         Ok(cx)
+    }
+
+    pub(crate) fn local_glass_clip(&self, bounds: D2D_RECT_F) -> Option<D2D_RECT_F> {
+        if self.local_glass.is_none() || self.local_glass_device_error.is_some() || self.alpha < 1.0
+        {
+            return None;
+        }
+        self.visible().filter(|visible| {
+            // A clipped card uses the solid treatment. Allow minor layout
+            // rounding at a clip edge without extending the capture.
+            let epsilon = 0.5 / self.scale;
+            bounds.left >= visible.left - epsilon
+                && bounds.top >= visible.top - epsilon
+                && bounds.right <= visible.right + epsilon
+                && bounds.bottom <= visible.bottom + epsilon
+        })
+    }
+
+    pub(crate) fn local_glass_error(&mut self, error: windows::core::Error) {
+        use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
+        match error.code() {
+            D2DERR_RECREATE_TARGET | DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET => {
+                self.local_glass_device_error =
+                    Some(windows::core::Error::from_hresult(D2DERR_RECREATE_TARGET));
+            }
+            _ => log::debug!("decor: local glass unavailable: {error}"),
+        }
     }
 
     /// What the window and the clips pushed so far leave visible (DIPs of
@@ -1023,7 +1055,7 @@ fn intersects(a: &D2D_RECT_F, b: &D2D_RECT_F) -> bool {
 }
 
 /// What `a` and `b` share, if anything.
-fn intersection(a: &D2D_RECT_F, b: &D2D_RECT_F) -> Option<D2D_RECT_F> {
+pub(crate) fn intersection(a: &D2D_RECT_F, b: &D2D_RECT_F) -> Option<D2D_RECT_F> {
     intersects(a, b).then(|| D2D_RECT_F {
         left: a.left.max(b.left),
         top: a.top.max(b.top),
@@ -1096,6 +1128,7 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4, pai
     // pixels behind it are what its shader reads as its backdrop.
     crate::shader::take_backdrop(cx, view);
     let state = view.state();
+    let mut glass = false;
     if paint_own {
         if state.style.windows_backdrop.is_some() && cx.backdrops.is_some() {
             let size = (state.frame.size.width.0, state.frame.size.height.0);
@@ -1105,8 +1138,8 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4, pai
                 backdrops.push(at);
             }
         }
-        crate::decor::draw_backdrop(cx, &state);
-        crate::decor::draw_background(cx, &state);
+        glass = crate::decor::draw_backdrop(cx, &state);
+        crate::decor::draw_background(cx, &state, glass);
         crate::shader::draw(cx, &state);
     }
     let clip = state.clips();
@@ -1188,7 +1221,7 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4, pai
         cx.pop();
     }
     if paint_own {
-        crate::decor::draw_border(cx, &state);
+        crate::decor::draw_border(cx, &state, glass);
     }
 }
 
@@ -1840,6 +1873,8 @@ struct Drawn {
     layers: Vec<usize>,
     /// Where the backdrop views drawn go.
     backdrops: Vec<Placement>,
+    /// Pressure decision used by an eligible local glass card in this pass.
+    local_glass_pressure: Option<bool>,
 }
 
 /// A window of the app's own as its frame draws it
@@ -1857,6 +1892,7 @@ pub(crate) struct WindowFrame<'a> {
     /// Its swap chain, and the scale of the chain's target.
     pub(crate) swap: &'a mut Option<gfx::SwapChain>,
     pub(crate) presentation: &'a std::cell::Cell<u64>,
+    pub(crate) local_glass_pressure: &'a std::cell::Cell<Option<(u64, bool)>>,
     pub(crate) target_scale: &'a std::cell::Cell<f32>,
     /// Its client area in pixels, and its pixels per point.
     pub(crate) size: (u32, u32),
@@ -1880,6 +1916,7 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
         composition,
         swap,
         presentation,
+        local_glass_pressure,
         target_scale,
         size,
         scale,
@@ -1963,6 +2000,11 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
                 return false;
             }
             presentation.set(presentation.get().wrapping_add(1));
+            local_glass_pressure.set(
+                drawn
+                    .local_glass_pressure
+                    .map(|allowed| (gfx::generation(), allowed)),
+            );
             if let (Some(fps), Some(painted), Some(showing)) = (fps, painted, showing) {
                 fps.painted(painted, showing.elapsed());
             }
@@ -2034,6 +2076,9 @@ fn draw_into(
     };
     cx.offscreen = offscreen;
     cx.opaque_target = opaque_target;
+    if !offscreen && window.is_some() && areas.is_none() && composition.is_none() {
+        cx.local_glass = Some(crate::decor::local_glass::FrameBudget::default());
+    }
     // A window of the app's own draws its root alone; where its views were
     // painted is not the main window's.
     cx.records = !offscreen && window.is_none();
@@ -2107,6 +2152,11 @@ fn draw_into(
     let items = std::mem::take(&mut cx.drawn);
     let composed = std::mem::take(&mut cx.composed);
     let backdrops = cx.backdrops.take().unwrap_or_default();
+    let local_glass_pressure = cx
+        .local_glass
+        .take()
+        .and_then(|budget| budget.pressure_allowed);
+    let local_glass_device_error = cx.local_glass_device_error.take();
     let (layers, error) = match cx.split.take() {
         Some(s) => (s.layers, s.error),
         None => (Vec::new(), None),
@@ -2118,7 +2168,7 @@ fn draw_into(
     crate::shader::signal_drawn(gfx);
     // SAFETY: as above.
     unsafe { dc.SetTarget(None) };
-    if let Some(err) = error {
+    if let Some(err) = local_glass_device_error.or(error) {
         return Err(err);
     }
     result.map(|()| Drawn {
@@ -2126,6 +2176,7 @@ fn draw_into(
         composed,
         layers,
         backdrops,
+        local_glass_pressure,
     })
 }
 
@@ -2188,6 +2239,16 @@ mod tests {
     use crate::geom::rect;
 
     mod capture;
+
+    struct ReleaseTestGraphics;
+
+    impl Drop for ReleaseTestGraphics {
+        fn drop(&mut self) {
+            // Release COM objects before the harness thread reaches Windows TLS teardown.
+            crate::decor::probe::release_test_resources();
+            gfx::lost();
+        }
+    }
 
     thread_local! {
         /// How many views the passes on this thread drew ([`draw_content`]).
@@ -2667,6 +2728,7 @@ mod tests {
     /// geometry; corners that differ make one.
     #[test]
     fn a_uniform_background_fill_makes_no_geometry() {
+        let _release_graphics = ReleaseTestGraphics;
         let Ok(gfx) = gfx::get() else {
             // No Direct3D device, not even WARP.
             return;
@@ -2700,6 +2762,127 @@ mod tests {
         crate::decor::probe::reset();
         draw_into(&surface, &gfx, &into, 1.0, false, None, None, None).unwrap();
         assert_eq!(crate::decor::probe::geometries(), 1);
+    }
+
+    #[test]
+    fn local_glass_has_an_opaque_fallback_in_a_pass_without_a_window_backdrop() {
+        static TINT: std::sync::LazyLock<[nsh_core::Gradient; 2]> =
+            std::sync::LazyLock::new(|| {
+                let mut style = nsh_core::Style::default();
+                style
+                    .set(
+                        "backgroundImage",
+                        nsh_core::StyleValue::Str(
+                            "linear-gradient(145deg, #ffffffde 0%, #f8f9ffc2 54%, #f1fbf8cc 100%)",
+                        ),
+                    )
+                    .unwrap();
+                let tint = &style.view.effects.as_ref().unwrap().background_images[0];
+                [tint.clone(), tint.clone()]
+            });
+        let _release_graphics = ReleaseTestGraphics;
+        let Ok(gfx) = gfx::get() else {
+            return;
+        };
+        let size = (500, 320);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = &surface.root;
+        {
+            let mut state = root.state_mut();
+            state.frame = rect(0.0, 0.0, 500.0, 320.0);
+            state.style.background_color = Color(0xcc4422ff);
+        }
+        let pane = view(
+            Some(root),
+            2,
+            ViewKind::View,
+            rect(60.0, 50.0, 400.0, 220.0),
+        );
+        pane.state_mut().style.overflow_hidden = true;
+        let card = view(
+            Some(&pane),
+            4,
+            ViewKind::View,
+            rect(90.0, 45.0, 100.0, 100.0),
+        );
+        {
+            let mut state = card.state_mut();
+            state.style.background_color = Color(0x223344ff);
+            state.style.border_radius = Points(8.0);
+            state.style.borders.widths = Edges::all(Points(1.5));
+            state.style.borders.colors = [Color(0xffff_ffff); 4];
+            state.style.effects = Some(std::sync::Arc::new(Effects {
+                backdrop_filters: vec![nsh_core::Filter::Blur(Points(28.0))],
+                ..Effects::default()
+            }));
+            state.local_glass = Some(crate::LocalGlassStyle {
+                tint: &TINT,
+                glass_border: Points(1.0),
+            });
+        }
+        let into = target(&gfx, size);
+        let pixel = |x, y| ((y * size.0 + x) * 4) as usize;
+        let center = pixel(200, 145);
+        draw_into(&surface, &gfx, &into, 1.0, true, None, None, None).unwrap();
+        let image = read(&gfx, &into, size);
+        assert_eq!(&image[center..center + 4], &[0x44, 0x33, 0x22, 0xff]);
+
+        if gfx
+            .local_glass
+            .as_ref()
+            .is_some_and(|pressure| pressure.allows_glass())
+        {
+            draw_into(
+                &surface,
+                &gfx,
+                &into,
+                1.0,
+                false,
+                None,
+                None,
+                Some((root, size)),
+            )
+            .unwrap();
+            let image = read(&gfx, &into, size);
+            assert_ne!(&image[center..center + 4], &[0x44, 0x33, 0x22, 0xff]);
+
+            // A visible part of a clipped card still paints its solid face.
+            card.state_mut().frame = rect(-20.0, 45.0, 100.0, 100.0);
+            draw_into(
+                &surface,
+                &gfx,
+                &into,
+                1.0,
+                false,
+                None,
+                None,
+                Some((root, size)),
+            )
+            .unwrap();
+            let image = read(&gfx, &into, size);
+            let visible = pixel(85, 145);
+            assert_eq!(&image[visible..visible + 4], &[0x44, 0x33, 0x22, 0xff]);
+
+            // A translucent ancestor cannot supply a local native backdrop.
+            card.state_mut().frame = rect(90.0, 45.0, 100.0, 100.0);
+            pane.state_mut().style.opacity = 0.5;
+            draw_into(
+                &surface,
+                &gfx,
+                &into,
+                1.0,
+                false,
+                None,
+                None,
+                Some((root, size)),
+            )
+            .unwrap();
+            let dimmed = read(&gfx, &into, size);
+            draw_into(&surface, &gfx, &into, 1.0, true, None, None, None).unwrap();
+            let reference = read(&gfx, &into, size);
+            assert_eq!(&dimmed[center..center + 4], &reference[center..center + 4]);
+        }
     }
 
     /// Damage that meets a parent's own decoration repaints it and the

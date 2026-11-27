@@ -1599,17 +1599,22 @@ fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
 
 // --- The IME -----------------------------------------------------------------
 
+fn takes_ime(input: &InputState) -> bool {
+    let config = input.config.borrow();
+    config.editable && !config.secure
+}
+
 /// Enables the IME on the window showing the focused editable, non-secure
 /// field and on the host window RichEdit reads its input context from, and
-/// detaches it from every other window of the surface.
-fn update_ime(surface: &Surface) {
+/// detaches it from every other window of the surface. A recovery card
+/// keeps logical focus for later without giving its keys to the IME.
+pub(crate) fn update_ime(surface: &Surface) {
     let shown = FOCUS
         .with(|f| f.borrow().get(&surface.key()).and_then(|f| f.view.clone()))
-        .filter(|v| {
-            input_of(v).is_some_and(|input| {
-                let c = input.config.borrow();
-                c.editable && !c.secure
-            })
+        .filter(|view| {
+            let window = crate::app_window::window_of(surface, view);
+            !crate::system::recovery_blocks_background(surface, window)
+                && input_of(view).is_some_and(|input| takes_ime(&input))
         })
         .map(|v| crate::app_window::hwnd_showing(surface, &v));
     let host = surface.hwnd();
@@ -1642,6 +1647,115 @@ fn notify_composition(surface: &Surface, action: NOTIFY_IME_INDEX) {
         let _ = ImmNotifyIME(himc, NI_COMPOSITIONSTR, action, 0);
         let _ = ImmReleaseContext(hwnd, himc);
     }
+}
+
+/// Finds the focused field only if the workbench being covered still owns it.
+fn recovery_input(surface: &Surface, window: NodeId) -> Option<(NshView, Rc<InputState>)> {
+    let view = focused(surface)?;
+    if crate::app_window::window_of(surface, &view) != window {
+        return None;
+    }
+    let input = input_of(&view)?;
+    Some((view, input))
+}
+
+/// Clean up the workbench's native IME before detaching it, including
+/// pending OS composition that the windowless field has not seen.
+pub(crate) fn cancel_recovery_composition(surface: &Surface, window: NodeId) {
+    let view = focused(surface);
+    // Another workbench may use the same default IME context. Leave its
+    // composition alone when a recovery card opens in the background.
+    if view
+        .as_ref()
+        .is_some_and(|v| crate::app_window::window_of(surface, v) != window)
+    {
+        return;
+    }
+    let field = view.and_then(|view| input_of(&view).map(|input| (view, input)));
+    let bounds = field.as_ref().and_then(|(_, input)| input.composing.get());
+    let composing = field.as_ref().is_some_and(|(_, input)| {
+        bounds.is_some() || input.with_editor(Editor::composing) == Some(true)
+    });
+    let owner = crate::app_window::hwnd_of(surface, window);
+    let host = field
+        .as_ref()
+        .filter(|(_, input)| takes_ime(input))
+        .map(|_| surface.hwnd());
+    let mut cancelled = HIMC::default();
+    for hwnd in [owner, host]
+        .into_iter()
+        .flatten()
+        .filter(|hwnd| !hwnd.is_invalid())
+    {
+        // SAFETY: these live windows and their IME contexts belong to this
+        // UI thread. Each acquired handle gets its own ReleaseContext.
+        unsafe {
+            let context = ImmGetContext(hwnd);
+            if !context.is_invalid() {
+                if context != cancelled {
+                    let _ = ImmNotifyIME(context, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+                    cancelled = context;
+                }
+                let _ = ImmReleaseContext(hwnd, context);
+            }
+        }
+    }
+    let Some((view, input)) = field else {
+        return;
+    };
+    if !composing {
+        return;
+    }
+    // An IMM may deliver its end asynchronously. Let RichEdit clear its
+    // preedit now as well so it cannot outlive the confirmation.
+    recovery_ime_cleanup(surface, window, WM_IME_ENDCOMPOSITION, WPARAM(0));
+
+    let committed = input.reported_text.borrow();
+    if input.text() != *committed {
+        // No result from the cancelled preedit may become real document
+        // text, even when its IME did not restore the native buffer.
+        let selection = bounds.map_or_else(
+            || input.selection(),
+            |(before, after)| {
+                let len = committed.encode_utf16().count() as u32;
+                (
+                    before.min(len),
+                    len.saturating_sub(after).max(before).min(len),
+                )
+            },
+        );
+        uncut(&input, || {
+            input.with_editor(|editor| editor.set_text(&committed));
+        });
+        input.send(EM_SETSEL, selection.0 as usize, selection.1 as isize);
+    }
+    drop(committed);
+    input.with_editor(Editor::discard_composition_notes);
+    input.composing.set(None);
+    report_composition(surface, &view, &input);
+    // Process can still apply a pending programmatic value and update the
+    // caret. The cancelled RichEdit notes above are not an edit.
+    process(surface, &view, &input);
+}
+
+/// Forward a zero-result cancellation or an end, never a start or a
+/// result string, to the old native control. Its notifications are dropped
+/// by cancel_recovery_composition; Win32 also gets its default cleanup.
+pub(crate) fn recovery_ime_cleanup(surface: &Surface, window: NodeId, msg: u32, wparam: WPARAM) {
+    if let Some((_, input)) = recovery_input(surface, window)
+        && (input.composing.get().is_some() || input.with_editor(Editor::composing) == Some(true))
+    {
+        input.send(msg, wparam.0, 0);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn seed_recovery_preedit_for_test(surface: &Surface, view: &NshView) {
+    let input = input_of(view).unwrap();
+    input.with_editor(Editor::start_composition);
+    replace_selection(&input, "ni");
+    process(surface, view, &input);
+    assert_eq!(input.composed_text().as_deref(), Some("ni"));
 }
 
 /// IME messages, which RichEdit handles for the focused field (it draws

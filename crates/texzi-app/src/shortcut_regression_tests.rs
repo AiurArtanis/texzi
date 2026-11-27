@@ -178,6 +178,534 @@ fn document_navigation_leaves_settings_without_mutating_retained_editors() {
     }
 }
 
+#[component]
+fn LargeImportStatusFixture() -> impl IntoElement {
+    use texzi_document::{
+        Eol,
+        files::{Encoding, Format},
+    };
+
+    let shell = super::Shell::new();
+    assert_eq!(
+        shell.compact_menu(),
+        nsh_core::element::window().width.0 < crate::origami::metric("compactBelow")
+    );
+    // Only the recorded disk baseline needs to cross A13's boundary. Keep the
+    // live text small so the fixture exercises status and group routing only.
+    let source = NativeView::recover_file(
+        Arc::from("# Large fixture\n"),
+        Format {
+            encoding: Encoding::Utf8,
+            bom: false,
+        },
+        Eol::Lf,
+        Some(Arc::from(vec![
+            b'x';
+            super::large_file::SOURCE_ONLY_BYTES as usize
+                + 1
+        ])),
+    )
+    .unwrap();
+    let large = shell.add_with_mode(source, Some(r"C:\texzi-test\large.md".into()), Some(false));
+    large.import_complete.set(true);
+    shell.request_mode(large.clone(), true);
+    assert!(!large.displayed_rich());
+    assert!(large.pending_mode.get().is_none());
+    assert!(shell.notice.get().is_empty());
+
+    let assert_large = || {
+        let current = shell.current().unwrap();
+        assert_eq!(current.id, large.id);
+        assert!(current.import_complete.get());
+        assert_eq!(super::source_protection(&current), (true, true));
+        let (feedback, _) = super::workbench_status(&shell);
+        if shell.compact_menu() {
+            assert!(feedback.contains(super::LARGE_SOURCE_NO_HIGHLIGHT));
+            assert!(feedback.contains(super::LARGE_SOURCE_NO_WRAP));
+        } else {
+            assert!(feedback.contains(super::LARGE_IMPORT_COMPLETE));
+        }
+    };
+    assert_large();
+    shell.mount_split(&large, false).unwrap();
+    shell.focus_group(2);
+    assert_large();
+    shell.focus_group(1);
+    assert_large();
+
+    let small = shell.add_with_mode(
+        NativeView::fixture("# Small fixture\n"),
+        Some(r"C:\texzi-test\small.md".into()),
+        Some(false),
+    );
+    let assert_small = || {
+        let current = shell.current().unwrap();
+        assert_eq!(current.id, small.id);
+        assert_eq!(super::source_protection(&current), (false, false));
+        let (feedback, _) = super::workbench_status(&shell);
+        assert!(!feedback.contains("大文件"));
+        assert!(!feedback.contains("语法高亮"));
+    };
+    assert_small();
+    shell.focus_group(2);
+    assert_large();
+    shell.focus_group(1);
+    assert_small();
+    shell.activate_primary(large.id);
+    assert_large();
+    shell.notice.set("保存失败 · 目标只读".into());
+    shell.activate_primary(small.id);
+    assert_small();
+    assert!(
+        super::workbench_status(&shell)
+            .0
+            .contains("保存失败 · 目标只读")
+    );
+    super::render_shell(shell)
+}
+
+#[test]
+fn large_import_status_follows_the_active_document_in_wide_and_compact_groups() {
+    use nsh_core::{
+        desktop::{WindowMode, WindowPlacement, WindowState},
+        geometry::{Bounds, point},
+    };
+    for width in [880.0, 333.0] {
+        let size = Size {
+            width: px(width),
+            height: px(600.0),
+        };
+        let bounds = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size,
+        };
+        let mut window = WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+        window.focused = true;
+        window.visible = true;
+        let mut environment = Environment::default();
+        environment.os = Os::Windows;
+        environment.window = size;
+        environment.window_state = Some(window);
+        let mut core = Core::new(ApproxTextEngine, size);
+        core.set_environment(environment);
+        core.mount_root(&Root::new::<LargeImportStatusFixture>(|| ()));
+        core.run_component_tasks();
+        core.commit();
+    }
+}
+
+#[test]
+fn compact_title_keeps_the_quick_search_input_below_the_system_controls() {
+    use nsh_core::{
+        desktop::{WindowMode, WindowPlacement, WindowState},
+        geometry::{Bounds, point},
+    };
+    let size = Size {
+        width: px(321.0),
+        height: px(600.0),
+    };
+    let bounds = Bounds {
+        origin: point(px(0.0), px(0.0)),
+        size,
+    };
+    let mut window = WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+    window.focused = true;
+    window.visible = true;
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    environment.window = size;
+    environment.title_bar.top = px(38.0);
+    environment.title_bar.right = px(138.0);
+    environment.window_state = Some(window);
+    let mut core = Core::new(ApproxTextEngine, size);
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<SavePickerFixture>(|| ()));
+    let search_nodes = |core: &mut Core<ApproxTextEngine>| {
+        let mut nodes = Vec::new();
+        for _ in 0..5 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    if let MountItem::ViewProps { id, props } = item
+                        && props.accessibility.label.as_deref() == Some(super::SPOTLIGHT_LABEL)
+                        && !nodes.contains(&id)
+                    {
+                        nodes.push(id);
+                    }
+                }
+            }
+        }
+        nodes
+    };
+    let nodes = search_nodes(&mut core);
+    assert_eq!(nodes.len(), 1);
+    let trigger = nodes[0];
+    let button = core.measure(trigger).unwrap();
+    assert_eq!(button.frame.size.width, px(32.0));
+    assert!(button.page.x.0 + button.frame.size.width.0 < 321.0 - 138.0);
+    assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
+    let nodes = search_nodes(&mut core);
+    let input = nodes
+        .into_iter()
+        .filter_map(|id| core.measure(id))
+        .find(|measure| measure.page.y.0 >= 38.0)
+        .expect("quick input below the title");
+    assert!(input.frame.size.width.0 > 280.0);
+    assert!(input.page.x.0 >= 8.0);
+    assert!(input.page.x.0 + input.frame.size.width.0 <= 321.0 - 8.0);
+}
+
+thread_local! {
+    static SPOTLIGHT_TEST_FOLDER: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+}
+
+#[component]
+fn SpotlightSettingsFixture() -> impl IntoElement {
+    let shell = super::Shell::new();
+    if let Some(root) = SPOTLIGHT_TEST_FOLDER.with(|slot| slot.borrow_mut().take()) {
+        shell.open_folder(&root);
+    }
+    shell.add_with_mode(
+        NativeView::fixture("原始正文"),
+        Some(r"C:\texzi-test\主题记录.txt".into()),
+        Some(false),
+    );
+    super::render_shell(shell)
+}
+
+#[test]
+fn spotlight_search_keeps_result_domains_distinct_and_opens_the_actual_setting() {
+    use std::{
+        fs, thread,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!("texzi-spotlight-{nonce}"));
+    fs::create_dir(&workspace).unwrap();
+    fs::create_dir(workspace.join("nested")).unwrap();
+    let unopened = "nested/spotlight-disk-only-0625.txt";
+    let disk_body = "SPOTLIGHT-WORKSPACE-BODY-0625";
+    fs::write(workspace.join(unopened), disk_body).unwrap();
+    SPOTLIGHT_TEST_FOLDER.with(|slot| *slot.borrow_mut() = Some(workspace.clone()));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let _runtime = runtime.enter();
+    let size = Size::new(px(800.0), px(640.0));
+    let mut core = Core::new(ApproxTextEngine, size);
+    core.set_task_runtime(runtime.handle().clone());
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    environment.window = size;
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<SpotlightSettingsFixture>(|| ()));
+
+    let mut labels = std::collections::BTreeMap::new();
+    let mut drain = |core: &mut Core<ApproxTextEngine>| {
+        for _ in 0..6 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    match item {
+                        MountItem::ViewProps { id, props } => {
+                            if let Some(label) = props.accessibility.label {
+                                labels.insert(id, label.to_string());
+                            }
+                        }
+                        MountItem::AccessibilityLabel { id, label } => {
+                            if let Some(label) = label {
+                                labels.insert(id, label.to_string());
+                            } else {
+                                labels.remove(&id);
+                            }
+                        }
+                        MountItem::Text { id, text, .. } => {
+                            labels.insert(id, text.visible_text().into_owned());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        labels.retain(|id, _| core.measure(*id).is_some());
+        labels.clone()
+    };
+    let labelled = |labels: &std::collections::BTreeMap<NodeId, String>, text: &str| {
+        labels
+            .iter()
+            .find_map(|(id, label)| (label == text).then_some(*id))
+    };
+    let trigger = labelled(&drain(&mut core), super::SPOTLIGHT_LABEL).unwrap();
+    assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
+    let input = drain(&mut core)
+        .into_iter()
+        .find_map(|(id, label)| (id != trigger && label == super::SPOTLIGHT_LABEL).then_some(id))
+        .unwrap();
+    assert_ne!(trigger, input);
+    assert!(core.component_event(
+        input,
+        EventKind::ChangeText,
+        &EventPayload::Text {
+            text: "主题".into(),
+            count: 1,
+        }
+    ));
+    let results = drain(&mut core);
+    assert!(labelled(&results, "主题记录.txt").is_some(), "{results:?}");
+    assert!(labelled(&results, "浅色主题").is_some(), "{results:?}");
+    let setting = labelled(&results, "主题 · appearance.theme").expect("supported theme setting");
+    assert!(core.component_event(setting, EventKind::Press, &EventPayload::None));
+    let settings = drain(&mut core);
+    assert!(labelled(&settings, "搜索设置").is_some());
+    assert!(labelled(&settings, "主题").is_some());
+    assert!(labelled(&settings, "重置主题").is_some());
+    assert!(labelled(&settings, "重置字体大小").is_none());
+    assert!(labelled(&settings, "1 项匹配").is_some());
+    let search = labelled(&settings, "搜索设置").unwrap();
+    assert!(core.component_event(
+        search,
+        EventKind::ChangeText,
+        &EventPayload::Text {
+            text: "无任何匹配值".into(),
+            count: 1,
+        }
+    ));
+    let no_match = drain(&mut core);
+    assert!(labelled(&no_match, "0 项匹配").is_some(), "{no_match:?}");
+
+    let trigger = labelled(&no_match, super::SPOTLIGHT_LABEL).unwrap();
+    assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
+    let input = drain(&mut core)
+        .into_iter()
+        .find_map(|(id, label)| (id != trigger && label == super::SPOTLIGHT_LABEL).then_some(id))
+        .unwrap();
+    assert!(core.component_event(
+        input,
+        EventKind::ChangeText,
+        &EventPayload::Text {
+            text: "spotlight-disk-only-0625".into(),
+            count: 1,
+        }
+    ));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let result = loop {
+        let results = drain(&mut core);
+        if let Some(result) = labelled(&results, unopened) {
+            assert!(results.values().any(|label| label.starts_with("扫描结束")));
+            break result;
+        }
+        assert!(Instant::now() < deadline, "{results:?}");
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(core.component_event(result, EventKind::Press, &EventPayload::None));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let editor = drain(&mut core);
+        if labelled(&editor, disk_body).is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{editor:?}");
+        thread::sleep(Duration::from_millis(10));
+    }
+    drop(core);
+    fs::remove_file(workspace.join(unopened)).unwrap();
+    fs::remove_dir(workspace.join("nested")).unwrap();
+    fs::remove_dir(workspace).unwrap();
+}
+
+#[component]
+fn DualMarkdownGlassFixture() -> impl IntoElement {
+    let shell = super::Shell::new();
+    shell.add_with_mode(
+        NativeView::fixture("# Second group"),
+        Some(r"C:\texzi-test\second.md".into()),
+        Some(true),
+    );
+    shell.split_editor(false);
+    shell.split.get().unwrap().gate.to_rich();
+    shell.add_with_mode(
+        NativeView::fixture("# First group"),
+        Some(r"C:\texzi-test\first.md".into()),
+        Some(true),
+    );
+    let first = shell.primary().unwrap();
+    let second = shell.split.get().unwrap();
+    assert_ne!(first.id, second.id);
+    assert!(first.displayed_rich() && second.displayed_rich());
+    assert!(shell.mode_glass_allowed());
+    shell.open_quick("spotlight");
+    assert!(!shell.mode_glass_allowed());
+    shell.close_panel();
+    assert!(shell.mode_glass_allowed());
+    shell.run("texzi.find.open");
+    assert!(super::find_panel::is_open(&shell.panel.get()));
+    assert!(!shell.mode_glass_allowed());
+    shell.close_panel();
+    assert!(shell.mode_glass_allowed());
+    super::render_shell(shell)
+}
+
+#[test]
+fn spotlight_and_find_have_material_priority_over_both_mounted_mode_buttons() {
+    let mut core = Core::new(ApproxTextEngine, Size::new(px(960.0), px(640.0)));
+    core.set_environment(Environment {
+        os: Os::Windows,
+        ..Default::default()
+    });
+    core.mount_root(&Root::new::<DualMarkdownGlassFixture>(|| ()));
+    let mut ids = std::collections::BTreeSet::new();
+    for _ in 0..5 {
+        core.run_component_tasks();
+        if let Some(batch) = core.commit() {
+            for item in batch.items {
+                if let MountItem::ViewProps { id, props } = item
+                    && props.accessibility.label.as_deref() == Some("切换到源码")
+                {
+                    ids.insert(id);
+                }
+            }
+        }
+    }
+    let mut bounds: Vec<_> = ids.into_iter().filter_map(|id| core.measure(id)).collect();
+    bounds.sort_by(|a, b| a.page.x.0.total_cmp(&b.page.x.0));
+    assert_eq!(bounds.len(), 2);
+    assert!(bounds[0].page.x + bounds[0].frame.size.width < bounds[1].page.x);
+}
+
+#[component]
+fn ZenReadingColumnFixture() -> impl IntoElement {
+    let shell = super::Shell::new();
+    shell.add_with_mode(
+        NativeView::fixture(""),
+        Some("zen-column.md".into()),
+        Some(false),
+    );
+    let toggle = shell.clone();
+    let escape = shell.clone();
+    view()
+        .size_full()
+        .child(
+            nsh_base::button()
+                .test_id("test.toggle-zen")
+                .on_press(move |_: &()| toggle.run("texzi.view.toggleZen")),
+        )
+        .child(
+            nsh_base::button()
+                .test_id("test.zen-escape")
+                .on_press(move |_: &()| escape.handle_escape()),
+        )
+        .child(super::render_shell(shell))
+}
+
+#[test]
+fn zen_measured_column_reuses_the_editor_and_fits_a_narrow_window() {
+    use nsh_core::{
+        desktop::{WindowMode, WindowPlacement, WindowState},
+        geometry::{Bounds, point},
+    };
+    for width in [1316.0, 333.0] {
+        let size = Size::new(px(width), px(600.0));
+        let bounds = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size,
+        };
+        let mut window = WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+        window.focused = true;
+        let mut environment = Environment::default();
+        environment.os = Os::Windows;
+        environment.window = size;
+        environment.title_bar.right = px(138.0);
+        environment.window_state = Some(window);
+        let mut core = Core::new(ApproxTextEngine, size);
+        core.set_environment(environment);
+        core.mount_root(&Root::new::<ZenReadingColumnFixture>(|| ()));
+        let trigger = Cell::new(None);
+        let escape = Cell::new(None);
+        let column = Cell::new(None);
+        let pump = |core: &mut Core<ApproxTextEngine>, modes: &mut Vec<NodeId>| {
+            let mut count = None;
+            let mut hint = None;
+            for _ in 0..4 {
+                core.run_component_tasks();
+                if let Some(batch) = core.commit() {
+                    for item in batch.items {
+                        match item {
+                            MountItem::ViewProps { id, props } => match props.test_id.as_deref() {
+                                Some("test.toggle-zen") => trigger.set(Some(id)),
+                                Some("test.zen-escape") => escape.set(Some(id)),
+                                Some("texzi.editor.reading-column") => column.set(Some(id)),
+                                Some("texzi.editor.mode-toggle") if !modes.contains(&id) => {
+                                    modes.push(id);
+                                }
+                                _ => {}
+                            },
+                            MountItem::Text { id, text, .. } if text.visible_text() == "0 字" => {
+                                count = Some(id);
+                            }
+                            MountItem::Text { id, text, .. }
+                                if text.visible_text() == "再按一次 Esc 退出 Zen" =>
+                            {
+                                hint = Some(id);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            modes.retain(|id| core.measure(*id).is_some());
+            (count, hint)
+        };
+        let mut modes = Vec::new();
+        let (count, _) = pump(&mut core, &mut modes);
+        assert!(count.is_none());
+        let (trigger, escape, column) = (
+            trigger.get().unwrap(),
+            escape.get().unwrap(),
+            column.get().unwrap(),
+        );
+        assert_eq!(modes.len(), 1);
+        let normal = core.measure(modes[0]).unwrap();
+        let before = core.measure(column).unwrap().frame.size.width.0;
+        assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
+        let (count, _) = pump(&mut core, &mut modes);
+        assert_eq!(modes.len(), 1);
+        let footer_mode = core.measure(modes[0]).unwrap();
+        let count = core.measure(count.unwrap()).unwrap();
+        assert!(footer_mode.page.y.0 > 550.0);
+        assert!(count.page.x + count.frame.size.width <= footer_mode.page.x);
+        assert!(footer_mode.page.x.0 + footer_mode.frame.size.width.0 <= width);
+        assert!(count.page.y >= footer_mode.page.y);
+        assert!(
+            count.page.y + count.frame.size.height
+                <= footer_mode.page.y + footer_mode.frame.size.height
+        );
+
+        assert!(core.component_event(escape, EventKind::Press, &EventPayload::None));
+        let (_, hint) = pump(&mut core, &mut modes);
+        let hint = core.measure(hint.unwrap()).unwrap();
+        let hint_center = hint.page.x.0 + hint.frame.size.width.0 / 2.0;
+        assert!((hint_center - width / 2.0).abs() < 3.0);
+        let reading = core.measure(column).unwrap();
+        assert!(reading.frame.size.width.0 <= width);
+        if width > 1000.0 {
+            assert!(reading.frame.size.width.0 + 100.0 < before);
+            let center = reading.page.x.0 + reading.frame.size.width.0 / 2.0;
+            assert!((center - width / 2.0).abs() < 3.0);
+        } else {
+            assert!(reading.frame.size.width.0 > width - 24.0);
+        }
+        assert!(core.component_event(escape, EventKind::Press, &EventPayload::None));
+        pump(&mut core, &mut modes);
+        assert_eq!(modes.len(), 1);
+        assert_eq!(core.measure(modes[0]).unwrap().page, normal.page);
+        assert_eq!(core.measure(column).unwrap().frame.size.width.0, before);
+    }
+}
+
 #[test]
 fn activity_settings_opens_one_closable_tab_at_the_bottom() {
     let mut core = Core::new(
@@ -214,7 +742,13 @@ fn activity_settings_opens_one_closable_tab_at_the_bottom() {
         .unwrap()
         .0;
     let frame = core.measure(gear).unwrap();
-    assert!(frame.page.x.0 < 44.0 && frame.page.y.0 > 500.0);
+    assert!(frame.page.x.0 + frame.frame.size.width.0 <= 42.0);
+    assert!(frame.page.y.0 > 500.0);
+    assert!(frame.page.y.0 + frame.frame.size.height.0 <= 600.0 - 26.0);
+    assert_eq!(
+        core.tokens().color("paper"),
+        Some(AdaptiveColor::rgb(0xfcfcfe, 0x161923))
+    );
     assert!(core.component_event(gear, EventKind::Press, &EventPayload::None));
     let opened = controls(&mut core);
     let label = opened
@@ -238,6 +772,78 @@ fn activity_settings_opens_one_closable_tab_at_the_bottom() {
     assert!(core.component_event(close, EventKind::Press, &EventPayload::None));
     controls(&mut core);
     assert!(core.measure(tab).is_none());
+}
+
+#[component]
+fn FolderSearchSidebarFixture() -> impl IntoElement {
+    use std::path::PathBuf;
+
+    let shell = super::Shell::new();
+    shell.add_with_mode(NativeView::fixture("左栏测试"), None, Some(false));
+    let root = PathBuf::from(r"C:\texzi-test\folder-scope");
+    shell.root.set(Some(root.clone()));
+    shell.search_query.set("hit".into());
+    shell.search_origin.set(Some((root.clone(), "hit".into())));
+    shell.hits.set(vec![super::SearchHit {
+        path: root.join(r"nested\note.txt"),
+        line: 7,
+        text: "hit text".into(),
+        matched: 0..3,
+        source_match: 0..3,
+    }]);
+    shell.run("texzi.find.inFolder");
+    let modify = shell.search_query;
+    view()
+        .size_full()
+        .child(
+            nsh_base::button()
+                .test_id("test.change-folder-query")
+                .on_press(move |_: &()| modify.set("new query".into())),
+        )
+        .child(super::render_shell(shell))
+}
+
+#[test]
+fn folder_search_shows_relative_results_in_the_sidebar_and_hides_a_stale_query() {
+    let mut core = Core::new(ApproxTextEngine, Size::new(px(880.0), px(640.0)));
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<FolderSearchSidebarFixture>(|| ()));
+    let mut input = None;
+    let mut result = None;
+    let mut body = None;
+    let mut modify = None;
+    for _ in 0..4 {
+        core.run_component_tasks();
+        if let Some(batch) = core.commit() {
+            for item in batch.items {
+                if let MountItem::ViewProps { id, props } = item {
+                    match props.test_id.as_deref() {
+                        Some("test.change-folder-query") => modify = Some(id),
+                        Some("texzi.editor.reading-column") => body = Some(id),
+                        _ => {}
+                    }
+                    match props.accessibility.label.as_deref() {
+                        Some("文件夹搜索文字") => input = Some(id),
+                        Some(r"nested\note.txt 第 7 行，hit text") => result = Some(id),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    let input = core.measure(input.unwrap()).unwrap();
+    let body = core.measure(body.unwrap()).unwrap();
+    assert!(input.page.x.0 + input.frame.size.width.0 < body.page.x.0);
+    let result = result.unwrap();
+    assert!(core.measure(result).is_some());
+    assert!(core.component_event(modify.unwrap(), EventKind::Press, &EventPayload::None));
+    for _ in 0..4 {
+        core.run_component_tasks();
+        core.commit();
+    }
+    assert!(core.measure(result).is_none());
 }
 
 #[test]
@@ -373,6 +979,16 @@ fn ShortcutFixture() -> impl IntoElement {
                 *changed.input_text.borrow_mut() = value.into();
             }),
     )
+}
+
+#[component]
+fn FocusedSourceShortcutFixture() -> impl IntoElement {
+    let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
+    bind_fixture_shortcuts(probe.clone());
+    provide_context(NativeView::fixture("first\nsecond").buffer());
+    nsh_base::editor::editor()
+        .auto_focus(true)
+        .on_focus(move |_: &()| probe.focus_events.set(probe.focus_events.get() + 1))
 }
 
 #[component]
@@ -655,6 +1271,55 @@ fn actual_shell_ctrl_o_fires_once_in_input_and_held_repeat_emits_no_second_open_
     assert_eq!(fixture.probe.input_changes.get(), 0);
     fixture.cancel_request(request);
     assert_eq!(fixture.probe.answers.get(), 1);
+}
+
+#[test]
+fn real_source_f3_and_shift_f3_route_once_to_shell_and_yield_to_pending_chords() {
+    let focused_editor = |install_shell| {
+        Harness::with_root(
+            install_shell,
+            Root::new::<FocusedSourceShortcutFixture>(|| ()),
+        )
+    };
+    {
+        let mut editor_only = focused_editor(false);
+        for key in ["f3", "shift+f3"] {
+            // The focused Editor installs its own repeatable find commands.
+            assert!(matches!(editor_only.press(key, false), KeyMatch::Fire(_)));
+            assert!(matches!(editor_only.press(key, true), KeyMatch::Fire(_)));
+        }
+        assert!(editor_only.probe.calls.borrow().is_empty());
+    }
+
+    let mut fixture = focused_editor(true);
+    for key in ["f3", "shift+f3"] {
+        assert!(matches!(fixture.press(key, false), KeyMatch::Fire(_)));
+        assert_eq!(fixture.press(key, true), KeyMatch::Held);
+    }
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        ["texzi.find.next", "texzi.find.previous"]
+    );
+
+    for key in ["f3", "shift+f3"] {
+        assert!(fixture.press("ctrl+k", false).consumed());
+        assert!(fixture.press(key, false).consumed());
+    }
+    assert_eq!(fixture.probe.cancellations.get(), 2);
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("s", false).consumed());
+    assert!(fixture.press("shift+f3", false).consumed());
+    assert!(fixture.press("f3", false).consumed());
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        [
+            "texzi.find.next",
+            "texzi.find.previous",
+            "texzi.file.saveAll",
+            "texzi.find.previous",
+            "texzi.find.next",
+        ]
+    );
 }
 
 #[test]

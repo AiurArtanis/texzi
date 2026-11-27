@@ -8,7 +8,7 @@ use nsh_base::{
     rich_editor::view::RichEditorApi,
 };
 use nsh_core::{desktop::WindowPlacement, geometry::point, prelude::*};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use sha2::{Digest, Sha256};
 use std::{
     cell::{Cell, RefCell},
@@ -286,6 +286,32 @@ struct WindowRecord {
     split: Option<Split>,
 }
 
+#[derive(Deserialize)]
+struct ArchiveRecordIndex {
+    version: u32,
+    tabs: Vec<ArchiveRecordEntry>,
+}
+
+#[derive(Deserialize)]
+struct ArchiveRecordEntry {
+    id: u64,
+    path: Option<LocalPath>,
+    draft: Option<ArchiveDraftEntry>,
+    archived: Option<ArchivedDraft>,
+}
+
+#[derive(Deserialize)]
+struct ArchiveDraftEntry {
+    #[serde(rename = "text")]
+    _text: IgnoredAny,
+    #[serde(rename = "encoding")]
+    _encoding: String,
+    #[serde(rename = "bom")]
+    _bom: bool,
+    #[serde(rename = "eol")]
+    _eol: String,
+}
+
 struct Disk {
     path: PathBuf,
     _lease: File,
@@ -365,12 +391,87 @@ impl Disk {
 
 type Signature = (WindowRecord, Vec<(u64, u64)>);
 
+#[derive(Clone, PartialEq)]
+pub(super) enum ArchiveState {
+    Writing,
+    Unavailable,
+    Written,
+    Failed(String),
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) struct ArchiveLocation {
+    id: u64,
+    preview: u64,
+    pub(super) reason: String,
+    pub(super) original: Option<PathBuf>,
+    pub(super) record: PathBuf,
+    pub(super) state: ArchiveState,
+}
+
+impl ArchiveLocation {
+    fn from_tab(tab: &Tab, record: &Path, state: ArchiveState) -> Option<Self> {
+        let archive = tab.archived.as_ref()?;
+        tab.draft.as_ref()?;
+        Some(Self {
+            id: tab.id,
+            preview: archive.preview_id,
+            reason: archive.reason.clone(),
+            original: tab.path.as_ref().map(LocalPath::to_path),
+            record: record.to_owned(),
+            state,
+        })
+    }
+
+    pub(super) fn record_file(&self) -> io::Result<&Path> {
+        if !fs::symlink_metadata(&self.record)?.is_file() {
+            return Err(io::Error::other("恢复记录位置不是文件"));
+        }
+        // Read the saved identities without materializing any draft text.
+        let record: ArchiveRecordIndex =
+            serde_json::from_reader(BufReader::new(File::open(&self.record)?))?;
+        let matches = |tab: &ArchiveRecordEntry| {
+            self.matches_original(tab.path.as_ref().map(LocalPath::to_path).as_deref())
+        };
+        let archive = record.tabs.iter().any(|tab| {
+            tab.id == self.id
+                && tab.draft.is_some()
+                && tab.archived.as_ref().is_some_and(|archive| {
+                    archive.preview_id == self.preview && archive.reason == self.reason
+                })
+                && matches(tab)
+        });
+        let preview = record
+            .tabs
+            .iter()
+            .any(|tab| tab.id == self.preview && tab.archived.is_none() && matches(tab));
+        if record.version != 1 || !archive || !preview {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "恢复记录与当前归档草稿不匹配",
+            ));
+        }
+        Ok(&self.record)
+    }
+
+    pub(super) fn matches_original(&self, path: Option<&Path>) -> bool {
+        match (self.original.as_deref(), path) {
+            (Some(original), Some(path)) => {
+                display_path(original).eq_ignore_ascii_case(&display_path(path))
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
 pub(super) struct Session {
     disk: Arc<Disk>,
     sequence: Cell<u64>,
     last: RefCell<Option<Signature>>,
     writing: Cell<bool>,
     retained: RefCell<Vec<Tab>>,
+    archives: Signal<Vec<ArchiveLocation>>,
 }
 
 impl Session {
@@ -381,6 +482,7 @@ impl Session {
             last: RefCell::new(None),
             writing: Cell::new(false),
             retained: RefCell::new(Vec::new()),
+            archives: signal(Vec::new()),
         }
     }
 
@@ -406,6 +508,47 @@ impl Session {
         }
         changed
     }
+
+    fn archive_checkpoint(&self, record: &WindowRecord, state: ArchiveState) {
+        let mut locations = self.archives.get_untracked();
+        let mut changed = false;
+        for tab in &record.tabs {
+            let Some(location) = ArchiveLocation::from_tab(tab, &self.disk.path, state.clone())
+            else {
+                continue;
+            };
+            if let Some(existing) = locations.iter_mut().find(|entry| entry.id == location.id) {
+                if *existing != location
+                    && (existing.state != ArchiveState::Written || state == ArchiveState::Written)
+                {
+                    *existing = location;
+                    changed = true;
+                }
+            } else {
+                locations.push(location);
+                changed = true;
+            }
+        }
+        if changed {
+            self.archives.set(locations);
+        }
+    }
+}
+
+pub(super) fn archive_location(shell: &Shell, preview: u64) -> Option<ArchiveLocation> {
+    let session = shell.session.borrow().clone()?;
+    session.archives.with(|locations| {
+        locations
+            .iter()
+            .rfind(|entry| entry.preview == preview)
+            .cloned()
+    })
+}
+
+pub(super) fn restoring_archived_original(shell: &Shell, preview: u64, path: &Path) -> bool {
+    archive_location(shell, preview).is_some_and(|entry| {
+        entry.state == ArchiveState::Written && entry.matches_original(Some(path))
+    })
 }
 
 pub(super) fn retain_limited_draft(shell: &Rc<Shell>, doc: &Document, reason: &str) {
@@ -421,7 +564,7 @@ pub(super) fn retain_limited_draft(shell: &Rc<Shell>, doc: &Document, reason: &s
         return;
     };
     shell.next.set(next);
-    session.retained.borrow_mut().push(Tab {
+    let tab = Tab {
         id,
         path: doc.path.get().as_deref().map(LocalPath::from_path),
         view: reader.recovery_view(),
@@ -431,7 +574,18 @@ pub(super) fn retain_limited_draft(shell: &Rc<Shell>, doc: &Document, reason: &s
             preview_id: doc.id,
             reason: reason.into(),
         }),
-    });
+    };
+    let state = if enabled(shell) {
+        ArchiveState::Writing
+    } else {
+        ArchiveState::Unavailable
+    };
+    if let Some(location) = ArchiveLocation::from_tab(&tab, &session.disk.path, state) {
+        session
+            .archives
+            .update(|locations| locations.push(location));
+    }
+    session.retained.borrow_mut().push(tab);
     reader.restored_draft.set(None);
     checkpoint(shell, true);
 }
@@ -691,13 +845,22 @@ pub(super) fn checkpoint(shell: &Rc<Shell>, force: bool) {
             }
             session.writing.set(false);
             match result {
-                Ok(Ok(())) => *session.last.borrow_mut() = Some(signature),
+                Ok(Ok(())) => {
+                    session.archive_checkpoint(&signature.0, ArchiveState::Written);
+                    *session.last.borrow_mut() = Some(signature);
+                }
                 Ok(Err(error)) => {
+                    session
+                        .archive_checkpoint(&signature.0, ArchiveState::Failed(error.to_string()));
                     if let Some(shell) = shell.upgrade() {
                         shell.notice.set(format!("未能写入恢复快照 · {error}"));
                     }
                 }
-                Err(error) => log::warn!("恢复写入任务退出：{error}"),
+                Err(error) => {
+                    session
+                        .archive_checkpoint(&signature.0, ArchiveState::Failed(error.to_string()));
+                    log::warn!("恢复写入任务退出：{error}");
+                }
             }
         })
     });
@@ -736,7 +899,7 @@ pub(super) fn saved(shell: &Rc<Shell>, doc: &Document) {
     }
 }
 
-pub(super) fn remove_discarded(shell: &Shell, id: u64) -> io::Result<()> {
+pub(super) fn remove_closed_tab(shell: &Shell, id: u64) -> io::Result<()> {
     let Some(session) = shell.session.borrow().clone() else {
         return Ok(());
     };
@@ -796,6 +959,9 @@ pub(super) fn finish(shell: &Shell, discard_dirty: bool) -> io::Result<()> {
 }
 
 fn restore(shell: &Rc<Shell>, record: WindowRecord) {
+    if let Some(session) = shell.session.borrow().as_ref() {
+        session.archive_checkpoint(&record, ArchiveState::Written);
+    }
     shell.docs.set(Vec::new());
     shell.split.set(None);
     shell.second_active.set(false);
@@ -989,6 +1155,10 @@ pub(super) fn apply_scroll(doc: &Document, rich: bool) {
 }
 
 #[cfg(test)]
+#[path = "recovery_save_copy_tests.rs"]
+mod save_copy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use nsh_core::{ApproxTextEngine, Core, Size, element::Root};
@@ -997,7 +1167,7 @@ mod tests {
         static RECOVERY_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     }
 
-    fn recovery_tab(path: &Path, bytes: &[u8]) -> Tab {
+    pub(super) fn recovery_tab(path: &Path, bytes: &[u8]) -> Tab {
         Tab {
             id: 4,
             path: Some(LocalPath::from_path(path)),
@@ -1022,7 +1192,7 @@ mod tests {
         }
     }
 
-    fn record(tab: Tab) -> WindowRecord {
+    pub(super) fn record(tab: Tab) -> WindowRecord {
         WindowRecord {
             version: 1,
             folder: None,
@@ -1139,12 +1309,12 @@ mod tests {
         recovery.writing.set(true);
         let obstructed = disk.path.with_extension("tmp");
         fs::create_dir(&obstructed).unwrap();
-        assert!(remove_discarded(&restored, 4).is_err());
+        assert!(remove_closed_tab(&restored, 4).is_err());
         assert!(!recovery.writing.get());
         assert!(tab.source.is_dirty().unwrap());
         assert_eq!(disk.read().unwrap().tabs.len(), 1);
         fs::remove_dir(&obstructed).unwrap();
-        remove_discarded(&restored, 4).unwrap();
+        remove_closed_tab(&restored, 4).unwrap();
         assert!(disk.read().unwrap().tabs.is_empty());
         disk.update(1, || Ok(Some(record(initial)))).unwrap();
         assert!(
@@ -1301,6 +1471,10 @@ mod tests {
         assert!(!preview.editable_body_ready());
         assert!(reader.restored_draft.get().is_none());
         assert_eq!(session.retained.borrow().len(), 1);
+        assert!(
+            archive_location(&shell, original.id)
+                .is_some_and(|entry| entry.state == ArchiveState::Unavailable)
+        );
         let ((checkpoint_record, _), bodies) = collect(&shell, false);
         assert!(bodies.is_empty());
         assert_eq!(checkpoint_record.tabs.len(), 2);
@@ -1331,9 +1505,13 @@ mod tests {
         restore(&shell, saved);
         assert_eq!(shell.docs.with(Vec::len), 1);
         assert_eq!(shell.current().unwrap().id, original.id);
+        assert!(
+            archive_location(&shell, original.id)
+                .is_some_and(|entry| entry.state == ArchiveState::Written)
+        );
         assert_eq!(session.retained.borrow().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), b"published");
-        remove_discarded(&shell, original.id).unwrap();
+        remove_closed_tab(&shell, original.id).unwrap();
         let remaining = disk.read().unwrap().tabs;
         assert_eq!(remaining.len(), 1);
         assert!(remaining[0].draft.as_ref() == Some(&draft));
@@ -1348,6 +1526,121 @@ mod tests {
         fs::remove_file(dir.join("412.lock")).unwrap();
         fs::remove_dir(dir).unwrap();
         text("")
+    }
+
+    #[component]
+    fn SavedArchiveLinksFixture() -> impl IntoElement {
+        let directory = RECOVERY_PATH.with(|slot| slot.borrow_mut().take()).unwrap();
+        let paths =
+            ["first", "second", "unrelated"].map(|part| directory.join(part).join("同名.txt"));
+        let disk = Disk::claim(&directory, "413").unwrap().unwrap();
+        let mut tabs = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            let mut preview = recovery_tab(path, b"unchanged");
+            preview.id = index as u64 + 4;
+            if index < 2 {
+                let mut archive = preview.clone();
+                archive.id = 20 + index as u64;
+                archive.archived = Some(ArchivedDraft {
+                    preview_id: preview.id,
+                    reason: format!("草稿 {index} 超限"),
+                });
+                tabs.push(archive);
+            }
+            preview.draft = None;
+            tabs.push(preview);
+        }
+        let mut persisted = record(tabs[0].clone());
+        persisted.tabs = tabs;
+        persisted.active = 4;
+        disk.update(1, || Ok(Some(persisted))).unwrap();
+        let shell = Shell::new();
+        let session = Rc::new(Session::new(disk.clone()));
+        *shell.session.borrow_mut() = Some(session);
+        restore(&shell, disk.read().unwrap());
+
+        let (first, second, unrelated) = shell.docs.with(|docs| {
+            let by_id = |id| docs.iter().find(|doc| doc.id == id).cloned().unwrap();
+            (by_id(4), by_id(5), by_id(6))
+        });
+        assert!(first.large.is_some() && second.large.is_some());
+        assert!(unrelated.editable_body_ready());
+        assert!(archive_location(&shell, 6).is_none());
+        assert!(!restoring_archived_original(&shell, 4, &paths[2]));
+        let first = archive_location(&shell, 4).unwrap();
+        let second = archive_location(&shell, 5).unwrap();
+        assert!(first.matches_original(Some(&paths[0])));
+        assert!(second.matches_original(Some(&paths[1])));
+        assert_ne!(first.original, second.original);
+        assert_eq!(first.record_file().unwrap(), disk.path);
+        assert_eq!(second.record_file().unwrap(), disk.path);
+        let saved = disk.read().unwrap();
+        let moved = directory.join("moved record.json");
+        fs::rename(&disk.path, &moved).unwrap();
+        assert_eq!(
+            first.record_file().unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let mut other_window = saved.clone();
+        other_window.tabs.retain(|tab| [4, 20].contains(&tab.id));
+        for tab in &mut other_window.tabs {
+            tab.path = Some(LocalPath::from_path(&paths[2]));
+        }
+        serde_json::to_writer(File::create(&disk.path).unwrap(), &other_window).unwrap();
+        assert_eq!(
+            first.record_file().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::write(&disk.path, b"unrelated text at this filename").unwrap();
+        assert_eq!(
+            first.record_file().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::remove_file(&disk.path).unwrap();
+        fs::rename(&moved, &disk.path).unwrap();
+        assert!(second.record_file().is_ok());
+        assert!(first.record_file().is_ok());
+        assert_eq!(
+            saved
+                .tabs
+                .iter()
+                .filter(|tab| tab.archived.is_some() && tab.draft.is_some())
+                .count(),
+            2
+        );
+        assert!(
+            paths
+                .iter()
+                .all(|path| fs::read(path).unwrap() == b"unchanged")
+        );
+        text("")
+    }
+
+    #[test]
+    fn archive_links_follow_both_saved_previews_and_reject_moved_or_replaced_records() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("texzi-archive-links-{nonce}"));
+        fs::create_dir(&directory).unwrap();
+        for name in ["first", "second", "unrelated"] {
+            let parent = directory.join(name);
+            fs::create_dir(&parent).unwrap();
+            fs::write(parent.join("同名.txt"), b"unchanged").unwrap();
+        }
+        RECOVERY_PATH.with(|slot| *slot.borrow_mut() = Some(directory.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut core = Core::new(ApproxTextEngine, Size::new(px(800.0), px(600.0)));
+        core.set_task_runtime(runtime.handle().clone());
+        core.mount_root(&Root::new::<SavedArchiveLinksFixture>(|| ()));
+        core.run_component_tasks();
+        let _ = core.commit();
+        drop(core);
+        drop(runtime);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

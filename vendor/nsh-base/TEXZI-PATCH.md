@@ -4,16 +4,32 @@ The source baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78ea
 
 ## Source editor
 
+- Word movement and double-click selection use the shared `texzi-word` grapheme classification. Whole-word find uses the same CJK, kana, Hangul and Unicode 16 word runs. Language-specific editor word characters still extend the default classification.
+
+- `EditorDecoration::outline_color` adds a pointer-transparent stroke to each displayed row of an external range. The row captures its endpoints during normal grapheme and tab layout. A zero-width range draws a narrow marker at its own position.
+- `ExternalDocument::request_history` returns an immediate update for resident history. A disk-backed history owner returns a pending result, then notifies the editor after the restored revision has been published. The buffer keeps the current revision and selection while it waits.
 - `editor/external.rs`, `buffer.rs`, `commands.rs`, `controller.rs` and `mod.rs` connect a mounted editor to texzi's versioned document owner. Both editor modes share the owner's history. The view consumes incremental changes and publishes composition transitions without serializing the full rope on each change.
 - `editor/hooks.rs` and `view.rs` expose viewport and caret positioning, preserve an anchor during reflow and report the visible logical range when the source minimap subscribes. The source sink sizes itself to the remainder of the caret row so multiline RichEdit can position IME candidates. For large external documents, its additional accessibility value follows the caret with a byte cap. The rows retain their own accessible semantics.
 - `editor/languages.rs` exposes the existing language classifier for texzi's word-wrap preference. Focus and native input selection use the v0.7.1 field's own handling.
 
+### Rust source highlighting
+
+Texzi supplies a Rust grammar only for Rust source files. The color-only override keeps the existing editing language, including its indentation and bracket handling. Ordinary text and Markdown keep their previous display.
+
+The override reuses the NSH syntect grammar, keeps tokens for the requested viewport, and saves sparse exact line-start checkpoints. A distant viewport can display a short provisional parse while the exact parse catches up. The grammar receives at most 16 KiB per logical line. If a line is skipped, no exact tokens or checkpoints beyond that line are produced until an edit makes the context verifiable. Coloring immediately after the uncertain line is withheld. Wrapped display rows visit only their intersecting tokens. The current theme supplies the editor's token colors, with the system foreground in high contrast.
+
+The locked syntax library is [syntect 5.3.0](https://github.com/trishume/syntect/tree/v5.3.0). The embedded grammars come from [two-face 0.4.5](https://github.com/CosmicHorrorDev/two-face/tree/4f766bcb4499f6340e8d6dd715ab64f52c6e8ca4). [NOTICE-two-face-syntaxes.md](NOTICE-two-face-syntaxes.md) reproduces the generated acknowledgement at that commit, with line endings and trailing whitespace normalized. The source SHA-256 is 55be6f98f911df5cecc95275d95b75a916c3f4efb5f0dd322c7f835a60aedeab. The Windows package also carries two-face's README notice and the Oniguruma COPYING file from the locked onig_sys crate.
+
 ## Rich editor
+
+- A view-local outline is drawn above the mounted textblock using its own layout and scroll clip. Complete visible lines reuse their measured spans. Partial lines use the native text geometry, including bidi fragments. Sorted zero-width hits draw position markers on the visible lines. Clearing the external decorations also clears these shapes.
+- The native view exposes the visible document range and accepts transient, view-local decorations alongside plugin decorations. Texzi uses these for the active pane's rendered-text search. They have no effect on the document, selection or history.
 
 - `rich_editor/view/mod.rs` and `controller.rs` give the host its configured application keystrokes. Binding equivalence uses the NSH platform parser, including for v0.7.1's selection-dependent Copy. Plain Escape reaches the host at an empty text caret or a gap only after editor composition, node views, plugins and selections have had their turn. The terminal keeps its native focus behavior.
 - `view/session.rs` also notifies the document owner's mode guard of composition transitions. v0.7.1's public view event remains available after the view has finished processing composition.
 - `extensions/extension.rs` and `input_rules.rs` let an external history owner preflight the original typed text and its automatic formatting together. Texzi publishes the typing and conversion as separate undo entries. Other NSH editors use the upstream two-callback input rule.
 - `view/controller.rs` and `render.rs` expose scroll restoration, visible caret position and caret reveal across mode changes. A distant selection is brought into the upstream block window using the same measured or estimated heights as its spacers. The local sink-width adjustment keeps the Windows candidate window on the caret row.
+- `rich_editor/view/table_anchor.rs` exposes revision-bound mounted cell bounds clipped to this view's table and editor viewports. The host's optional viewport layer can anchor tools without rebuilding the document or altering its scroll layout. Focus and explicit viewport navigation use the mounted view's own input and scroll handles.
 - The block window indexes the intrinsic height of each mounted top-level row, including its margins. Its document position is used separately for caret and table geometry. Translating the viewport leaves measured heights and prefix sums stable. Scroll, resize and selection locate rows by binary search. Reordering preserves surviving measurements. Incremental Markdown uses v0.7.1.
 - Core rounds the two edges of a row to physical pixels. Within the same layout and content revision, the height estimate keeps its last measurement across a one-pixel difference. Larger changes and the first measurement after invalidation update the index. Hit testing and caret placement use the current layout.
 - `view/thumb.rs` holds the displayed and requested rich pages across a Windows indicator drag. A platform mount fence precedes the scroll command. Its native offset receipt releases the previous page and starts the latest queued request. Disjoint pages share one spacer, so intermediate paragraphs stay unmounted.

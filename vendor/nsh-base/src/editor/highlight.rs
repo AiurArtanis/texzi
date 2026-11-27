@@ -24,7 +24,7 @@
 //! The tokens and their colors are `crate::syntax`'s, shared with
 //! `TextView`'s code blocks.
 
-use std::{fmt, ops::Range, rc::Rc, time::Duration};
+use std::{collections::BTreeMap, fmt, ops::Range, rc::Rc, sync::Arc, time::Duration};
 
 use ropey::Rope;
 
@@ -33,6 +33,9 @@ use super::{
     highlighter::{EditorHighlighter, EditorText, EditorTextEdit, EditorTextPoint, EditorTokens},
 };
 use crate::syntax::Token;
+
+#[cfg(feature = "highlight")]
+mod windowed;
 
 /// A line's tokens: byte ranges within the line, sorted, apart.
 pub(crate) type Tokens = Vec<(Range<usize>, Token)>;
@@ -106,6 +109,7 @@ pub(crate) enum Syntax {
     #[default]
     Plain,
     Builtin(&'static str),
+    Windowed(&'static str),
     App(Factory),
 }
 
@@ -114,6 +118,7 @@ impl fmt::Debug for Syntax {
         match self {
             Syntax::Plain => f.write_str("Plain"),
             Syntax::Builtin(hint) => f.debug_tuple("Builtin").field(hint).finish(),
+            Syntax::Windowed(hint) => f.debug_tuple("Windowed").field(hint).finish(),
             Syntax::App(_) => f.write_str("App"),
         }
     }
@@ -128,6 +133,14 @@ impl Syntax {
         }
     }
 
+    /// Uses the built-in grammar while keeping tokens for just the requested rows.
+    pub(crate) fn windowed(self) -> Syntax {
+        match self {
+            Self::Builtin(hint) => Self::Windowed(hint),
+            syntax => syntax,
+        }
+    }
+
     /// Nothing highlights the text.
     pub(crate) fn is_plain(&self) -> bool {
         matches!(self, Syntax::Plain)
@@ -137,7 +150,7 @@ impl Syntax {
     /// needs its syntaxes loaded first ([`Highlighter::load_async`]).
     pub(crate) fn ready(&self) -> bool {
         match self {
-            Syntax::Builtin(_) => Highlighter::ready(),
+            Syntax::Builtin(_) | Syntax::Windowed(_) => Highlighter::ready(),
             _ => true,
         }
     }
@@ -146,7 +159,8 @@ impl Syntax {
     pub(crate) fn same(&self, other: &Syntax) -> bool {
         match (self, other) {
             (Syntax::Plain, Syntax::Plain) => true,
-            (Syntax::Builtin(a), Syntax::Builtin(b)) => a == b,
+            (Syntax::Builtin(a), Syntax::Builtin(b))
+            | (Syntax::Windowed(a), Syntax::Windowed(b)) => a == b,
             (Syntax::App(a), Syntax::App(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
@@ -161,8 +175,11 @@ impl Syntax {
             Syntax::Builtin(hint) => {
                 syntect_lines::Syntect::new(hint).map(|h| Box::new(h) as Box<dyn EditorHighlighter>)
             }
+            #[cfg(feature = "highlight")]
+            Syntax::Windowed(hint) => windowed::WindowedSyntect::new(hint)
+                .map(|h| Box::new(h) as Box<dyn EditorHighlighter>),
             #[cfg(not(feature = "highlight"))]
-            Syntax::Builtin(_) => {
+            Syntax::Builtin(_) | Syntax::Windowed(_) => {
                 crate::syntax::warn_no_highlight();
                 None
             }
@@ -192,7 +209,11 @@ pub(crate) struct Highlighter {
     id: u64,
     /// What makes the highlighters of the guesses.
     syntax: Syntax,
-    tokens: Vec<Option<Known>>,
+    tokens: BTreeMap<usize, Known>,
+    /// None for the original, document-wide highlighting mode.
+    window: Option<Arc<[Range<usize>]>>,
+    window_guessed: bool,
+    unknown_from: Option<usize>,
     /// `None` while a [`Job`] has it.
     parser: Option<Box<dyn EditorHighlighter>>,
     /// The edits made while a job had the parser, in order: given to it
@@ -224,6 +245,7 @@ pub(crate) struct Job {
     parser: Box<dyn EditorHighlighter>,
     text: EditorText,
     last_line: usize,
+    window: Option<Arc<[Range<usize>]>>,
     budget: Duration,
 }
 
@@ -235,6 +257,7 @@ pub(crate) struct Done {
     last_line: usize,
     /// The lines up to `last_line` are current.
     current: bool,
+    window: Option<Arc<[Range<usize>]>>,
 }
 
 /// Highlighting the lines in view from a fresh state, ahead of the
@@ -243,9 +266,8 @@ pub(crate) struct Guess {
     id: u64,
     parser: Box<dyn EditorHighlighter>,
     text: EditorText,
-    first: usize,
-    offset: usize,
-    last: usize,
+    /// Each entry is the first logical line, its byte offset and the last line.
+    regions: Vec<(usize, usize, usize)>,
 }
 
 /// What a [`Guess`] found: the tokens of its lines.
@@ -274,7 +296,10 @@ impl Highlighter {
         Some(Highlighter {
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             syntax: syntax.clone(),
-            tokens: Vec::new(),
+            tokens: BTreeMap::new(),
+            window: matches!(*syntax, Syntax::Windowed(_)).then(|| Arc::from([])),
+            window_guessed: false,
+            unknown_from: None,
             frontier: parser.frontier(),
             parser: Some(parser),
             pending: Vec::new(),
@@ -410,7 +435,7 @@ impl Highlighter {
             ..
         } = edit;
         let kept = line_edit.and_then(|line_edit| {
-            let known = |line: usize| self.tokens.get(line)?.as_ref().map(|k| k.tokens.clone());
+            let known = |line: usize| self.tokens.get(&line).map(|k| k.tokens.clone());
             let old_first = known(first)?;
             let old_last = if old_count == 1 {
                 old_first.clone()
@@ -419,29 +444,36 @@ impl Highlighter {
             };
             Some(keep(&old_first, &old_last, line_edit, new_count == 1))
         });
-        splice(&mut self.tokens, first, old_count, new_count, || None);
-        if let Some(slot) = self.tokens.get_mut(first) {
-            *slot = None;
+        let mut tail = self.tokens.split_off(&first);
+        tail = tail.split_off(&(first + old_count));
+        for (line, known) in tail {
+            let line = line - old_count + new_count;
+            if line != first && self.keeps(line) {
+                self.tokens.insert(line, known);
+            }
         }
         self.frontier = self.frontier.min(first);
         self.current_to = None;
+        self.window_guessed = false;
+        if self.unknown_from.is_some_and(|line| first <= line) {
+            self.unknown_from = None;
+        }
         match &mut self.parser {
             Some(parser) => parser.edited(&edit),
             None => self.pending.push(edit),
         }
         if let Some((head, last)) = kept {
-            let keep = |tokens| {
-                Some(Known {
-                    tokens,
-                    guessed: true,
-                    kept: true,
-                })
+            let keep = |tokens| Known {
+                tokens,
+                guessed: true,
+                kept: true,
             };
-            if let Some(slot) = self.tokens.get_mut(first) {
-                *slot = keep(head);
+            if self.keeps(first) {
+                self.tokens.insert(first, keep(head));
             }
-            if let (Some(last), Some(slot)) = (last, self.tokens.get_mut(first + new_count - 1)) {
-                *slot = keep(last);
+            let last_line = first + new_count.saturating_sub(1);
+            if let Some(last) = last.filter(|_| self.keeps(last_line)) {
+                self.tokens.insert(last_line, keep(last));
             }
         }
     }
@@ -466,6 +498,51 @@ impl Highlighter {
         }
     }
 
+    pub(crate) fn windowed(&self) -> bool {
+        self.window.is_some()
+    }
+
+    /// A small amount of look-ahead, aligned in blocks to keep the cache
+    /// stable during ordinary scrolling. Each visible line selects its own
+    /// block, so a folded span does not enlarge the allocated window.
+    pub(crate) fn set_window(
+        &mut self,
+        visible: impl Iterator<Item = usize>,
+        line_count: usize,
+    ) -> usize {
+        const BLOCK: usize = 32;
+        let mut ranges: Vec<Range<usize>> = Vec::new();
+        for line in visible {
+            let start = line / BLOCK * BLOCK;
+            let end = (start + 2 * BLOCK).min(line_count);
+            if let Some(last) = ranges.last_mut().filter(|last| start <= last.end) {
+                last.end = last.end.max(end);
+            } else {
+                ranges.push(start..end);
+            }
+        }
+        let last = ranges.last().map_or(0, |range| range.end.saturating_sub(1));
+        if self.window.as_deref() != Some(&ranges[..]) {
+            let unknown = self.unknown_from;
+            self.tokens.retain(|&line, known| {
+                includes(&ranges, line)
+                    && unknown.is_none_or(|from| {
+                        line < from || (known.guessed && safely_after(&ranges, from, line))
+                    })
+            });
+            self.window = Some(ranges.into());
+            self.current_to = None;
+            self.window_guessed = false;
+        }
+        last
+    }
+
+    fn keeps(&self, line: usize) -> bool {
+        self.window
+            .as_deref()
+            .is_none_or(|window| includes(window, line))
+    }
+
     /// The highlighting up to `last_line` within `budget`, to run anywhere
     /// ([`Job::run`]) and hand back ([`Self::finish`]); None when the
     /// lines up to `last_line` are current, or a job is running.
@@ -478,6 +555,7 @@ impl Highlighter {
             parser: self.parser.take()?,
             text: EditorText::new(rope.clone()),
             last_line,
+            window: self.window.clone(),
             budget,
         })
     }
@@ -496,6 +574,7 @@ impl Highlighter {
             tokens,
             last_line,
             current,
+            window,
             ..
         } = done;
         #[cfg(test)]
@@ -516,21 +595,22 @@ impl Highlighter {
                 }
                 line = line - edit.old_line_count + edit.new_line_count;
             }
-            if self.tokens.len() <= line {
-                self.tokens.resize_with(line + 1, || None);
-            }
-            let slot = &mut self.tokens[line];
-            if slot
-                .as_ref()
-                .is_some_and(|k| !k.guessed && k.tokens == tokens)
+            if !self.keeps(line)
+                || self
+                    .tokens
+                    .get(&line)
+                    .is_some_and(|k| !k.guessed && k.tokens == tokens)
             {
                 continue;
             }
-            *slot = Some(Known {
-                tokens,
-                guessed: false,
-                kept: false,
-            });
+            self.tokens.insert(
+                line,
+                Known {
+                    tokens,
+                    guessed: false,
+                    kept: false,
+                },
+            );
             changed = Some(match changed {
                 Some(range) => range.start.min(line)..range.end.max(line + 1),
                 None => line..line + 1,
@@ -541,7 +621,24 @@ impl Highlighter {
             parser.edited(&edit);
         }
         self.frontier = parser.frontier();
-        self.current_to = (current && !edited).then_some(last_line);
+        let unknown = parser.unknown_from();
+        if self.unknown_from != unknown {
+            self.unknown_from = unknown;
+            if let Some(from) = unknown {
+                let window = self.window.as_deref().unwrap_or_default();
+                self.tokens.retain(|&line, known| {
+                    let keep = line < from || (known.guessed && safely_after(window, from, line));
+                    if !keep {
+                        changed = Some(match changed.take() {
+                            Some(range) => range.start.min(line)..range.end.max(line + 1),
+                            None => line..line + 1,
+                        });
+                    }
+                    keep
+                });
+            }
+        }
+        self.current_to = (current && !edited && self.window == window).then_some(last_line);
         self.parser = Some(parser);
         (
             changed.unwrap_or(self.frontier..self.frontier),
@@ -573,20 +670,53 @@ impl Highlighter {
             return None;
         }
         let shown = (first + GUESS_CONTEXT).min(last)..last + 1;
-        if shown.clone().all(|line| {
-            self.tokens
-                .get(line)
-                .is_some_and(|k| k.as_ref().is_some_and(|k| !k.kept))
-        }) {
+        if shown
+            .clone()
+            .all(|line| self.tokens.get(&line).is_some_and(|k| !k.kept))
+        {
             return None;
         }
         Some(Guess {
             id: self.id,
             parser: self.syntax.make()?,
             text: EditorText::new(rope.clone()),
-            first,
-            offset,
-            last,
+            regions: vec![(first, offset, last)],
+        })
+    }
+
+    pub(crate) fn guess_window(&mut self, buffer: &Buffer) -> Option<Guess> {
+        if !self.guesses || self.window_guessed {
+            return None;
+        }
+        let regions: Vec<_> = self
+            .window
+            .as_deref()?
+            .iter()
+            .filter_map(|range| {
+                let too_near = self.unknown_from.map_or_else(
+                    || range.end <= self.frontier.saturating_add(GUESS_DISTANCE),
+                    |from| range.start <= from.saturating_add(GUESS_CONTEXT),
+                );
+                if too_near
+                    || range
+                        .clone()
+                        .all(|line| self.tokens.get(&line).is_some_and(|known| !known.kept))
+                {
+                    return None;
+                }
+                let first = range.start.saturating_sub(GUESS_CONTEXT);
+                Some((first, buffer.line_start(first), range.end - 1))
+            })
+            .collect();
+        if regions.is_empty() {
+            return None;
+        }
+        self.window_guessed = true;
+        Some(Guess {
+            id: self.id,
+            parser: self.syntax.make()?,
+            text: EditorText::new(buffer.rope().clone()),
+            regions,
         })
     }
 
@@ -603,18 +733,23 @@ impl Highlighter {
         }
         let mut changed: Option<Range<usize>> = None;
         for (line, tokens) in guessed.tokens.lines {
-            if self.tokens.len() <= line {
-                self.tokens.resize_with(line + 1, || None);
-            }
-            let slot = &mut self.tokens[line];
-            if slot.as_ref().is_some_and(|k| !k.guessed) {
+            if !self.keeps(line)
+                || self.unknown_from.is_some_and(|from| {
+                    line >= from
+                        && !safely_after(self.window.as_deref().unwrap_or_default(), from, line)
+                })
+                || self.tokens.get(&line).is_some_and(|k| !k.guessed)
+            {
                 continue;
             }
-            *slot = Some(Known {
-                tokens,
-                guessed: true,
-                kept: false,
-            });
+            self.tokens.insert(
+                line,
+                Known {
+                    tokens,
+                    guessed: true,
+                    kept: false,
+                },
+            );
             changed = Some(match changed {
                 Some(range) => range.start.min(line)..range.end.max(line + 1),
                 None => line..line + 1,
@@ -628,7 +763,7 @@ impl Highlighter {
     /// highlighted yet; a line an edit has not reached yet keeps the
     /// tokens it had.
     pub(crate) fn tokens(&self, line: usize) -> Option<&[(Range<usize>, Token)]> {
-        self.tokens.get(line)?.as_ref().map(|k| k.tokens.as_slice())
+        self.tokens.get(&line).map(|k| k.tokens.as_slice())
     }
 
     #[cfg(all(test, feature = "highlight"))]
@@ -637,10 +772,29 @@ impl Highlighter {
     }
 }
 
+fn includes(ranges: &[Range<usize>], line: usize) -> bool {
+    let index = ranges.partition_point(|range| range.end <= line);
+    ranges.get(index).is_some_and(|range| range.contains(&line))
+}
+
+/// A provisional viewport must begin after an entire clean lookbehind.
+///
+/// An uncertain line cannot act as context for its own window or its
+/// neighbors, even if some later rows in the same window would fit.
+fn safely_after(ranges: &[Range<usize>], unknown: usize, line: usize) -> bool {
+    let index = ranges.partition_point(|range| range.end <= line);
+    ranges.get(index).is_some_and(|range| {
+        range.contains(&line) && range.start > unknown.saturating_add(GUESS_CONTEXT)
+    })
+}
+
 impl Job {
     /// Highlights (blocking: on a blocking thread where there are some).
     pub(crate) fn run(mut self) -> Done {
         let mut tokens = EditorTokens::default();
+        if let Some(window) = &self.window {
+            self.parser.set_window(window);
+        }
         let current = self
             .parser
             .highlight(&self.text, self.last_line, self.budget, &mut tokens);
@@ -650,6 +804,7 @@ impl Job {
             tokens,
             last_line: self.last_line,
             current,
+            window: self.window,
         }
     }
 }
@@ -658,9 +813,16 @@ impl Guess {
     /// Highlights its lines (blocking).
     pub(crate) fn run(mut self) -> Guessed {
         let mut tokens = EditorTokens::default();
-        let guessed =
-            self.parser
-                .guess(&self.text, self.first, self.offset, self.last, &mut tokens);
+        let started = nsh_core::time::Instant::now();
+        let mut guessed = false;
+        for (first, offset, last) in self.regions {
+            guessed |= self
+                .parser
+                .guess(&self.text, first, offset, last, &mut tokens);
+            if started.elapsed() >= SLICE {
+                break;
+            }
+        }
         Guessed {
             id: self.id,
             tokens,
@@ -1000,7 +1162,7 @@ mod syntect_lines {
                         .clone()
                         .unwrap_or_else(|| Parse::new(syntax)),
                 };
-                out.push(index, parse(&mut state, &self.line, content, set));
+                out.push(index, parse(&mut state, &self.line, content, set, true));
                 let line = &mut self.lines[index];
                 line.done = true;
                 line.len = len;
@@ -1091,7 +1253,7 @@ mod syntect_lines {
                 if !newline {
                     self.line.push('\n');
                 }
-                tokens.push(index, parse(&mut state, &self.line, content, set));
+                tokens.push(index, parse(&mut state, &self.line, content, set, true));
                 offset += len;
                 if !newline {
                     break;
@@ -1103,7 +1265,13 @@ mod syntect_lines {
 
     /// The tokens of `line` (with its line break; `content` is its length
     /// without), parsed on from `state`, which it leaves at the line's end.
-    fn parse(state: &mut State, line: &str, content: usize, set: &SyntaxSet) -> Tokens {
+    pub(super) fn parse(
+        state: &mut State,
+        line: &str,
+        content: usize,
+        set: &SyntaxSet,
+        capture: bool,
+    ) -> Tokens {
         let mut tokens = Vec::new();
         let Parse {
             state: parser,
@@ -1116,11 +1284,15 @@ mod syntect_lines {
         };
         let mut cursor = 0;
         for (index, operation) in operations {
-            push(&mut tokens, cursor..index.min(content), line, scopes);
+            if capture {
+                push(&mut tokens, cursor..index.min(content), line, scopes);
+            }
             let _ = scopes.apply(&operation);
             cursor = index;
         }
-        push(&mut tokens, cursor..content, line, scopes);
+        if capture {
+            push(&mut tokens, cursor..content, line, scopes);
+        }
         tokens
     }
 

@@ -93,6 +93,7 @@ fn rect(b: Bounds<Points>) -> View {
 /// The editor.
 pub(crate) fn render(rv: Rv) -> impl IntoElement {
     let (scroll_rv, layout_rv) = (rv.clone(), rv.clone());
+    let props = rv.props;
     let thumb =
         (os() == nsh_core::platform::Os::Windows).then(|| super::thumb::receiver(rv.clone()));
     let root = part(
@@ -133,7 +134,17 @@ pub(crate) fn render(rv: Rv) -> impl IntoElement {
                     .child(content(rv.clone()))
                     .children(thumb),
             )
-            .child(sink(rv)),
+            .child(sink(rv))
+            .child(when(
+                move || props.viewport_layer.get().is_some(),
+                move || {
+                    view()
+                        .absolute()
+                        .inset(px(0.0))
+                        .pointer_events(PointerEvents::BoxNone)
+                        .child(props.viewport_layer.place(|slot| slot))
+                },
+            )),
     )
 }
 
@@ -1525,8 +1536,42 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
     view()
         .relative()
         .on_layout(move |b: &Bounds<Points>| frame_rv.set_text_frame(id, owner, *b))
-        .child(selection_rects(sel_rv, id))
+        .child(selection_rects(sel_rv.clone(), id))
         .child(text)
+        .child(dynamic(move || {
+            let current = sel_rv.external_outline.get();
+            let points = sel_rv.external_points.get();
+            if current.is_none() && points.is_empty() {
+                return Vec::new();
+            }
+            sel_rv.layout_rev.get();
+            let top = sel_rv.scroll_y.get();
+            let bottom = top + sel_rv.viewport.get().height;
+            let geo = sel_rv.geo.borrow();
+            let viewport = top..bottom;
+            let mut strokes = Vec::new();
+            if !points.is_empty()
+                && let Some((from, to)) = geo.visible_offsets(id, &viewport)
+            {
+                let start = points.partition_point(|(p, _)| *p < from);
+                let end = points.partition_point(|(p, _)| *p <= to);
+                for &(p, color) in &points[start..end] {
+                    strokes.extend(
+                        geo.visible_outline(id, &(p..p), viewport.clone())
+                            .into_iter()
+                            .map(|b| rect(b).border_1().border_color(color)),
+                    );
+                }
+            }
+            if let Some((range, color)) = current {
+                strokes.extend(
+                    geo.visible_outline(id, &range, viewport)
+                        .into_iter()
+                        .map(|b| rect(b).border_1().border_color(color)),
+                );
+            }
+            strokes
+        }))
 }
 
 /// The placeholder of an empty textblock that shows one (Tiptap's

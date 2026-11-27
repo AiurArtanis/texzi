@@ -6,6 +6,10 @@ mod failure_ack;
 use crate::{
     Body, DocId, Eol, Error, Profile, Revision, SourceByte, StateToken, coordinates::boundary,
 };
+use crate::{
+    BulkMap, PreparedBulk,
+    body::history_image::{HistoryRoot, HistoryRoots},
+};
 use crate::{FenceReason, InputKind, SelectionSet, ViewId, ViewState, ViewTransaction};
 pub use failure_ack::PreReplaceAcknowledgement;
 use std::{
@@ -71,20 +75,60 @@ pub struct Receipt {
     pub previous_body: Arc<Body>,
     pub forward: Vec<Delta>,
     pub inverse: Vec<Delta>,
+    /// Bulk changes install the snapshot root and keep the exact anchor map here.
+    pub bulk: Option<BulkMap>,
     pub changed: bool,
+}
+impl Receipt {
+    pub fn is_bulk(&self) -> bool {
+        self.bulk.is_some()
+    }
 }
 #[derive(Clone)]
 struct Entry {
     group: HistoryGroupId,
     selection_before: Option<SelectionSet>,
     selection_after: Option<SelectionSet>,
-    before: Arc<Body>,
-    after: Arc<Body>,
+    before: HistoryRoot,
+    after: HistoryRoot,
     old: StateToken,
     new: StateToken,
     forward: Vec<Delta>,
     inverse: Vec<Delta>,
+    bulk: Option<BulkMap>,
     charge: usize,
+}
+struct CommitData {
+    body: Arc<Body>,
+    forward: Vec<Delta>,
+    inverse: Vec<Delta>,
+    charge: usize,
+    bulk: Option<(BulkMap, HistoryRoots, Arc<std::sync::atomic::AtomicBool>)>,
+}
+/// A disk-backed Undo/Redo target with no live root. Load it off the UI
+/// thread, then validate the invoking view again with submit_loaded_history.
+pub struct BulkHistoryLoad {
+    root: HistoryRoot,
+    doc: DocId,
+    revision: Revision,
+    view: ViewId,
+    epoch: u64,
+    redo: bool,
+    group: HistoryGroupId,
+}
+pub struct LoadedBulkHistory {
+    request: BulkHistoryLoad,
+    pin: Arc<Body>,
+}
+pub enum HistoryStep {
+    Ready(Receipt),
+    Cold(BulkHistoryLoad),
+}
+impl BulkHistoryLoad {
+    pub fn load(self) -> Result<LoadedBulkHistory, Error> {
+        let pin = self.root.load()?;
+        Ok(LoadedBulkHistory { request: self, pin })
+    }
 }
 pub(crate) struct Document {
     failures: Vec<SaveFailureRecord>,
@@ -106,7 +150,9 @@ pub(crate) struct Document {
     charge: usize,
 }
 
-/// Accounting ceilings, not a measured process heap limit. No automatic disk spill.
+/// Resident-history accounting ceilings. Ordinary transactions retain their
+/// original charges. Bulk transactions prepare separately quota-limited disk
+/// backing for large roots and irregular indexes before entering the writer.
 #[derive(Clone, Copy, Debug)]
 pub struct HistoryBudget {
     pub document: usize,
@@ -573,6 +619,30 @@ impl Store {
         )?;
         self.open_import(body, empty, false, None)
     }
+    pub fn open_loaded_with_line_limit(
+        &mut self,
+        loaded: crate::files::LoadedBytes,
+        max_lines: usize,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Snapshot, Error> {
+        let format = loaded.format();
+        let legacy = crate::files::legacy_aliases::LegacyBytes::from_loaded(&loaded);
+        let text = loaded.into_shared_text();
+        let mut body = Self::decoded_body(
+            text.clone(),
+            format,
+            Profile::default().default_eol,
+            max_lines,
+            &cancelled,
+        )?;
+        if let Some(original) = legacy {
+            body.legacy = original.capture(&text, &cancelled)?;
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+        }
+        self.open_import(body, text.is_empty(), false, None)
+    }
     fn decoded_body(
         text: Arc<str>,
         format: crate::files::Format,
@@ -683,6 +753,69 @@ impl Store {
     pub fn history_charge(&self) -> usize {
         self.charge
     }
+    /// Apply a resident history target now (holding a strong pin across the
+    /// entire operation), or hand a cold target to an off-thread loader.
+    pub fn take_history_step(
+        &mut self,
+        view: ViewId,
+        epoch: u64,
+        redo: bool,
+    ) -> Result<HistoryStep, Error> {
+        let v = self.view(view)?;
+        if v.epoch != epoch {
+            return Err(Error::StaleView);
+        }
+        let d = &self.docs[&v.doc];
+        let e = if redo { d.redo.last() } else { d.undo.back() }.ok_or(Error::NoHistory)?;
+        let root = if redo { &e.after } else { &e.before };
+        if let Some(pin) = root.resident() {
+            let result = if redo {
+                self.redo_view(view, epoch)
+            } else {
+                self.undo_view(view, epoch)
+            };
+            drop(pin);
+            return result.map(HistoryStep::Ready);
+        }
+        Ok(HistoryStep::Cold(BulkHistoryLoad {
+            root: root.clone(),
+            doc: v.doc,
+            revision: d.current.revision,
+            view,
+            epoch,
+            redo,
+            group: e.group,
+        }))
+    }
+    pub fn submit_loaded_history(&mut self, loaded: LoadedBulkHistory) -> Result<Receipt, Error> {
+        let LoadedBulkHistory { request: r, pin } = loaded;
+        let v = self.view(r.view)?;
+        if v.doc != r.doc || v.epoch != r.epoch {
+            return Err(Error::StaleView);
+        }
+        let d = &self.docs[&r.doc];
+        let entry = if r.redo { d.redo.last() } else { d.undo.back() };
+        let entry = entry
+            .filter(|e| e.group == r.group)
+            .ok_or(Error::StaleRevision)?;
+        let target = if r.redo { &entry.after } else { &entry.before };
+        // View, revision, and group counters are local to their Store. Only
+        // the job's exact still-live root can consume its off-thread result.
+        if d.current.revision != r.revision
+            || target
+                .resident()
+                .is_none_or(|root| !Arc::ptr_eq(&root, &pin))
+        {
+            return Err(Error::StaleRevision);
+        }
+        let result = if r.redo {
+            self.redo_view(r.view, r.epoch)
+        } else {
+            self.undo_view(r.view, r.epoch)
+        };
+        drop(pin);
+        result
+    }
     /// Trusted document-service entry; view adapters must use submit_view.
     pub(crate) fn submit_unpublished(&mut self, txn: Transaction) -> Result<Receipt, Error> {
         self.submit_inner(txn, None)
@@ -763,6 +896,7 @@ impl Store {
                 previous_body: s.body.clone(),
                 forward,
                 inverse,
+                bulk: None,
                 changed: false,
             };
             let views =
@@ -816,13 +950,14 @@ impl Store {
                 previous_body: s.body.clone(),
                 forward: vec![],
                 inverse: vec![],
+                bulk: None,
                 changed: false,
             });
         }
         let mut body = (*s.body).clone();
         body.profile = profile;
         if let Some(e) = eol.filter(|_| eol_change) {
-            body.change_eols(e);
+            body.change_eols(e)?;
         }
         let charge = 4096 + s.body.len_bytes().saturating_mul(2);
         self.commit(s, Arc::new(body), vec![], vec![], charge, None)
@@ -836,6 +971,80 @@ impl Store {
         charge: usize,
         context: Option<&ViewTransaction>,
     ) -> Result<Receipt, Error> {
+        self.commit_prepared(
+            s,
+            CommitData {
+                body,
+                forward,
+                inverse,
+                charge,
+                bulk: None,
+            },
+            context,
+        )
+    }
+    pub(crate) fn submit_bulk_unpublished(
+        &mut self,
+        id: ViewId,
+        epoch: u64,
+        prepared: PreparedBulk,
+    ) -> Result<Receipt, Error> {
+        let view = self.view(id)?;
+        let s = self.snapshot(prepared.base.doc)?;
+        if view.doc != s.doc {
+            return Err(Error::InvalidView);
+        }
+        if s.revision != prepared.base.revision
+            || s.token != prepared.base.token
+            || !Arc::ptr_eq(&s.body, &prepared.base.body)
+        {
+            return Err(Error::StaleRevision);
+        }
+        if view.epoch != epoch {
+            return Err(Error::StaleView);
+        }
+        if view.mode == crate::ModeTag::Rich {
+            return Err(Error::InvalidView);
+        }
+        crate::bulk::check(&prepared.cancelled)?;
+        let Some(change) = prepared.change else {
+            return Ok(Receipt {
+                history_group: None,
+                previous: s.revision,
+                previous_body: s.body.clone(),
+                snapshot: s,
+                forward: vec![],
+                inverse: vec![],
+                bulk: None,
+                changed: false,
+            });
+        };
+        self.commit_prepared(
+            s,
+            CommitData {
+                body: change.body,
+                forward: vec![],
+                inverse: vec![],
+                charge: change.charge,
+                bulk: Some((change.positions, change.roots, prepared.cancelled)),
+            },
+            None,
+        )
+    }
+    fn commit_prepared(
+        &mut self,
+        s: Snapshot,
+        data: CommitData,
+        context: Option<&ViewTransaction>,
+    ) -> Result<Receipt, Error> {
+        let CommitData {
+            body,
+            forward,
+            inverse,
+            charge,
+            bulk,
+        } = data;
+        let map = bulk.as_ref().map(|(map, _, _)| map.clone());
         let d = self.docs.get(&s.doc).unwrap();
         let freed: usize = d.redo.iter().map(|e| e.charge).sum();
         let doc_charge = d.charge - freed;
@@ -858,11 +1067,21 @@ impl Store {
             previous_body: s.body.clone(),
             forward: forward.clone(),
             inverse: inverse.clone(),
+            bulk: map.clone(),
             changed: true,
         };
         let views = self.prepare_views(&preview, context.map(|v| (v.view, &v.selection_after)))?;
         let before_selection = context.map(|v| d.views[&v.view].selection.clone());
         let merge = merge_candidate(d, &s, &forward, context);
+        let roots = if let Some((_, roots, cancelled)) = bulk {
+            crate::bulk::check(&cancelled)?;
+            roots
+        } else {
+            HistoryRoots {
+                before: HistoryRoot::Resident(s.body.clone()),
+                after: HistoryRoot::Resident(body.clone()),
+            }
+        };
         let token = self.allocate_token()?;
         let next = Snapshot {
             doc: s.doc,
@@ -872,12 +1091,13 @@ impl Store {
         };
         let mut entry = Entry {
             group: HistoryGroupId(token.0),
-            before: s.body.clone(),
-            after: body,
+            before: roots.before,
+            after: roots.after,
             old: s.token,
             new: token,
             forward: forward.clone(),
             inverse: inverse.clone(),
+            bulk: map.clone(),
             charge,
             selection_before: before_selection,
             selection_after: context.map(|v| v.selection_after.clone()),
@@ -916,6 +1136,7 @@ impl Store {
             previous_body: s.body.clone(),
             forward,
             inverse,
+            bulk: map,
             changed: true,
         };
         self.observer.pending_content = Some(receipt.clone());
@@ -948,14 +1169,14 @@ impl Store {
         let previous_body = d.current.body.clone();
         let (body, token, forward, inverse) = if redo {
             (
-                entry.after.clone(),
+                entry.after.load()?,
                 entry.new,
                 entry.forward.clone(),
                 entry.inverse.clone(),
             )
         } else {
             (
-                entry.before.clone(),
+                entry.before.load()?,
                 entry.old,
                 entry.inverse.clone(),
                 entry.forward.clone(),
@@ -974,9 +1195,15 @@ impl Store {
             previous_body,
             forward,
             inverse,
+            bulk: entry
+                .bulk
+                .as_ref()
+                .map(|m| if redo { m.clone() } else { m.inverse() }),
             changed: true,
         };
-        let restored = invoking.map(|view| {
+        // Bulk travel maps the current positions of all views, including the
+        // invoking sibling and views opened after the original replacement.
+        let restored = invoking.filter(|_| entry.bulk.is_none()).map(|view| {
             let stored = if redo {
                 &entry.selection_after
             } else {

@@ -5,18 +5,25 @@
 //! (`SHOpenFolderAndSelectItems`) and the Recycle Bin (`IFileOperation`
 //! with `FOFX_RECYCLEONDELETE`). Each request runs on a thread of its own
 //! (a single-threaded COM apartment), so the surface's message loop never
-//! waits in it, and answers as a root `FileRequest` event.
+//! waits in it. Core requests answer as root `FileRequest` events. The
+//! recovery confirmation's save picker answers its own waiting task.
 
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::mpsc,
+    time::Duration,
 };
 
 use nsh_core::{
-    EventKind, EventPayload, ROOT_ID,
+    EventKind, EventPayload, NodeId, ROOT_ID,
+    element::{ElementRef, run_on_main_thread},
     file_dialog::{FileFilter, FileRequest, OpenDialog, SaveDialog},
+    main_thread::MainThreadError,
     picker::{FilePickRequest, read_picked_files},
 };
+use tokio::sync::oneshot;
 use windows::{
     Win32::{
         Foundation::{ERROR_CANCELLED, HWND},
@@ -33,13 +40,104 @@ use windows::{
                 ILCreateFromPathW, ILFree, IShellItem, SHCreateItemFromParsingName,
                 SHOpenFolderAndSelectItems, SIGDN_FILESYSPATH, ShellExecuteW,
             },
-            WindowsAndMessaging::SW_SHOWNORMAL,
+            WindowsAndMessaging::{IsIconic, IsWindowVisible, SW_SHOWNORMAL},
         },
     },
     core::{HRESULT, HSTRING, PCWSTR, w},
 };
 
-use crate::surface::Surface;
+use crate::{app_window, surface::Surface, system::recovery_window, window::UiThread};
+
+/// Opens a recovery Save As picker owned by the declared AppWindow
+/// containing the same anchor as the recovery confirmation.
+/// Its result is empty when cancelled or the original owner is unavailable.
+pub fn pick_recovered_draft_save_path(
+    host: &ElementRef,
+    request: SaveDialog,
+) -> impl Future<Output = Result<Option<PathBuf>, String>> + use<> {
+    let (reply, result) = oneshot::channel();
+    let start = host.node().map(|host| {
+        run_on_main_thread(move || {
+            let owner = crate::surface::task_surface()
+                .and_then(|surface| RecoverySaveOwner::resolve(&surface, host));
+            let Some(owner) = owner.filter(|_| !reply.is_closed()) else {
+                return Ok(false);
+            };
+            std::thread::Builder::new()
+                .name("nsh-recovery-save".into())
+                .spawn(move || {
+                    let chosen = with_com(|| {
+                        pick_save_path_using(&request, || {
+                            if reply.is_closed() {
+                                return None;
+                            }
+                            owner.for_show().filter(|_| !reply.is_closed())
+                        })
+                    })
+                    .and_then(|chosen| chosen)
+                    .map_err(|error| error.message());
+                    let _ = reply.send(chosen);
+                })
+                .map(|_| true)
+                .map_err(|error| error.to_string())
+        })
+    });
+    async move {
+        let Some(start) = start else { return Ok(None) };
+        match start.await {
+            Ok(Ok(false)) | Err(MainThreadError::Dropped) => Ok(None),
+            Ok(Ok(true)) => result
+                .await
+                .map_err(|_| "The save picker stopped before answering.".to_string())?,
+            Ok(Err(error)) => Err(error),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RecoverySaveOwner {
+    surface: u64,
+    host: NodeId,
+    window: NodeId,
+    handle: isize,
+    ui: UiThread,
+}
+
+impl RecoverySaveOwner {
+    fn resolve(surface: &Surface, host: NodeId) -> Option<Self> {
+        let (window, _) = recovery_window(surface, host)?;
+        let hwnd = app_window::hwnd_of(surface, window)?;
+        if hwnd.is_invalid() || hwnd == surface.hwnd() {
+            return None;
+        }
+        Some(Self {
+            surface: surface.key(),
+            host,
+            window,
+            handle: hwnd.0 as isize,
+            ui: surface.ui_thread(),
+        })
+    }
+
+    /// COM setup can outlive the anchor. Recheck it on its own UI thread
+    /// just before Show, after which the shell owns the modal lifetime.
+    fn for_show(self) -> Option<HWND> {
+        let (reply, result) = mpsc::channel();
+        self.ui.invoke(move || {
+            let current = Surface::by_key(self.surface)
+                .and_then(|surface| Self::resolve(&surface, self.host));
+            let valid = current
+                .is_some_and(|owner| owner.window == self.window && owner.handle == self.handle);
+            let _ = reply.send(valid);
+        });
+        let valid = result.recv_timeout(Duration::from_secs(5)).ok()?;
+        let hwnd = HWND(self.handle as *mut _);
+        // SAFETY: these read-only window queries accept an HWND from another thread.
+        (valid && unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() })
+            .then_some(hwnd)
+    }
+}
 
 /// Carries out request `id`.
 pub(crate) fn request(surface: &Rc<Surface>, id: u32, request: &FileRequest) {
@@ -253,6 +351,13 @@ fn pick_paths(owner: HWND, request: &OpenDialog) -> windows::core::Result<Vec<Pa
 
 /// The path chosen in the dialog; none when it was cancelled.
 fn pick_save_path(owner: HWND, request: &SaveDialog) -> windows::core::Result<Option<PathBuf>> {
+    pick_save_path_using(request, || Some(owner))
+}
+
+fn pick_save_path_using(
+    request: &SaveDialog,
+    owner: impl FnOnce() -> Option<HWND>,
+) -> windows::core::Result<Option<PathBuf>> {
     // SAFETY: COM calls on a dialog this thread owns until it returns; the
     // name outlives the call that reads it.
     unsafe {
@@ -269,6 +374,9 @@ fn pick_save_path(owner: HWND, request: &SaveDialog) -> windows::core::Result<Op
             request.directory.as_ref(),
             &request.filters,
         )?;
+        let Some(owner) = owner() else {
+            return Ok(None);
+        };
         if !show(&dialog, owner)? {
             return Ok(None);
         }
@@ -332,4 +440,29 @@ fn trash(path: &Path) -> windows::core::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_picker_cancels_when_the_owner_is_lost_after_com_setup() {
+        let result = std::thread::spawn(|| {
+            with_com(|| {
+                let called = std::cell::Cell::new(false);
+                let result = pick_save_path_using(&SaveDialog::new(), || {
+                    called.set(true);
+                    None
+                });
+                assert!(called.get(), "COM setup completed before owner validation");
+                result
+            })
+        })
+        .join()
+        .expect("the test STA joined")
+        .expect("COM initialized")
+        .expect("the picker was cancelled");
+        assert!(result.is_none());
+    }
 }

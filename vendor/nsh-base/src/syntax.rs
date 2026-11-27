@@ -37,6 +37,8 @@ pub(crate) enum Token {
     Attr,
     /// Built-ins: types, functions; tags.
     Built,
+    /// A macro name.
+    Macro,
     /// A diff's removed lines.
     Deletion,
     Bold,
@@ -62,12 +64,28 @@ impl Token {
             Self::Number => s.text_color(color(0x953800, 0xf5b27a)),
             Self::Title => s.text_color(color(0x0550ae, 0x82b8ff)),
             Self::Attr => s.text_color(color(0x7d4e00, 0xf0c674)),
-            Self::Built => s.text_color(color(0x0a7285, 0x6fd3d8)),
+            Self::Built | Self::Macro => s.text_color(color(0x0a7285, 0x6fd3d8)),
             Self::Deletion => s.text_color(color(0xcf222e, 0xf87171)),
             Self::Bold => s.font_weight(FontWeight::BOLD),
             Self::Italic => s.italic(),
             Self::Operator | Self::Storage => s,
         }
+    }
+
+    /// An optional source-editor override, kept separate from prose code blocks.
+    pub(crate) fn editor_color(self, palette: &nsh_core::element::Tokens) -> Option<AdaptiveColor> {
+        let name = match self {
+            Self::Comment => "editor-syntax-comment",
+            Self::Keyword => "editor-syntax-keyword",
+            Self::String => "editor-syntax-string",
+            Self::Number => "editor-syntax-number",
+            Self::Title => "editor-syntax-title",
+            Self::Attr => "editor-syntax-attribute",
+            Self::Built => "editor-syntax-built-in",
+            Self::Macro => "editor-syntax-macro",
+            _ => return None,
+        };
+        palette.color(name)
     }
 
     /// The token of `text` for the tokens its scope leaves open.
@@ -298,11 +316,9 @@ mod syntect_syntaxes {
             || (is("variable.other") && scope.ends_with(".shell"))
         {
             Token::Attr
-        } else if is("support.function.builtin")
-            || is("support.macro")
-            || is("support.type")
-            || is("entity.name.tag")
-        {
+        } else if is("support.macro") || is("entity.name.function.macro") {
+            Token::Macro
+        } else if is("support.function.builtin") || is("support.type") || is("entity.name.tag") {
             Token::Built
         } else if is("keyword.operator") {
             // Words are keywords (`as`, `typeof`, `in`), symbols are plain.

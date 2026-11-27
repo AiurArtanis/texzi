@@ -77,6 +77,7 @@ pub(crate) struct Gfx {
     pub(crate) device: ID2D1Device,
     /// The one device context every surface draws with.
     pub(crate) dc: ID2D1DeviceContext,
+    pub(crate) local_glass: Option<crate::decor::local_glass::DevicePressure>,
 }
 
 thread_local! {
@@ -98,6 +99,7 @@ pub(crate) fn get() -> Result<std::rc::Rc<Gfx>> {
 /// invalidates device resources made so far.
 pub(crate) fn lost() {
     log::warn!("the graphics device was lost; recreating it");
+    crate::system::release_recovered_draft_device_images();
     crate::text::invalidate_rendering_params();
     GFX.with(|g| g.borrow_mut().take());
     GENERATION.with(|g| g.set(g.get() + 1));
@@ -109,12 +111,24 @@ pub(crate) fn generation() -> u64 {
     GENERATION.with(Cell::get)
 }
 
+pub(crate) fn refresh_local_glass_pressure(interested: bool) -> Option<bool> {
+    GFX.with(|gfx| {
+        gfx.borrow()
+            .as_ref()
+            .and_then(|gfx| gfx.local_glass.as_ref())
+            .and_then(|pressure| pressure.refresh(interested))
+    })
+}
+
 impl Gfx {
     fn new() -> Result<Gfx> {
-        let d3d = create_d3d(D3D_DRIVER_TYPE_HARDWARE).or_else(|err| {
-            log::warn!("no hardware Direct3D device ({err}); drawing with WARP");
-            create_d3d(D3D_DRIVER_TYPE_WARP)
-        })?;
+        let (d3d, hardware) = match create_d3d(D3D_DRIVER_TYPE_HARDWARE) {
+            Ok(device) => (device, true),
+            Err(err) => {
+                log::warn!("no hardware Direct3D device ({err}); drawing with WARP");
+                (create_d3d(D3D_DRIVER_TYPE_WARP)?, false)
+            }
+        };
         let options = D2D1_FACTORY_OPTIONS {
             debugLevel: D2D1_DEBUG_LEVEL_NONE,
         };
@@ -122,6 +136,16 @@ impl Gfx {
         let factory: ID2D1Factory1 =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, Some(&options))? };
         let dxgi: IDXGIDevice = d3d.cast()?;
+        let local_glass = if hardware {
+            // SAFETY: the DXGI device is live. The adapter is sampled only when
+            // a marked card requests a local backdrop.
+            unsafe { dxgi.GetAdapter() }
+                .ok()
+                .and_then(|adapter| adapter.cast().ok())
+                .map(crate::decor::local_glass::DevicePressure::new)
+        } else {
+            None
+        };
         // The device queues three frames in all by default, whatever the
         // swap chains allow each: with several windows a present would wait
         // for the vertical blank of another window's frames. Every swap
@@ -141,6 +165,7 @@ impl Gfx {
             factory,
             device,
             dc,
+            local_glass,
         })
     }
 }
@@ -232,7 +257,7 @@ const RESIZE_FRAME_WAIT: std::time::Duration = std::time::Duration::from_millis(
 
 /// Whether DWM shows window `hwnd`: visible, its top-level window neither
 /// minimized nor cloaked.
-fn composed(hwnd: HWND) -> bool {
+pub(crate) fn composed(hwnd: HWND) -> bool {
     use windows::Win32::{
         Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
         UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, IsIconic, IsWindowVisible},

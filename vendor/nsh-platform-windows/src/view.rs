@@ -147,6 +147,8 @@ pub(crate) struct ViewState {
     pub(crate) frame: Bounds<Points>,
     /// Visual style.
     pub(crate) style: Box<ViewStyle>,
+    /// Optional glass paint for a live decoration explicitly opted in by the app.
+    pub(crate) local_glass: Option<crate::LocalGlassStyle>,
     /// Native animation values.
     pub(crate) anim: AnimValues,
     /// Events JS listens to.
@@ -194,6 +196,7 @@ impl ViewState {
             kind,
             frame: Bounds::default(),
             style: Box::default(),
+            local_glass: None,
             anim: AnimValues::default(),
             events: EventMask::default(),
             props: Box::default(),

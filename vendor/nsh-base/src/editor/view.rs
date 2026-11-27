@@ -1228,11 +1228,34 @@ fn row_view(
             })
             .child(dynamic(move || spans(span_ed.clone(), slot, content.get()))),
     )
+    .child(dynamic(move || {
+        content.with(|row| {
+            row.outlines
+                .iter()
+                .map(|(x, color)| {
+                    view()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(Length::from(x.start))
+                        .w(Length::from(x.end - x.start))
+                        .border_1()
+                        .border_color(*color)
+                        .pointer_events(PointerEvents::None)
+                })
+                .collect::<Vec<_>>()
+        })
+    }))
 }
 
 /// The spans of the content of the row in `slot`.
 fn spans(ed: Ed, slot: ReadSignal<(usize, usize)>, content: RowContent) -> Vec<AnyElement> {
     let props = ed.props;
+    let palette = content
+        .spans
+        .iter()
+        .any(|span| span.token.is_some())
+        .then(nsh_core::element::tokens);
     let mut out: Vec<AnyElement> = Vec::with_capacity(content.spans.len() + 1);
     {
         let st = ed.st.borrow();
@@ -1240,6 +1263,12 @@ fn spans(ed: Ed, slot: ReadSignal<(usize, usize)>, content: RowContent) -> Vec<A
             let mut el = text(span.text);
             if let Some(token) = span.token {
                 *el.style() = token.style();
+                if let Some(color) = palette
+                    .as_ref()
+                    .and_then(|palette| token.editor_color(palette))
+                {
+                    el = el.text_color(color);
+                }
             }
             let tags = span.tags;
             if tags.unnecessary {

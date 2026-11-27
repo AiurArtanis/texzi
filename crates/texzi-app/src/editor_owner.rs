@@ -4,18 +4,26 @@ use nsh_core::prelude::*;
 use std::{cell::RefCell, ops::Range, rc::Rc, time::Instant};
 use texzi_document as doc;
 
+mod cold_history;
 mod commands;
 mod files;
+mod search;
 pub(crate) use files::SaveError;
-pub(crate) use files::{MAX_EDIT_BYTES, PrepareError, PreparedFile, line_limit_message};
+pub(crate) use files::{
+    MAX_EDIT_BYTES, PrepareError, PreparedFile, SourcePreparation, line_limit_message,
+};
+pub(crate) use search::SearchScope;
 
 pub struct Owner {
+    loading_history: std::cell::Cell<bool>,
+    search_scopes: search::ScopeRegistry,
     store: RefCell<doc::Store>,
     changed: Signal<u64>,
     clock: Instant,
     files: RefCell<files::FileState>,
 }
 pub struct NativeView {
+    history_target: RefCell<Option<Rc<cold_history::Target>>>,
     owner: Rc<Owner>,
     view: doc::ViewId,
     composing: Signal<bool>,
@@ -47,12 +55,15 @@ impl NativeView {
             .map_err(err)?;
         Ok(Rc::new(Self {
             owner: Rc::new(Owner {
+                loading_history: std::cell::Cell::new(false),
+                search_scopes: RefCell::default(),
                 store: RefCell::new(store),
                 changed: signal(0),
                 clock: Instant::now(),
                 files: RefCell::new(file_state),
             }),
             view: v.id,
+            history_target: RefCell::default(),
             composing: signal(false),
             selection_changed: signal(0),
         }))
@@ -61,10 +72,13 @@ impl NativeView {
         ExternalBuffer(self.clone())
     }
     pub(crate) fn current_body(&self) -> Option<std::sync::Arc<doc::Body>> {
+        self.body_snapshot().map(|snapshot| snapshot.body)
+    }
+    pub(crate) fn body_snapshot(&self) -> Option<doc::Snapshot> {
         self.track();
         let store = self.owner.store.borrow();
         let view = store.view(self.view).ok()?;
-        Some(store.snapshot(view.doc).ok()?.body)
+        store.snapshot(view.doc).ok()
     }
     pub fn is_composing(&self) -> bool {
         self.composing.get()
@@ -156,6 +170,7 @@ impl NativeView {
         Ok(Rc::new(Self {
             owner: self.owner.clone(),
             view: v.id,
+            history_target: RefCell::default(),
             composing: signal(false),
             selection_changed: signal(0),
         }))
@@ -179,6 +194,13 @@ impl NativeView {
         })
     }
     fn update(&self, store: &doc::Store, r: doc::Receipt) -> Result<ExternalUpdate, String> {
+        self.advance_search_scopes(&r);
+        if r.is_bulk() {
+            return Ok(ExternalUpdate {
+                snapshot: self.read(store)?,
+                edits: None,
+            });
+        }
         // Document deltas use the same old version; descending order is sequential.
         let edits = r
             .forward
@@ -191,11 +213,36 @@ impl NativeView {
             edits: Some(edits),
         })
     }
+    fn history_update(
+        &self,
+        store: &doc::Store,
+        r: doc::Receipt,
+        undo: bool,
+    ) -> Result<ExternalUpdate, String> {
+        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            log::info!(
+                "TX04_IME_OWNER action={} previous={} revision={} bytes={}",
+                if undo { "undo" } else { "redo" },
+                r.previous.0,
+                r.snapshot.revision.0,
+                r.snapshot.body.len_bytes()
+            );
+        }
+        self.update(store, r)
+    }
 }
 fn err(e: doc::Error) -> String {
     format!("{e:?}")
 }
 impl ExternalDocument for NativeView {
+    fn request_history(
+        self: Rc<Self>,
+        revision: u64,
+        epoch: u64,
+        undo: bool,
+    ) -> Result<Option<ExternalUpdate>, String> {
+        self.request_owned_history(revision, epoch, undo)
+    }
     fn composition_changed(&self, active: bool) {
         self.set_composing(active)
     }
@@ -253,16 +300,7 @@ impl ExternalDocument for NativeView {
             store.redo_view(self.view, epoch)
         }
         .map_err(err)?;
-        if std::env::var_os("TEXZI_TRACE_IME").as_deref() == Some(std::ffi::OsStr::new("1")) {
-            log::info!(
-                "TX04_IME_OWNER action={} previous={} revision={} bytes={}",
-                if undo { "undo" } else { "redo" },
-                r.previous.0,
-                r.snapshot.revision.0,
-                r.snapshot.body.len_bytes()
-            );
-        }
-        self.update(&store, r)
+        self.history_update(&store, r, undo)
     }
     fn select(
         &self,

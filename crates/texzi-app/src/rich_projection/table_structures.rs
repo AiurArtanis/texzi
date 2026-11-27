@@ -1,6 +1,6 @@
 //! A bounded rewrite of one actual table, authorized by replay rather than by
 //! metadata. All other blocks and every source byte outside its span survive.
-use super::{Block, Projection, parse_options};
+use super::{Block, Projection, parse_options, table_header::MARKER};
 use crate::table_controls::{META, TableAction, action_transaction};
 use markdown::mdast;
 use nsh_base::rich_editor::{
@@ -109,7 +109,8 @@ struct SourceTable {
 }
 impl SourceTable {
     fn parse(block: &Block, source: &str) -> Result<Self, String> {
-        let raw = source.get(block.source.clone()).ok_or("表格原文范围无效")?;
+        let body = block.table_source_span(source);
+        let raw = source.get(body.clone()).ok_or("表格原文范围无效")?;
         if raw.contains('\r') {
             return Err("表格行结束符未规范到内部坐标，原文未变".into());
         }
@@ -131,11 +132,11 @@ impl SourceTable {
             if row.children.len() != columns || p.start.line != p.end.line {
                 return Err("该表格含省略单元格，暂不能局部保真编辑；原文未变".into());
             }
-            let start = block.source.start + p.start.offset;
-            let end = block.source.start + p.end.offset;
+            let start = body.start + p.start.offset;
+            let end = body.start + p.end.offset;
             let line_start = source[..start].rfind('\n').map_or(0, |at| at + 1);
             let line_end = source[end..].find('\n').map_or(source.len(), |at| end + at);
-            if line_start < block.source.start
+            if line_start < body.start
                 || !source[end..line_end]
                     .bytes()
                     .all(|b| matches!(b, b' ' | b'\t'))
@@ -187,6 +188,7 @@ impl SourceTable {
         row: usize,
         column: usize,
         action: TableAction,
+        marker: Option<Range<usize>>,
     ) -> Result<Vec<SourceEdit>, String> {
         let empty_row = format!("|{}", "  |".repeat(self.columns));
         let rows = &self.rows;
@@ -269,8 +271,16 @@ impl SourceTable {
                         source[rows[i - 1].range.clone()].to_owned(),
                     ));
                 }
+                if let Some(marker) = marker {
+                    changes.push((marker, String::new()));
+                }
                 changes
             }
+            TableAction::CancelHeader if row == 0 && marker.is_none() => {
+                let at = rows[0].range.start;
+                vec![(at..at, format!("{MARKER}\n"))]
+            }
+            TableAction::CancelHeader => return Err("当前行无可取消的表头，原文未变".into()),
             TableAction::DeleteTable => return Err("表格删除应使用空段替换".into()),
         };
         Ok(changes)
@@ -289,6 +299,10 @@ fn marker_core(source: &str, range: &Range<usize>) -> Result<Range<usize>, Strin
     }
     let start = range.start + raw.len() - raw.trim_start_matches([' ', '\t']).len();
     Ok(start..start + trimmed.len())
+}
+
+pub(super) fn has_exact_rows(block: &Block, source: &str) -> bool {
+    SourceTable::parse(block, source).is_ok()
 }
 
 pub(super) fn transaction_edits(
@@ -354,7 +368,13 @@ pub(super) fn transaction_edits(
         ]
     } else if node.ty().name() == "table" {
         let table = SourceTable::parse(block, &projection.source)?;
-        vec![table.edits(&projection.source, row, col, action)?]
+        vec![table.edits(
+            &projection.source,
+            row,
+            col,
+            action,
+            block.table_header_marker(&projection.source),
+        )?]
     } else {
         return Err("表格结果类型无效，原文未变".into());
     };

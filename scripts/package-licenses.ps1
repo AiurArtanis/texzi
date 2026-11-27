@@ -9,6 +9,11 @@ function Copy-DependencyLicenses {
         $folder = Join-Path $Destination "$($package.name)-$($package.version)"
         New-Item -Path $folder -ItemType Directory -Force | Out-Null
         $root = Split-Path $package.manifest_path -Parent
+        if ($package.name -eq 'pcre2-sys') {
+            $nativeLicense = Join-Path $PSScriptRoot '../crates/texzi-search/PCRE2-LICENCE.md'
+            Copy-Item -LiteralPath $nativeLicense -Destination (Join-Path $folder 'PCRE2-10.46-LICENCE.md')
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../crates/texzi-search/SLJIT-LICENSE') -Destination $folder
+        }
         if ($package.license_file) {
             Copy-Item -LiteralPath (Join-Path $root $package.license_file) -Destination $folder
         }
@@ -17,6 +22,12 @@ function Copy-DependencyLicenses {
             Copy-Item -Destination $folder
         if ($package.name -eq 'nsh-base') {
             Copy-Item -LiteralPath (Join-Path $root 'fonts/katex.LICENSE.txt') -Destination $folder
+        }
+        if ($package.name -eq 'two-face') {
+            Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $folder
+        }
+        if ($package.name -eq 'onig_sys') {
+            Copy-Item -LiteralPath (Join-Path $root 'oniguruma/COPYING') -Destination (Join-Path $folder 'COPYING-Oniguruma')
         }
         if ($package.name -eq 'mac') {
             Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $folder
@@ -29,9 +40,16 @@ function Copy-DependencyLicenses {
                 Where-Object Name -Match '^(LICENSE|NOTICE)' |
                 Copy-Item -Destination $folder -Force
         }
-        [ordered]@{
+        $component = [ordered]@{
             name = $package.name; version = $package.version; source = $package.source
             license = $package.license; license_file = $package.license_file; id = $package.id
         }
+        if ($package.name -eq 'pcre2-sys') {
+            $component['bundled'] = @(
+                [ordered]@{name='PCRE2'; version='10.46'; unicode='16.0.0'; license='BSD-3-Clause WITH PCRE2-exception'; license_file='PCRE2-10.46-LICENCE.md'}
+                [ordered]@{name='SLJIT'; revision='e51eabbfb8eabc6526f56e4e88b29fb10d1ee048'; license='BSD-2-Clause'; license_file='SLJIT-LICENSE'}
+            )
+        }
+        $component
     }
 }

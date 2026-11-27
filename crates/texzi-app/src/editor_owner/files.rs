@@ -1,5 +1,5 @@
 use super::*;
-use doc::files::{Encoding, FileError, Format, LoadedBytes, encode, save};
+use doc::files::{Encoding, FileError, Format, LoadedBytes, save};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -11,6 +11,7 @@ use std::{
 pub(super) struct FileState {
     format: Format,
     disk: Option<DiskContents>,
+    recovered: bool,
     pub(super) keep_dirty_revision: Option<doc::Revision>,
     #[cfg(test)]
     before_publish: Option<BeforePublish>,
@@ -34,6 +35,7 @@ impl Default for FileState {
         Self {
             format: UTF8,
             disk: None,
+            recovered: false,
             keep_dirty_revision: None,
             #[cfg(test)]
             before_publish: None,
@@ -108,8 +110,14 @@ pub(crate) struct PreparedFile {
     files: FileState,
 }
 
-pub(crate) const MAX_EDIT_LINES: usize = 2_000_000;
-pub(crate) const MAX_EDIT_BYTES: u64 = 256 * 1024 * 1024;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourcePreparation {
+    Reading(u64),
+    Decoding,
+    Building,
+}
+
+pub(crate) use texzi_document::{MAX_EDIT_BYTES, MAX_EDIT_LINES};
 
 pub(crate) fn line_limit_message() -> String {
     format!("文件超过完整编辑上限（{MAX_EDIT_LINES} 行），可继续只读分页查看。")
@@ -175,6 +183,7 @@ impl PreparedFile {
             files: FileState {
                 format,
                 disk,
+                recovered: true,
                 ..FileState::default()
             },
         })
@@ -195,6 +204,16 @@ impl PreparedFile {
         cancel: &AtomicBool,
         encoding: Option<Encoding>,
     ) -> Result<Self, PrepareError> {
+        Self::from_source_with_progress(source, limit, cancel, encoding, |_| {})
+    }
+
+    pub(crate) fn from_source_with_progress(
+        source: &doc::files::paged::FileSource,
+        limit: u64,
+        cancel: &AtomicBool,
+        encoding: Option<Encoding>,
+        mut on_stage: impl FnMut(SourcePreparation),
+    ) -> Result<Self, PrepareError> {
         let stopped = || {
             if cancel.load(Ordering::Relaxed) {
                 Err("已取消加载".to_owned())
@@ -203,10 +222,14 @@ impl PreparedFile {
             }
         };
         stopped()?;
+        on_stage(SourcePreparation::Reading(0));
         let raw = source
-            .complete_bytes(limit, cancel)
+            .complete_bytes_with_progress(limit, cancel, |read| {
+                on_stage(SourcePreparation::Reading(read));
+            })
             .map_err(|e| e.to_string())?;
         stopped()?;
+        on_stage(SourcePreparation::Decoding);
         let bytes: Arc<[u8]> = raw.into();
         let cancelled = || cancel.load(Ordering::Relaxed);
         let decode = |codec| LoadedBytes::decode_cancellable(bytes.clone(), codec, cancelled);
@@ -224,14 +247,10 @@ impl PreparedFile {
         .map_err(|error| format!("{error:?}"))?;
         let format = loaded.format();
         stopped()?;
+        on_stage(SourcePreparation::Building);
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let snapshot = store
-            .open_decoded_with_line_limit(
-                loaded.into_shared_text(),
-                format,
-                MAX_EDIT_LINES,
-                cancelled,
-            )
+            .open_loaded_with_line_limit(loaded, MAX_EDIT_LINES, cancelled)
             .map_err(|e| match e {
                 doc::Error::LineLimit => PrepareError::LineLimit(format.encoding),
                 e => PrepareError::Other(err(e)),
@@ -258,6 +277,10 @@ impl PreparedFile {
 }
 
 impl NativeView {
+    pub(crate) fn is_recovered_draft(&self) -> bool {
+        self.owner.files.borrow().recovered
+    }
+
     pub(crate) fn file_status(&self) -> Option<(&'static str, &'static str)> {
         self.track();
         let encoding = match self.owner.files.borrow().format {
@@ -319,6 +342,63 @@ impl NativeView {
                 .map_err(save_state_error)?;
             store.snapshot(id).map_err(save_state_error)?
         };
+        let (format, bytes) = self
+            .write_snapshot(&snapshot, path, replace, use_utf8)
+            .await?;
+        let current = {
+            let mut store = self.owner.store.borrow_mut();
+            let current = store.snapshot(snapshot.doc).map_err(save_state_error)?;
+            store
+                .record_disk_save(&snapshot)
+                .map_err(save_state_error)?;
+            current
+        };
+        {
+            let mut files = self.owner.files.borrow_mut();
+            files.format = format;
+            if current.revision == snapshot.revision {
+                files.recovered = false;
+            }
+            // Keep the dirty marker if an edit and undo arrived during this write.
+            files.keep_dirty_revision =
+                (current.revision != snapshot.revision).then_some(current.revision);
+            files.disk = Some(DiskContents {
+                bytes,
+                token: Some(snapshot.token),
+            });
+        }
+        self.notify();
+        Ok(())
+    }
+
+    pub(crate) async fn write_draft_copy(
+        &self,
+        path: PathBuf,
+        revision: u64,
+        use_utf8: bool,
+    ) -> Result<Option<u64>, SaveError> {
+        let snapshot = {
+            let store = self.owner.store.borrow();
+            let id = store.view(self.view).map_err(save_state_error)?.doc;
+            store.snapshot(id).map_err(save_state_error)?
+        };
+        if snapshot.revision.0 != revision {
+            return Ok(None);
+        }
+        // A detached copy must leave the draft's live save token and original binding
+        // intact until its recovery record can be updated and the tab can close.
+        self.write_snapshot(&snapshot, path, false, use_utf8)
+            .await?;
+        Ok(Some(snapshot.revision.0))
+    }
+
+    async fn write_snapshot(
+        &self,
+        snapshot: &doc::Snapshot,
+        path: PathBuf,
+        replace: bool,
+        use_utf8: bool,
+    ) -> Result<(Format, Arc<[u8]>), SaveError> {
         let (format, original, unchanged) = {
             let files = self.owner.files.borrow();
             let format = if use_utf8 { UTF8 } else { files.format };
@@ -348,17 +428,11 @@ impl NativeView {
             let bytes = match unchanged {
                 Some(bytes) => bytes,
                 None => {
-                    let utf8 = body.to_utf8();
-                    let bytes = if format == UTF8 {
-                        utf8
-                    } else {
-                        let text = std::str::from_utf8(&utf8)
-                            .map_err(|error| SaveError::Other(error.to_string()))?;
-                        encode(text, format).map_err(|error| match error {
+                    let bytes =
+                        doc::files::encode_body(&body, format).map_err(|error| match error {
                             FileError::Unrepresentable => SaveError::Encoding,
                             other => SaveError::Other(format!("{other:?}")),
-                        })?
-                    };
+                        })?;
                     Arc::from(bytes)
                 }
             };
@@ -372,28 +446,7 @@ impl NativeView {
         })
         .await
         .map_err(|error| SaveError::Other(error.to_string()))??;
-
-        let current = {
-            let mut store = self.owner.store.borrow_mut();
-            let current = store.snapshot(snapshot.doc).map_err(save_state_error)?;
-            store
-                .record_disk_save(&snapshot)
-                .map_err(save_state_error)?;
-            current
-        };
-        {
-            let mut files = self.owner.files.borrow_mut();
-            files.format = format;
-            // Keep the dirty marker if an edit and undo arrived during this write.
-            files.keep_dirty_revision =
-                (current.revision != snapshot.revision).then_some(current.revision);
-            files.disk = Some(DiskContents {
-                bytes,
-                token: Some(snapshot.token),
-            });
-        }
-        self.notify();
-        Ok(())
+        Ok((format, bytes))
     }
 }
 
@@ -469,6 +522,60 @@ mod tests {
                 .block_on(doc.save_file(existing.clone(), true, false))
                 .unwrap();
             assert_eq!(fs::read(existing).unwrap(), original);
+        });
+    }
+
+    #[test]
+    fn complete_import_reports_reading_before_decode_and_model_build() {
+        with_file("import-progress", |dir, _| {
+            let path = dir.join("exact.txt");
+            let chunk = 64 * 1024;
+            let bytes = b"a".repeat(chunk + 7);
+            fs::write(&path, &bytes).unwrap();
+            let source = doc::files::paged::FileSource::open(&path).unwrap();
+            let cancel = AtomicBool::new(false);
+            let mut stages = Vec::new();
+            let prepared = PreparedFile::from_source_with_progress(
+                &source,
+                source.len,
+                &cancel,
+                None,
+                |stage| stages.push(stage),
+            )
+            .unwrap();
+            assert_eq!(
+                stages,
+                [
+                    SourcePreparation::Reading(0),
+                    SourcePreparation::Reading(chunk as u64),
+                    SourcePreparation::Reading(source.len),
+                    SourcePreparation::Decoding,
+                    SourcePreparation::Building,
+                ]
+            );
+            assert_eq!(prepared.attach().unwrap().text().unwrap().as_bytes(), bytes);
+
+            stages.clear();
+            let stopped = PreparedFile::from_source_with_progress(
+                &source,
+                source.len,
+                &cancel,
+                None,
+                |stage| {
+                    stages.push(stage);
+                    if stage == SourcePreparation::Reading(chunk as u64) {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                },
+            );
+            assert!(stopped.is_err());
+            assert_eq!(
+                stages,
+                [
+                    SourcePreparation::Reading(0),
+                    SourcePreparation::Reading(chunk as u64)
+                ],
+            );
         });
     }
 

@@ -51,7 +51,7 @@ use nsh_core::{
 };
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT},
+    Graphics::Gdi::{BeginPaint, EndPaint, MONITOR_DEFAULTTONULL, MonitorFromWindow, PAINTSTRUCT},
     UI::{Input::KeyboardAndMouse::EnableWindow, WindowsAndMessaging::*},
 };
 
@@ -94,6 +94,8 @@ pub(crate) struct AppWindow {
     swap: RefCell<Option<crate::gfx::SwapChain>>,
     /// Successful presents in this window, including across swap-chain changes.
     presentation: Cell<u64>,
+    /// The device generation and pressure decision used by the last presented card.
+    local_glass_pressure: Cell<Option<(u64, bool)>>,
     /// The scale of the swap chain's target.
     target_scale: Cell<f32>,
     /// Its client area in pixels, and its scale.
@@ -146,6 +148,41 @@ pub(crate) fn presentation(surface: &Surface, id: NodeId, request: bool) -> Opti
         invalidate(&window);
     }
     Some(frame)
+}
+
+/// Samples pressure while a recently presented eligible card is still visible.
+pub(crate) fn refresh_local_glass_pressure(surface: &Surface) {
+    let Ok(windows) = surface.windows.try_borrow() else {
+        return;
+    };
+    let generation = crate::gfx::generation();
+    let mut interested = windows
+        .iter()
+        .filter_map(|window| {
+            let allowed = visible_local_glass(window.local_glass_pressure.get(), generation, || {
+                !window.closed.get() && crate::gfx::composed(window.hwnd)
+                    // SAFETY: the live HWND is retained by this UI thread.
+                    && !unsafe { MonitorFromWindow(window.hwnd, MONITOR_DEFAULTTONULL) }.is_invalid()
+            })?;
+            Some((window, allowed))
+        })
+        .peekable();
+    if let Some(allowed) = crate::gfx::refresh_local_glass_pressure(interested.peek().is_some()) {
+        for (window, presented) in interested {
+            if allowed != presented {
+                invalidate(window);
+            }
+        }
+    }
+}
+
+fn visible_local_glass(
+    presented: Option<(u64, bool)>,
+    generation: u64,
+    visible: impl FnOnce() -> bool,
+) -> Option<bool> {
+    let (device, allowed) = presented?;
+    (device == generation && visible()).then_some(allowed)
 }
 
 /// Whether dialog root `id` is shown in a window of its own.
@@ -370,6 +407,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         composed: RefCell::default(),
         swap: RefCell::new(None),
         presentation: Cell::new(0),
+        local_glass_pressure: Cell::new(None),
         target_scale: Cell::new(0.0),
         pixels: Cell::new((0, 0)),
         scale: Cell::new(1.0),
@@ -630,6 +668,7 @@ fn paint(surface: &Rc<Surface>, window: &AppWindow) {
             composition: web.as_deref(),
             swap: &mut window.swap.borrow_mut(),
             presentation: &window.presentation,
+            local_glass_pressure: &window.local_glass_pressure,
             target_scale: &window.target_scale,
             size: window.pixels.get(),
             scale: window.scale.get(),
@@ -883,6 +922,7 @@ pub(crate) fn handle(
             Some(Some(LRESULT(0)))
         }
         WM_DPICHANGED => {
+            crate::system::release_recovered_draft_window_images(surface, id);
             crate::scroll::rich_thumb::cancel_window(surface, hwnd);
             // In full screen it keeps covering its monitor.
             if !crate::window::is_full_screen(hwnd) {
@@ -1033,6 +1073,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_current_visible_local_glass_presentations_request_pressure() {
+        let generation = 7;
+        assert_eq!(visible_local_glass(None, generation, || panic!()), None);
+        assert_eq!(
+            visible_local_glass(Some((6, false)), generation, || panic!()),
+            None
+        );
+        assert_eq!(
+            visible_local_glass(Some((generation, false)), generation, || false),
+            None
+        );
+        assert_eq!(
+            visible_local_glass(Some((generation, false)), generation, || true),
+            Some(false)
+        );
+        assert_eq!(
+            visible_local_glass(Some((generation, true)), generation, || true),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn a_nested_workbench_paint_wakes_the_window_after_the_active_frame() {
         let app = crate::app::AppView::new(None, Default::default()).unwrap();
         let surface = app.surface();
@@ -1116,6 +1178,7 @@ mod tests {
             composed: RefCell::default(),
             swap: RefCell::new(None),
             presentation: Cell::new(0),
+            local_glass_pressure: Cell::new(None),
             target_scale: Cell::new(0.0),
             pixels: Cell::new((0, 0)),
             scale: Cell::new(1.0),
@@ -1148,13 +1211,65 @@ mod tests {
         surface.windows.borrow_mut().clear();
     }
 
+    fn hidden_test_window(surface: &Rc<Surface>, id: NodeId) -> (HWND, NshView) {
+        let view = NshView::new(id, ViewKind::Modal);
+        view.set_invalidate(Rc::new(|_, _| {}));
+        let attributes = WindowAttributes::default();
+        let hwnd = crate::window::create_app_window(
+            surface,
+            id,
+            WindowKind::Normal,
+            &attributes,
+            None,
+            false,
+        )
+        .unwrap();
+        surface.windows.borrow_mut().push(Rc::new(AppWindow {
+            id,
+            hwnd,
+            view: view.clone(),
+            owner: None,
+            modal: false,
+            composition: None,
+            web: RefCell::default(),
+            placed: RefCell::default(),
+            composed: RefCell::default(),
+            swap: RefCell::new(None),
+            presentation: Cell::new(0),
+            local_glass_pressure: Cell::new(None),
+            target_scale: Cell::new(0.0),
+            pixels: Cell::new((0, 0)),
+            scale: Cell::new(1.0),
+            invalid: Cell::new(false),
+            painting: Cell::new(false),
+            repaint: Cell::new(false),
+            positioned: Cell::new(true),
+            reported: Cell::new(None),
+            opened: Cell::new(false),
+            closed: Cell::new(false),
+            hidden: Cell::new(false),
+            state: Cell::new(None),
+        }));
+        (hwnd, view)
+    }
+
+    fn has_ime(hwnd: HWND) -> bool {
+        use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
+        // SAFETY: checks whether `hwnd` currently holds an associated IMC.
+        unsafe {
+            let himc = ImmGetContext(hwnd);
+            if himc.is_invalid() {
+                return false;
+            }
+            let _ = ImmReleaseContext(hwnd, himc);
+            true
+        }
+    }
+
     #[test]
     fn only_the_window_of_the_focused_field_takes_the_ime() {
         use nsh_core::InputConfig;
-        use windows::Win32::UI::{
-            Input::Ime::{ImmGetContext, ImmReleaseContext},
-            WindowsAndMessaging::{GetSystemMetrics, SM_IMMENABLED},
-        };
+        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_IMMENABLED};
 
         // SAFETY: plain system metric query.
         assert_ne!(
@@ -1163,64 +1278,11 @@ mod tests {
             "IMM is not enabled on this machine"
         );
 
-        let has_ime = |hwnd: HWND| -> bool {
-            // SAFETY: checks whether `hwnd` currently holds an associated IMC.
-            unsafe {
-                let himc = ImmGetContext(hwnd);
-                if himc.is_invalid() {
-                    return false;
-                }
-                let _ = ImmReleaseContext(hwnd, himc);
-                true
-            }
-        };
-
-        let make_window = |surface: &Rc<Surface>, id: NodeId| -> (HWND, NshView) {
-            let view = NshView::new(id, ViewKind::Modal);
-            view.set_invalidate(Rc::new(|_, _| {}));
-            let attributes = WindowAttributes::default();
-            let hwnd = crate::window::create_app_window(
-                surface,
-                id,
-                WindowKind::Normal,
-                &attributes,
-                None,
-                false,
-            )
-            .unwrap();
-            surface.windows.borrow_mut().push(Rc::new(AppWindow {
-                id,
-                hwnd,
-                view: view.clone(),
-                owner: None,
-                modal: false,
-                composition: None,
-                web: RefCell::default(),
-                placed: RefCell::default(),
-                composed: RefCell::default(),
-                swap: RefCell::new(None),
-                presentation: Cell::new(0),
-                target_scale: Cell::new(0.0),
-                pixels: Cell::new((0, 0)),
-                scale: Cell::new(1.0),
-                invalid: Cell::new(false),
-                painting: Cell::new(false),
-                repaint: Cell::new(false),
-                positioned: Cell::new(true),
-                reported: Cell::new(None),
-                opened: Cell::new(false),
-                closed: Cell::new(false),
-                hidden: Cell::new(false),
-                state: Cell::new(None),
-            }));
-            (hwnd, view)
-        };
-
         let app = crate::app::AppView::new(None, Default::default()).unwrap();
         let surface = app.surface();
         let host = surface.hwnd();
-        let (hwnd_a, root_a) = make_window(surface, 7);
-        let (hwnd_b, root_b) = make_window(surface, 8);
+        let (hwnd_a, root_a) = hidden_test_window(surface, 7);
+        let (hwnd_b, root_b) = hidden_test_window(surface, 8);
 
         let input_a = NshView::new(10, ViewKind::Input);
         input_a.insert_before(&root_a, None);
@@ -1264,7 +1326,7 @@ mod tests {
 
         // A newly created window detaches IME on its first WM_SETFOCUS when no
         // field is focused.
-        let (hwnd_c, _root_c) = make_window(surface, 9);
+        let (hwnd_c, _root_c) = hidden_test_window(surface, 9);
         crate::text_input::window_focus(surface, true);
         assert!(!has_ime(hwnd_c), "new unfocused window C must detach IME");
 
@@ -1276,5 +1338,125 @@ mod tests {
             let _ = DestroyWindow(hwnd_c);
         }
         surface.windows.borrow_mut().clear();
+    }
+    #[test]
+    fn recovery_modal_owns_queued_native_text_for_its_window() {
+        use crate::{
+            system::{
+                RecoveredDraftChoice, RecoveredDraftDetails, recovery_accessibility,
+                show_recovery_for_access_test,
+            },
+            text_input,
+        };
+        use windows::Win32::UI::{
+            Input::Ime::{GCS_COMPSTR, GCS_RESULTSTR},
+            WindowsAndMessaging::{
+                DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, PostMessageW, SendMessageW,
+                WM_CHAR, WM_IME_CHAR, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
+                WM_IME_STARTCOMPOSITION,
+            },
+        };
+
+        let app = crate::app::AppView::new(None, Default::default()).unwrap();
+        let surface = app.surface();
+        let (hwnd_a, root_a) = hidden_test_window(surface, 7);
+        let (hwnd_b, root_b) = hidden_test_window(surface, 8);
+        let input = |id, parent: &NshView, text| {
+            let field = NshView::new(id, ViewKind::Input);
+            field.insert_before(parent, None);
+            text_input::create(surface, &field);
+            text_input::value(&field, text, 0);
+            field
+        };
+        let old = input(10, &root_a, "OLD");
+        let other = input(11, &root_b, "OTHER");
+        let contents = |field: &NshView| text_input::accessible_value(field).unwrap().text;
+        let send = |hwnd, message, param, flags| {
+            // SAFETY: two HWNDs from this test thread, using scalar parameters.
+            unsafe { SendMessageW(hwnd, message, Some(WPARAM(param)), Some(LPARAM(flags))) };
+        };
+
+        let host = surface.hwnd();
+        text_input::focus(&old);
+        assert!(text_input::focused(surface).as_ref() == Some(&old));
+        assert!(has_ime(hwnd_a) && has_ime(host) && !has_ime(hwnd_b));
+        text_input::seed_recovery_preedit_for_test(surface, &old);
+        // Queue a printable before presenting, dispatch it only with the
+        // recovery card up, like a translated character delayed in the queue.
+        // SAFETY: this test's hidden HWND on its owning thread.
+        unsafe { PostMessageW(Some(hwnd_a), WM_CHAR, WPARAM('x' as usize), LPARAM(0)).unwrap() };
+        let (_, mut reply) =
+            show_recovery_for_access_test(surface, 7, false, RecoveredDraftDetails::default());
+        assert!(!has_ime(hwnd_a) && !has_ime(host));
+        text_input::window_focus(surface, true);
+        assert!(
+            !has_ime(hwnd_a) && !has_ime(host),
+            "activation keeps the card detached"
+        );
+        let mut queued = MSG::default();
+        // SAFETY: a local out value and this test's own hidden window.
+        unsafe {
+            assert!(PeekMessageW(&mut queued, Some(hwnd_a), WM_CHAR, WM_CHAR, PM_REMOVE).as_bool());
+            DispatchMessageW(&queued);
+        }
+        send(hwnd_a, WM_IME_CHAR, '你' as usize, 0);
+        send(hwnd_a, WM_IME_STARTCOMPOSITION, 0, 0);
+        send(hwnd_a, WM_IME_COMPOSITION, 0, GCS_COMPSTR.0 as isize);
+        send(hwnd_a, WM_IME_COMPOSITION, 0, GCS_RESULTSTR.0 as isize);
+        send(hwnd_a, WM_IME_COMPOSITION, 0, 0);
+        send(hwnd_a, WM_IME_ENDCOMPOSITION, 0, 0);
+        assert_eq!(contents(&old), "OLD");
+        assert!(text_input::focused(surface).as_ref() == Some(&old));
+        assert_eq!(
+            text_input::trace_composition(surface, hwnd_a),
+            (false, false)
+        );
+
+        text_input::focus(&other);
+        assert!(!has_ime(hwnd_a) && has_ime(hwnd_b) && has_ime(host));
+        send(hwnd_b, WM_CHAR, 'B' as usize, 0);
+        assert_eq!(contents(&other), "OTHERB");
+        // Even when another window has focus, this HWND's queued message
+        // belongs to the recovery card and must not leak to the new field.
+        send(hwnd_a, WM_CHAR, 'x' as usize, 0);
+        assert_eq!(contents(&other), "OTHERB");
+
+        text_input::focus(&old);
+        assert!(!has_ime(hwnd_a) && !has_ime(hwnd_b) && !has_ime(host));
+        assert!(recovery_accessibility(surface, 7).unwrap().invoke(0));
+        surface.ui_thread().dispatch_pending_calls();
+        assert_eq!(reply.try_recv().unwrap(), RecoveredDraftChoice::Continue);
+        assert!(text_input::focused(surface).as_ref() == Some(&old));
+        assert!(has_ime(hwnd_a) && has_ime(host) && !has_ime(hwnd_b));
+        send(hwnd_a, WM_CHAR, 'Z' as usize, 0);
+        assert_eq!(contents(&old), "OLDZ");
+        assert_eq!(contents(&other), "OTHERB");
+
+        // The picker can rebuild the card while a different workbench has
+        // a preedit in the same thread. Opening and closing A must not cancel it.
+        text_input::focus(&other);
+        text_input::seed_recovery_preedit_for_test(surface, &other);
+        let (_, mut second) =
+            show_recovery_for_access_test(surface, 7, true, RecoveredDraftDetails::default());
+        assert!(!has_ime(hwnd_a) && has_ime(hwnd_b) && has_ime(host));
+        assert_eq!(text_input::trace_composition(surface, hwnd_b), (true, true));
+        assert!(removed(surface, &root_a));
+        assert!(matches!(
+            second.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(has_ime(hwnd_b) && has_ime(host));
+        assert_eq!(text_input::trace_composition(surface, hwnd_b), (true, true));
+
+        text_input::stopped(surface);
+        assert!(removed(surface, &root_b));
+        drop(root_a);
+        drop(root_b);
+        drop(old);
+        drop(other);
+        // SAFETY: the test's hidden host on its owning thread.
+        unsafe { DestroyWindow(app.hwnd()).unwrap() };
+        drop(app);
+        crate::gfx::lost();
     }
 }
