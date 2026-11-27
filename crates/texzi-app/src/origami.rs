@@ -28,6 +28,14 @@ const ALIASES: &[(&str, &str)] = &[
     ("secondary", "paper-subtle"),
     ("secondary-foreground", "ink-2"),
     ("ring", "iris"),
+    ("editor-syntax-keyword", "syn-kw"),
+    ("editor-syntax-title", "syn-fn"),
+    ("editor-syntax-string", "syn-str"),
+    ("editor-syntax-macro", "syn-mac"),
+    ("editor-syntax-comment", "comment-readable"),
+    ("editor-syntax-number", "number-readable"),
+    ("editor-syntax-attribute", "warning-fg"),
+    ("editor-syntax-built-in", "success-fg"),
 ];
 
 static PALETTE: LazyLock<Tokens> = LazyLock::new(|| {
@@ -218,6 +226,10 @@ impl SystemVisuals {
                         "muted-readable",
                         "comment-readable",
                         "number-readable",
+                        "syn-kw",
+                        "syn-fn",
+                        "syn-str",
+                        "syn-mac",
                         "seam",
                         "seam-strong",
                         "chrome-edge",
@@ -251,6 +263,8 @@ impl SystemVisuals {
             for (alias, name) in ALIASES {
                 palette.set_color(alias, required(&palette, name));
             }
+            palette.set_color("editor-syntax-attribute", rgb(system.text).into());
+            palette.set_color("editor-syntax-built-in", rgb(system.text).into());
             palette.set_color("accent-foreground", rgb(system.highlight_text).into());
             palette.set_color(
                 "sidebar-accent-foreground",

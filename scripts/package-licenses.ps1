@@ -18,6 +18,12 @@ function Copy-DependencyLicenses {
         if ($package.name -eq 'nsh-base') {
             Copy-Item -LiteralPath (Join-Path $root 'fonts/katex.LICENSE.txt') -Destination $folder
         }
+        if ($package.name -eq 'two-face') {
+            Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $folder
+        }
+        if ($package.name -eq 'onig_sys') {
+            Copy-Item -LiteralPath (Join-Path $root 'oniguruma/COPYING') -Destination (Join-Path $folder 'COPYING-Oniguruma')
+        }
         if ($package.name -eq 'mac') {
             Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $folder
             Copy-Item -LiteralPath $ProjectLicense -Destination (Join-Path $folder 'Apache-2.0.txt')

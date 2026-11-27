@@ -243,6 +243,19 @@ pub(crate) fn resolve(name: &str) -> (&'static LanguageConfig, Syntax) {
     })
 }
 
+/// Keeps editing rules separate when a view opts into visual highlighting only.
+pub(crate) fn resolve_editor(
+    language: Option<&str>,
+    highlight_language: Option<&str>,
+) -> (&'static LanguageConfig, Syntax) {
+    let (language, syntax) = resolve(language.unwrap_or(""));
+    let syntax = match highlight_language {
+        Some(name) => resolve(name).1.windowed(),
+        None => syntax,
+    };
+    (language, syntax)
+}
+
 /// The configured language for a path or alias, when it is more specific than plain text.
 pub fn known_language(name: &str) -> Option<&'static str> {
     let (language, _) = resolve(name);

@@ -2531,7 +2531,6 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let format_doc = doc.clone();
     let format_shell = s.clone();
     let markdown = move || path.with(|value| value.as_deref().is_some_and(is_markdown));
-    let large_source = doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES;
 
     let content = view()
         .relative()
@@ -2630,6 +2629,21 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                         && map_shell.preference(settings::MINIMAP) == true
                 });
                 let viewport = signal((0, 0));
+                let syntax_doc = source_focus_doc.clone();
+                let syntax = computed(move || {
+                    let rust = syntax_doc.path.with(|path| {
+                        path.as_ref()
+                            .and_then(|path| path.extension())
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+                    });
+                    if rust {
+                        syntax_doc.source.track();
+                        if syntax_doc.source.disk_len() <= large_file::SOURCE_ONLY_BYTES {
+                            return "rust";
+                        }
+                    }
+                    "plaintext"
+                });
                 let editor = nsh_base::editor::editor()
                     .element_ref(&body)
                     .component_ref(&reference)
@@ -2650,12 +2664,12 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             "plaintext"
                         }))
                     })
+                    .highlight_language(move || Some(SharedString::from(syntax.get())))
                     .tab_size(move || Some(tab_shell.tab_size(&tab_doc)))
                     .hard_tabs(false)
                     .soft_wrap(move || {
                         !wrap_limited.get() && wrap_shell.source_wrap_preference(&wrap_doc)
                     })
-                    .highlighting(!large_source)
                     .font_family(move || {
                         let font = font_shell.preference(settings::FONT_FAMILY);
                         Some(SharedString::from(settings::source_font_stack(

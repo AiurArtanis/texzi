@@ -53,6 +53,18 @@ pub trait EditorHighlighter: Send + 'static {
         tokens: &mut EditorTokens,
     ) -> bool;
 
+    /// Selects which logical line ranges acquire tokens, for the built-in
+    /// variant with a viewport-sized cache.
+    #[doc(hidden)]
+    fn set_window(&mut self, _: &[Range<usize>]) {}
+
+    /// The first line with uncertain context, if the windowed parser hit
+    /// its input-work limit. Exact output and checkpoints stop at this line.
+    #[doc(hidden)]
+    fn unknown_from(&self) -> Option<usize> {
+        None
+    }
+
     /// The first line that is not current: the lines before it are. The
     /// editor guesses the lines in view when they are far past it
     /// ([`EditorHighlighter::guess`]).

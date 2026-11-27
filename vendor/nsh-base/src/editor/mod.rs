@@ -197,6 +197,9 @@ pub struct EditorProps {
     /// decorations (their `token`s) color the text alone.
     #[prop(default = true)]
     pub highlighting: Prop<bool>,
+    /// A language for coloring alone, independent of the editing language.
+    /// Built-in syntax from this override keeps a viewport-sized token cache.
+    pub highlight_language: Prop<Option<SharedString>>,
     /// Completion: typing a word, a trigger character or
     /// `showCompletions` asks the app (`onCompletionRequest`), whose
     /// answer (`presentCompletions`) the editor shows as a list below the

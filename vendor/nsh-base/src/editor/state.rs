@@ -750,10 +750,20 @@ impl State {
             .filter(|_| self.highlighting)
             .and_then(|h| h.tokens(info.line))
             .unwrap_or_default();
-        for (range, _) in tokens {
-            cuts.push(line_start + range.start);
-            cuts.push(line_start + range.end);
-        }
+        let tokens = if tokens.is_empty() {
+            tokens
+        } else {
+            let row_start = info.range.start.saturating_sub(line_start);
+            let row_end = info.range.end.saturating_sub(line_start);
+            let first = tokens.partition_point(|(range, _)| range.end <= row_start);
+            let last = tokens.partition_point(|(range, _)| range.start < row_end);
+            let tokens = &tokens[first..last.max(first)];
+            for (range, _) in tokens {
+                cuts.push(line_start + range.start.max(row_start));
+                cuts.push(line_start + range.end.min(row_end));
+            }
+            tokens
+        };
         let decorations: Vec<(usize, Range<usize>)> = app_highlight::near(
             &self.decorations,
             self.decoration_reach,
@@ -790,6 +800,7 @@ impl State {
         cuts.sort_unstable();
         cuts.dedup();
         let mut spans: Vec<Span> = Vec::new();
+        let mut tokens = tokens.iter().peekable();
         for pair in cuts.windows(2) {
             let (start, end) = (pair[0], pair[1]);
             if start >= end {
@@ -800,6 +811,12 @@ impl State {
             if text.is_empty() {
                 continue;
             }
+            while tokens
+                .peek()
+                .is_some_and(|(range, _)| line_start + range.end <= start)
+            {
+                tokens.next();
+            }
             let token = app_highlight::token(
                 &decorations,
                 &self.decorations,
@@ -808,9 +825,11 @@ impl State {
             )
             .or_else(|| {
                 tokens
-                    .iter()
-                    .find(|(r, _)| line_start + r.start <= start && line_start + r.end >= end)
-                    .map(|(_, t)| *t)
+                    .peek()
+                    .filter(|(range, _)| {
+                        line_start + range.start <= start && line_start + range.end >= end
+                    })
+                    .map(|(_, token)| *token)
             });
             let decorations: Vec<usize> = decorations
                 .iter()

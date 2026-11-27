@@ -8,6 +8,14 @@ The source baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78ea
 - `editor/hooks.rs` and `view.rs` expose viewport and caret positioning, preserve an anchor during reflow and report the visible logical range when the source minimap subscribes. The source sink sizes itself to the remainder of the caret row so multiline RichEdit can position IME candidates. For large external documents, its additional accessibility value follows the caret with a byte cap. The rows retain their own accessible semantics.
 - `editor/languages.rs` exposes the existing language classifier for texzi's word-wrap preference. Focus and native input selection use the v0.7.1 field's own handling.
 
+### Rust source highlighting
+
+Texzi supplies a Rust grammar only for Rust source files. The color-only override keeps the existing editing language, including its indentation and bracket handling. Ordinary text and Markdown keep their previous display.
+
+The override reuses the NSH syntect grammar, keeps tokens for the requested viewport, and saves sparse exact line-start checkpoints. A distant viewport can display a short provisional parse while the exact parse catches up. The grammar receives at most 16 KiB per logical line. If a line is skipped, no exact tokens or checkpoints beyond that line are produced until an edit makes the context verifiable. Coloring immediately after the uncertain line is withheld. Wrapped display rows visit only their intersecting tokens. The current theme supplies the editor's token colors, with the system foreground in high contrast.
+
+The locked syntax library is [syntect 5.3.0](https://github.com/trishume/syntect/tree/v5.3.0). The embedded grammars come from [two-face 0.4.5](https://github.com/CosmicHorrorDev/two-face/tree/4f766bcb4499f6340e8d6dd715ab64f52c6e8ca4). [NOTICE-two-face-syntaxes.md](NOTICE-two-face-syntaxes.md) reproduces the generated acknowledgement at that commit, with line endings and trailing whitespace normalized. The source SHA-256 is 55be6f98f911df5cecc95275d95b75a916c3f4efb5f0dd322c7f835a60aedeab. The Windows package also carries two-face's README notice and the Oniguruma COPYING file from the locked onig_sys crate.
+
 ## Rich editor
 
 - `rich_editor/view/mod.rs` and `controller.rs` give the host its configured application keystrokes. Binding equivalence uses the NSH platform parser, including for v0.7.1's selection-dependent Copy. Plain Escape reaches the host at an empty text caret or a gap only after editor composition, node views, plugins and selections have had their turn. The terminal keeps its native focus behavior.
