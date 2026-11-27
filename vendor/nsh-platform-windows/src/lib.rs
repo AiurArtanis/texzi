@@ -80,7 +80,10 @@ pub use crate::decor::local_glass::{
 };
 pub use crate::file_requests::pick_recovered_draft_save_path;
 pub use crate::surface::node_presentation;
-pub use crate::system::{RecoveredDraftChoice, show_recovered_draft_dialog};
+pub use crate::system::{
+    RecoveredDraftChoice, RecoveredDraftDetails, show_recovered_draft_dialog,
+    show_recovered_draft_dialog_with_details,
+};
 pub use nsh_core::{
     Cursor, file_type,
     platform::{Appearance, Locale},

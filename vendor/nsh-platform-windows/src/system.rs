@@ -107,6 +107,7 @@ use windows::{
                 DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
                 DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT,
                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS,
+                DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
                 DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteTextLayout,
             },
             Gdi::{
@@ -913,8 +914,18 @@ pub enum RecoveredDraftChoice {
     SaveAs,
 }
 
+/// Optional information shown above and below the recovery explanation.
+#[derive(Debug, Default)]
+pub struct RecoveredDraftDetails {
+    /// Short status text, displayed before the confirmation title.
+    pub badge: Option<String>,
+    /// A single-line preview of the recovered content.
+    pub summary: Option<String>,
+}
+
 struct RecoveredDraftRequest {
     dialog: Dialog,
+    details: RecoveredDraftDetails,
     actions: Vec<RecoveredDraftChoice>,
     keep: usize,
     save_as: Option<usize>,
@@ -981,6 +992,7 @@ impl RecoveredDraftRequest {
                 sheet: false,
                 input: None,
             },
+            details: RecoveredDraftDetails::default(),
             actions,
             keep: 0,
             save_as: save_as.map(|_| 2),
@@ -998,7 +1010,28 @@ pub fn show_recovered_draft_dialog(
     options: AlertDialogOptions,
     resume_save_as: bool,
 ) -> impl Future<Output = Result<Option<RecoveredDraftChoice>, String>> + use<> {
-    let request = RecoveredDraftRequest::new(options, resume_save_as);
+    show_recovered_draft_dialog_with_details(
+        host,
+        options,
+        resume_save_as,
+        RecoveredDraftDetails::default(),
+    )
+}
+
+/// Shows the same recovery confirmation with a badge and a one-line preview.
+pub fn show_recovered_draft_dialog_with_details(
+    host: &ElementRef,
+    options: AlertDialogOptions,
+    resume_save_as: bool,
+    details: RecoveredDraftDetails,
+) -> impl Future<Output = Result<Option<RecoveredDraftChoice>, String>> + use<> {
+    let request = RecoveredDraftRequest::new(options, resume_save_as).map(|mut request| {
+        request.details = RecoveredDraftDetails {
+            badge: details.badge.filter(|text| !text.trim().is_empty()),
+            summary: details.summary.filter(|text| !text.trim().is_empty()),
+        };
+        request
+    });
     let (send, receive) = oneshot::channel();
     let shown = host.node().zip(request).map(|(host, request)| {
         run_on_main_thread(move || {
@@ -1516,6 +1549,20 @@ impl Label {
         }
     }
 
+    fn ellipsized(self) -> Self {
+        let trimming = DWRITE_TRIMMING {
+            granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+            ..Default::default()
+        };
+        // SAFETY: both COM objects belong to this layout's DirectWrite factory.
+        unsafe {
+            if let Ok(sign) = crate::gfx::dwrite().CreateEllipsisTrimmingSign(&self.layout) {
+                let _ = self.layout.SetTrimming(&trimming, &sign);
+            }
+        }
+        self
+    }
+
     fn draw(&self, cx: &DrawCx<'_>, x: f32, y: f32, color: Color) {
         // SAFETY: a COM call between BeginDraw and EndDraw.
         unsafe {
@@ -1779,14 +1826,28 @@ struct RecoveredDraftStyle {
 }
 
 impl RecoveredDraftStyle {
-    fn new(serial: u64, ready_to_capture: bool, dialog: &Dialog) -> Self {
+    fn new(serial: u64, ready_to_capture: bool, request: &RecoveredDraftRequest) -> Self {
         let appearance = RecoveredAppearance::read();
+        let spoken = |lead: Option<&str>, tail: Option<&str>| match (
+            lead.filter(|s| !s.is_empty()),
+            tail.filter(|s| !s.is_empty()),
+        ) {
+            (Some(lead), Some(tail)) => Some(format!("{lead}\n{tail}")),
+            (Some(text), None) | (None, Some(text)) => Some(text.to_owned()),
+            (None, None) => None,
+        };
         Self {
             frozen: FrozenModal::new(serial, appearance.capture && ready_to_capture),
             appearance: Cell::new(appearance),
             body_offset: Cell::new(0.0),
-            title: dialog.title.clone(),
-            description: dialog.message.clone(),
+            title: spoken(
+                request.details.badge.as_deref(),
+                request.dialog.title.as_deref(),
+            ),
+            description: spoken(
+                request.dialog.message.as_deref(),
+                request.details.summary.as_deref(),
+            ),
         }
     }
 }
@@ -1807,6 +1868,12 @@ mod metrics {
     pub(super) const RADIUS: f32 = 8.0;
     pub(super) const RECOVERED_WIDTH: f32 = 420.0;
     pub(super) const RECOVERED_RADIUS: f32 = 18.0;
+    pub(super) const BADGE_PAD_X: f32 = 8.0;
+    pub(super) const BADGE_PAD_Y: f32 = 4.0;
+    pub(super) const DETAILS_GAP: f32 = 8.0;
+    pub(super) const SUMMARY_PAD_X: f32 = 10.0;
+    pub(super) const SUMMARY_PAD_Y: f32 = 6.0;
+    pub(super) const SUMMARY_RADIUS: f32 = 6.0;
     pub(super) const BUTTON_RADIUS: f32 = 4.0;
     pub(super) const SHEET_MAX_WIDTH: f32 = 420.0;
     pub(super) const SHEET_ROW: f32 = 40.0;
@@ -1817,9 +1884,17 @@ mod metrics {
 /// A part of a dialog that has text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Part {
+    Badge,
     Title,
     Message,
+    Summary,
     Button(usize),
+}
+
+#[derive(Default)]
+struct RecoveryParts {
+    badge: bool,
+    summary: bool,
 }
 
 /// Where a dialog's parts go (surface coordinates).
@@ -1831,8 +1906,10 @@ struct Geometry {
     footer: Option<Bounds<Points>>,
     /// A sheet's line between its text and its options.
     separator: Option<Bounds<Points>>,
+    badge: Option<Bounds<Points>>,
     title: Option<Bounds<Points>>,
     message: Option<Bounds<Points>>,
+    summary: Option<Bounds<Points>>,
     /// A capped title and description viewport, when the recovery card needs one.
     body_viewport: Option<Bounds<Points>>,
     /// The buttons, by index.
@@ -1846,10 +1923,16 @@ impl Geometry {
         let Some(viewport) = self.body_viewport else {
             return 0.0;
         };
-        self.message.or(self.title).map_or(0.0, |last| {
-            (last.origin.y.0 + last.size.height.0 - viewport.origin.y.0 - viewport.size.height.0)
-                .max(0.0)
-        })
+        self.summary
+            .or(self.message)
+            .or(self.title)
+            .or(self.badge)
+            .map_or(0.0, |last| {
+                (last.origin.y.0 + last.size.height.0
+                    - viewport.origin.y.0
+                    - viewport.size.height.0)
+                    .max(0.0)
+            })
     }
 }
 
@@ -1861,7 +1944,7 @@ fn layout_alert(
     title: bool,
     message: bool,
     buttons: usize,
-    preferred_width: Option<f32>,
+    recovery_parts: Option<RecoveryParts>,
     measure: &dyn Fn(Part, f32) -> (f32, f32),
 ) -> Geometry {
     use metrics::*;
@@ -1880,9 +1963,14 @@ fn layout_alert(
     .flatten()
     .fold(0.0, f32::max)
         + 2.0 * PAD;
-    let width = preferred_width
-        .unwrap_or_else(|| natural.clamp(MIN_WIDTH, MAX_WIDTH))
-        .min(available);
+    let recovery = recovery_parts.is_some();
+    let details = recovery_parts.unwrap_or_default();
+    let width = if recovery {
+        RECOVERED_WIDTH
+    } else {
+        natural.clamp(MIN_WIDTH, MAX_WIDTH)
+    }
+    .min(available);
     let inner = (width - 2.0 * PAD).max(0.0);
     // Buttons share the footer in equal columns (as Windows' do) while
     // there are at most three and every label fits its column.
@@ -1899,14 +1987,34 @@ fn layout_alert(
     } else {
         0.0
     };
+    let (badge_w, badge_h) = if details.badge {
+        let (w, h) = measure(Part::Badge, (inner - 2.0 * BADGE_PAD_X).max(0.0));
+        ((w + 2.0 * BADGE_PAD_X).min(inner), h + 2.0 * BADGE_PAD_Y)
+    } else {
+        (0.0, 0.0)
+    };
+    let summary_h = if details.summary {
+        measure(Part::Summary, (inner - 2.0 * SUMMARY_PAD_X).max(0.0)).1 + 2.0 * SUMMARY_PAD_Y
+    } else {
+        0.0
+    };
+    let badge_gap = if details.badge && (title || message || details.summary) {
+        DETAILS_GAP
+    } else {
+        0.0
+    };
     let gap = if title && message { TITLE_GAP } else { 0.0 };
-    let text_h = title_h + gap + message_h;
+    let summary_gap = if details.summary && (title || message) {
+        DETAILS_GAP
+    } else {
+        0.0
+    };
+    let text_h = badge_h + badge_gap + title_h + gap + message_h + summary_gap + summary_h;
     let buttons_h = if row {
         BUTTON_HEIGHT
     } else {
         n * BUTTON_HEIGHT + (n - 1.0) * BUTTON_GAP
     };
-    let recovery = preferred_width.is_some();
     let window_height = (view.1 - 2.0 * GUTTER).max(0.0);
     let footer_pad = if recovery {
         PAD.min(((window_height - buttons_h) / 4.0).max(0.0))
@@ -1946,12 +2054,26 @@ fn layout_alert(
             }
         })
         .collect();
+    let body_y = y + body_pad;
+    let title_y = body_y + badge_h + badge_gap;
+    let message_y = title_y + title_h + gap;
     Geometry {
         cards: vec![card],
         footer: Some(footer),
         separator: None,
-        title: title.then(|| rect(x + PAD, y + body_pad, inner, title_h)),
-        message: message.then(|| rect(x + PAD, y + body_pad + title_h + gap, inner, message_h)),
+        badge: details
+            .badge
+            .then(|| rect(x + PAD, body_y, badge_w, badge_h)),
+        title: title.then(|| rect(x + PAD, title_y, inner, title_h)),
+        message: message.then(|| rect(x + PAD, message_y, inner, message_h)),
+        summary: details.summary.then(|| {
+            rect(
+                x + PAD,
+                message_y + message_h + summary_gap,
+                inner,
+                summary_h,
+            )
+        }),
         body_viewport: (recovery && body_view_height < text_h)
             .then(|| rect(x + PAD, y + body_pad, inner, body_view_height)),
         buttons,
@@ -2047,6 +2169,7 @@ fn layout_sheet(
         cards,
         footer: None,
         separator: (has_text && options > 0).then(|| rect(x, options_y + header, width, 1.0)),
+        badge: None,
         title: title.then(|| rect(x + SHEET_TEXT_PAD, title_y, text_w, title_h)),
         message: message.then(|| {
             rect(
@@ -2056,6 +2179,7 @@ fn layout_sheet(
                 message_h,
             )
         }),
+        summary: None,
         body_viewport: None,
         buttons,
         row: false,
@@ -2119,8 +2243,10 @@ enum Target {
 }
 
 struct DialogTexts {
+    badge: Option<Label>,
     title: Option<Label>,
     message: Option<Label>,
+    summary: Option<Label>,
     buttons: Vec<Label>,
 }
 
@@ -2185,8 +2311,10 @@ impl DialogItem {
         let t = &self.texts;
         let measure = |part: Part, width: f32| {
             let label = match part {
+                Part::Badge => t.badge.as_ref(),
                 Part::Title => t.title.as_ref(),
                 Part::Message => t.message.as_ref(),
+                Part::Summary => t.summary.as_ref(),
                 Part::Button(i) => t.buttons.get(i),
             };
             label.map_or((0.0, 0.0), |l| l.measure(width))
@@ -2206,15 +2334,30 @@ impl DialogItem {
                 t.title.is_some(),
                 t.message.is_some(),
                 t.buttons.len(),
-                self.recovered.as_ref().map(|_| metrics::RECOVERED_WIDTH),
+                self.recovered.as_ref().map(|_| RecoveryParts {
+                    badge: t.badge.is_some(),
+                    summary: t.summary.is_some(),
+                }),
                 &measure,
             )
         };
+        if let (Some(l), Some(r)) = (&t.badge, geometry.badge) {
+            l.fit(
+                r.size.width.0 - 2.0 * metrics::BADGE_PAD_X,
+                r.size.height.0 - 2.0 * metrics::BADGE_PAD_Y,
+            );
+        }
         if let (Some(l), Some(r)) = (&t.title, geometry.title) {
             l.fit(r.size.width.0, r.size.height.0);
         }
         if let (Some(l), Some(r)) = (&t.message, geometry.message) {
             l.fit(r.size.width.0, r.size.height.0);
+        }
+        if let (Some(l), Some(r)) = (&t.summary, geometry.summary) {
+            l.fit(
+                r.size.width.0 - 2.0 * metrics::SUMMARY_PAD_X,
+                r.size.height.0 - 2.0 * metrics::SUMMARY_PAD_Y,
+            );
         }
         for (l, r) in t.buttons.iter().zip(&geometry.buttons) {
             let pad = if self.sheet {
@@ -2494,6 +2637,30 @@ impl Hosted for DialogItem {
             );
         }
         let t = &self.texts;
+        if let (Some(label), Some(r)) = (&t.badge, g.badge) {
+            let (fill, fg) = match contrast {
+                Some(contrast) => (contrast.window, contrast.text),
+                None if cx.dark => (Color(0xf5b1_8c26), Color(0xffc4_9aff)),
+                None => (Color(0xde76_4521), Color(0x8c43_1bff)),
+            };
+            let r = rect(
+                r.origin.x.0,
+                r.origin.y.0 - offset,
+                r.size.width.0,
+                r.size.height.0,
+            );
+            let pill_radius = (r.size.height.0 * 0.5).min(12.0);
+            fill_rounded(cx, r, pill_radius, fill);
+            if contrast.is_some() {
+                stroke_rounded(cx, r, pill_radius, fg, 1.5);
+            }
+            label.draw(
+                cx,
+                r.origin.x.0 + BADGE_PAD_X,
+                r.origin.y.0 + BADGE_PAD_Y,
+                fg,
+            );
+        }
         if let (Some(l), Some(r)) = (&t.title, g.title) {
             l.draw(
                 cx,
@@ -2509,6 +2676,31 @@ impl Hosted for DialogItem {
                 r.origin.y.0 - offset,
                 if self.sheet { p.secondary } else { p.text },
             );
+        }
+        if let (Some(label), Some(r)) = (&t.summary, g.summary) {
+            let paper = match contrast {
+                Some(contrast) => contrast.window,
+                None if cx.dark => Color(0x1619_23ff),
+                None => Color(0xfcfc_feff),
+            };
+            let r = rect(
+                r.origin.x.0,
+                r.origin.y.0 - offset,
+                r.size.width.0,
+                r.size.height.0,
+            );
+            fill_rounded(cx, r, SUMMARY_RADIUS, paper);
+            stroke_rounded(cx, r, SUMMARY_RADIUS, p.stroke, border_width);
+            let x = r.origin.x.0 + SUMMARY_PAD_X;
+            let y = r.origin.y.0 + SUMMARY_PAD_Y;
+            cx.push_clip_rect(
+                x,
+                y,
+                (r.size.width.0 - 2.0 * SUMMARY_PAD_X).max(0.0),
+                r.size.height.0 - 2.0 * SUMMARY_PAD_Y,
+            );
+            label.draw(cx, x, y, p.text);
+            cx.pop();
         }
         if let Some(clip) = g.body_viewport {
             cx.pop();
@@ -2696,7 +2888,11 @@ fn show_dialog_item(
     } else {
         (20.0, 600, DWRITE_TEXT_ALIGNMENT_LEADING)
     };
+    let details = recovery.as_ref().map(|(request, _, _)| &request.details);
     let texts = DialogTexts {
+        badge: details
+            .and_then(|details| details.badge.as_deref())
+            .and_then(|text| Label::new(text, 12.0 * fs, 600, text_align, true)),
         title: dialog
             .title
             .as_deref()
@@ -2710,6 +2906,10 @@ fn show_dialog_item(
                 true,
             )
         }),
+        summary: details
+            .and_then(|details| details.summary.as_deref())
+            .and_then(|text| Label::new(text, 13.0 * fs, 400, text_align, false))
+            .map(Label::ellipsized),
         buttons: buttons
             .iter()
             .filter_map(|b| {
@@ -2753,7 +2953,7 @@ fn show_dialog_item(
     let keyboard = recovery.is_some();
     let (recovered, reply) = match recovery {
         Some((request, sender, capture)) => (
-            Some(RecoveredDraftStyle::new(serial, capture, dialog)),
+            Some(RecoveredDraftStyle::new(serial, capture, request)),
             DialogReply::Recovered {
                 actions: request.actions.clone(),
                 sender: RefCell::new(Some(sender)),
@@ -2892,6 +3092,7 @@ pub(crate) fn recovery_accessibility(
 pub(crate) fn show_recovery_for_access_test(
     surface: &Rc<Surface>,
     resume_save_as: bool,
+    details: RecoveredDraftDetails,
 ) -> (u64, oneshot::Receiver<RecoveredDraftChoice>) {
     let options = nsh_base::alert_dialog()
         .title("Recovered draft")
@@ -2899,7 +3100,8 @@ pub(crate) fn show_recovery_for_access_test(
         .cancel("continue", "Keep editing")
         .destructive("discard", "Discard")
         .action("save-as", "Save As");
-    let request = RecoveredDraftRequest::new(options, resume_save_as).unwrap();
+    let mut request = RecoveredDraftRequest::new(options, resume_save_as).unwrap();
+    request.details = details;
     let (sender, reply) = oneshot::channel();
     let serial = show_dialog_item(
         surface,
@@ -3381,8 +3583,10 @@ mod tests {
     fn measure(texts: &'static [&'static str]) -> impl Fn(Part, f32) -> (f32, f32) {
         move |part, width| {
             let text = match part {
+                Part::Badge => "Recovered draft",
                 Part::Title => "Title",
                 Part::Message => "A message that is quite long, long enough to wrap twice or more",
+                Part::Summary => "A preview of the actual recovered document",
                 Part::Button(i) => texts[i],
             };
             let natural = text.len() as f32 * 8.0;
@@ -3688,8 +3892,9 @@ mod tests {
             true,
             true,
             3,
-            Some(metrics::RECOVERED_WIDTH),
+            Some(RecoveryParts::default()),
             &|part, width| match part {
+                Part::Badge | Part::Summary => unreachable!(),
                 Part::Title => (width, 56.0),
                 Part::Message => (width, 416.0),
                 Part::Button(_) => (130.0, 16.0),
@@ -3708,6 +3913,45 @@ mod tests {
     }
 
     #[test]
+    fn recovery_badge_and_summary_scroll_inside_the_pinned_actions() {
+        let g = layout_alert(
+            (321.0, 280.0),
+            true,
+            true,
+            3,
+            Some(RecoveryParts {
+                badge: true,
+                summary: true,
+            }),
+            &|part, width| match part {
+                Part::Badge => (100.0, 18.0),
+                Part::Title => (width, 38.0),
+                Part::Message => (width, 125.0),
+                Part::Summary => (width, 18.0),
+                Part::Button(_) => (130.0, 16.0),
+            },
+        );
+        let badge = g.badge.unwrap();
+        let title = g.title.unwrap();
+        let message = g.message.unwrap();
+        let paper = g.summary.unwrap();
+        let body = g.body_viewport.unwrap();
+        let bottom = |r: Bounds<Points>| r.origin.y.0 + r.size.height.0;
+        assert!(badge.size.width.0 < title.size.width.0);
+        assert!(bottom(badge) < title.origin.y.0);
+        assert!(bottom(title) < message.origin.y.0);
+        assert!(bottom(message) < paper.origin.y.0);
+        assert_eq!(paper.size.width, title.size.width);
+        assert_eq!(paper.size.height.0, 18.0 + 2.0 * metrics::SUMMARY_PAD_Y);
+        assert_eq!(bottom(paper) - bottom(body), g.body_travel());
+        assert!(
+            g.buttons
+                .iter()
+                .all(|button| button.origin.y.0 >= bottom(body))
+        );
+    }
+
+    #[test]
     fn recovery_card_fits_the_available_width() {
         let window = (321.0, 650.0);
         let g = layout_alert(
@@ -3715,7 +3959,7 @@ mod tests {
             true,
             true,
             3,
-            Some(metrics::RECOVERED_WIDTH),
+            Some(RecoveryParts::default()),
             &measure(&["Keep editing", "Discard", "Save As"]),
         );
         assert_eq!(g.cards[0].size.width.0, 289.0);

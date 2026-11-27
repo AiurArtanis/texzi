@@ -230,7 +230,7 @@ impl IInvokeProvider_Impl for Node_Impl {
 mod tests {
     use super::*;
     use crate::access::uia::{Element, Var};
-    use crate::system::show_recovery_for_access_test;
+    use crate::system::{RecoveredDraftDetails, show_recovery_for_access_test};
     use nsh_core::{EventKind, MountItem, ROOT_ID, ViewKind};
     use nsh_engine::Environment;
     use windows::{
@@ -310,7 +310,8 @@ mod tests {
             "Background input"
         );
 
-        let (serial, mut reply) = show_recovery_for_access_test(&surface, false);
+        let (serial, mut reply) =
+            show_recovery_for_access_test(&surface, false, RecoveredDraftDetails::default());
         let pane = child(&root, NavigateDirection_FirstChild);
         assert_eq!(name(&pane), "Recovered draft");
         let keep = child(&pane, NavigateDirection_FirstChild);
@@ -404,8 +405,24 @@ mod tests {
             "Background input"
         );
 
-        let (new_serial, _reply) = show_recovery_for_access_test(&surface, true);
+        let (new_serial, _reply) = show_recovery_for_access_test(
+            &surface,
+            true,
+            RecoveredDraftDetails {
+                badge: Some("Recovered in the last session".into()),
+                summary: Some("Line 1: Existing draft text".into()),
+            },
+        );
         assert_ne!(serial, new_serial);
+        let current = child(&root, NavigateDirection_FirstChild);
+        assert_eq!(
+            name(&current),
+            "Recovered in the last session\nRecovered draft"
+        );
+        assert_eq!(
+            property(&current.cast().unwrap(), UIA_FullDescriptionPropertyId),
+            "A new file can keep this draft.\nLine 1: Existing draft text",
+        );
         assert_eq!(
             recovery_accessibility(&surface, ROOT_ID).unwrap().focus(),
             Some(2)
