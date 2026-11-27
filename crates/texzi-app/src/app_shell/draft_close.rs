@@ -1,4 +1,5 @@
 use super::*;
+use nsh_platform_windows::RecoveredDraftChoice;
 
 struct RecoveredClose {
     draft: Rc<Document>,
@@ -123,10 +124,10 @@ impl Shell {
     }
 
     async fn recovered_close(self: &Rc<Self>, pending: &RecoveredClose) -> Result<(), String> {
+        let mut resume_save_as = false;
         loop {
-            let answer = self.owner.run(|| pending.dialog().show()).await?;
-            match answer.action.as_deref() {
-                Some("discard")
+            match self.recovered_close_choice(pending, resume_save_as).await? {
+                Some(RecoveredDraftChoice::Discard)
                     if pending.same_draft(self)
                         && pending.revision.is_none_or(|revision| {
                             pending.draft.source.dirty_revision() == Some(revision)
@@ -137,13 +138,14 @@ impl Shell {
                     self.remove(pending.draft.id);
                     return Ok(());
                 }
-                Some("save-as") => {
+                Some(RecoveredDraftChoice::SaveAs) => {
                     let Some(revision) = pending.revision else {
                         return Ok(());
                     };
                     let Some((path, written_revision)) =
                         self.write_recovered_copy(pending, revision).await?
                     else {
+                        resume_save_as = true;
                         continue;
                     };
                     self.remember(&path);
@@ -167,6 +169,37 @@ impl Shell {
                 }
                 _ => return Ok(()),
             }
+        }
+    }
+
+    async fn recovered_close_choice(
+        &self,
+        pending: &RecoveredClose,
+        resume_save_as: bool,
+    ) -> Result<Option<RecoveredDraftChoice>, String> {
+        #[cfg(not(test))]
+        {
+            self.owner
+                .run(|| {
+                    nsh_platform_windows::show_recovered_draft_dialog(
+                        &self.draft_dialog_host,
+                        pending.dialog(),
+                        resume_save_as,
+                    )
+                })
+                .await
+        }
+        // Core fixtures verify the same actions and persistence without a native AppWindow.
+        #[cfg(test)]
+        {
+            let _ = resume_save_as;
+            let answer = self.owner.run(|| pending.dialog().show()).await?;
+            Ok(match answer.action.as_deref() {
+                Some("continue") => Some(RecoveredDraftChoice::Continue),
+                Some("discard") => Some(RecoveredDraftChoice::Discard),
+                Some("save-as") => Some(RecoveredDraftChoice::SaveAs),
+                _ => None,
+            })
         }
     }
 

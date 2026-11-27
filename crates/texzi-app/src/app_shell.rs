@@ -377,6 +377,7 @@ struct Shell {
     chord_generation: Cell<u64>,
     source_ref: Cell<Option<ComponentRef<Editor>>>,
     modal: Rc<Cell<bool>>,
+    draft_dialog_host: ElementRef,
     draft_close_focus_epoch: Cell<u64>,
     auto_saving: Signal<Option<u64>>,
     split: Signal<Option<Rc<Document>>>,
@@ -649,6 +650,7 @@ impl Shell {
             chord_generation: Cell::new(0),
             source_ref: Cell::new(None),
             modal: Rc::new(Cell::new(false)),
+            draft_dialog_host: element_ref(),
             draft_close_focus_epoch: Cell::new(0),
             auto_saving: signal(None),
             split: signal(None),
@@ -3555,6 +3557,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let zen_armed = s.zen_exit.armed;
     let nav_panel = s.panel;
     view()
+        .element_ref(&s.draft_dialog_host)
         .relative()
         .size_full()
         .text_color(|| color("ink-1"))
