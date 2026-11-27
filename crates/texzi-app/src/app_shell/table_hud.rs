@@ -368,12 +368,19 @@ impl TableHud {
             .grid()
             .gap(px(GRID_GAP))
             .grid_template_columns(tracks);
-        for (index, (label, short, action)) in ACTIONS.into_iter().enumerate() {
+        for (index, (label, short, action, enabled)) in
+            self.doc.controls.table.buttons().into_iter().enumerate()
+        {
             let hud = self.clone();
             let escape = self.clone();
             let first = self.clone();
             buttons = buttons.child(
                 tool_button(label, short)
+                    .disabled(!enabled)
+                    .when(
+                        matches!(action, TableAction::Header | TableAction::CancelHeader),
+                        |button| button.test_id("texzi.table-tools.header"),
+                    )
                     .when(index == 0, move |button| {
                         button
                             .test_id("texzi.table-tools.first")
@@ -511,6 +518,7 @@ mod mounted_tests {
         platform::Os,
         tailwind::state::FOCUSED,
     };
+    use sha2::{Digest, Sha256};
     use std::{
         cell::RefCell,
         collections::{HashMap, HashSet},
@@ -521,6 +529,7 @@ mod mounted_tests {
     struct FixturePaths {
         markdown: PathBuf,
         neighbor: PathBuf,
+        edit_row: usize,
         observed: Rc<RefCell<(Option<u64>, bool, String)>>,
     }
 
@@ -550,7 +559,7 @@ mod mounted_tests {
         });
         let session = doc.gate.session();
         let state = session.state();
-        let at = table_controls::cell_position(state.doc(), 0, 1, 1).unwrap();
+        let at = table_controls::cell_position(state.doc(), 0, paths.edit_row, 1).unwrap();
         let mut select = state.tr();
         select.set_selection(TextSelection::create(state.doc(), at, None));
         session.dispatch(select).unwrap();
@@ -603,6 +612,7 @@ mod mounted_tests {
         neighbor: Option<NodeId>,
         first_tool: Option<NodeId>,
         close_tool: Option<NodeId>,
+        header_tool: Option<(String, bool)>,
         viewport_focus: Option<NodeId>,
         table_scroll: Option<NodeId>,
         scrolls: HashSet<NodeId>,
@@ -670,6 +680,12 @@ mod mounted_tests {
                                 Some("table-hud-test-neighbor") => self.neighbor = Some(id),
                                 Some("texzi.table-tools.first") => self.first_tool = Some(id),
                                 Some("texzi.table-tools.close") => self.close_tool = Some(id),
+                                Some("texzi.table-tools.header") => {
+                                    self.header_tool = Some((
+                                        props.accessibility.label.as_deref().unwrap().to_owned(),
+                                        props.accessibility.state.disabled,
+                                    ));
+                                }
                                 Some("texzi.table-tools.viewport-focus") => {
                                     self.viewport_focus = Some(id)
                                 }
@@ -736,11 +752,13 @@ mod mounted_tests {
             let neighbor = dir.join("neighbor.txt");
             std::fs::write(&markdown, &original).unwrap();
             std::fs::write(&neighbor, "sentinel").unwrap();
+            let edit_row = usize::from(use_settings);
             let observed = Rc::new(RefCell::new((None, false, String::new())));
             PATHS.with(|paths| {
                 *paths.borrow_mut() = Some(FixturePaths {
                     markdown: markdown.clone(),
                     neighbor: neighbor.clone(),
+                    edit_row,
                     observed: observed.clone(),
                 });
             });
@@ -748,7 +766,8 @@ mod mounted_tests {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap();
-            let mut core = Core::new(ApproxTextEngine, Size::new(px(800.0), px(600.0)));
+            let width = if use_settings { 800.0 } else { 335.0 };
+            let mut core = Core::new(ApproxTextEngine, Size::new(px(width), px(600.0)));
             core.set_task_runtime(runtime.handle().clone());
             let mut environment = Environment::default();
             environment.os = Os::Windows;
@@ -766,6 +785,18 @@ mod mounted_tests {
             mounted.pump(&mut core);
             let first = mounted.first_tool.expect("mounted, cell-anchored tool");
             assert!(mounted.focus_commands.contains(&first));
+            let expected_header_label = if edit_row == 0 {
+                "取消当前行表头"
+            } else {
+                "将当前行设为表头"
+            };
+            assert_eq!(
+                mounted
+                    .header_tool
+                    .as_ref()
+                    .map(|(label, disabled)| (label.as_str(), *disabled)),
+                Some((expected_header_label, false))
+            );
             core.set_states(sink, 0);
             core.set_states(first, FOCUSED);
             assert!(core.component_event(sink, EventKind::Blur, &EventPayload::None));
@@ -834,21 +865,26 @@ mod mounted_tests {
                 }
             }
             let until = Instant::now() + Duration::from_secs(5);
-            let expected = original.replace("| B |", "| ZB |");
+            let expected = if edit_row == 0 {
+                original.replace("| V |", "| ZV |")
+            } else {
+                original.replace("| B |", "| ZB |")
+            };
             loop {
                 mounted.pump(&mut core);
-                let disk = std::fs::read_to_string(&markdown).unwrap();
-                if disk == expected {
+                if observed.borrow().2 == "已保存 original.md" {
                     break;
                 }
                 assert!(
                     Instant::now() < until,
-                    "editor exit did not save: {:?}, file starts {:?}",
-                    observed.borrow(),
-                    disk.get(..36)
+                    "editor exit did not save: {:?}",
+                    observed.borrow()
                 );
                 std::thread::sleep(Duration::from_millis(10));
             }
+            let disk = std::fs::read(&markdown).unwrap();
+            assert_eq!(disk, expected.as_bytes());
+            let digest = Sha256::digest(&disk);
             assert_eq!(std::fs::read_to_string(&neighbor).unwrap(), "sentinel");
             assert!(!mounted.focus_commands.contains(&sink));
             assert!(
@@ -857,7 +893,7 @@ mod mounted_tests {
                     .contains(&mounted.viewport_focus.unwrap())
             );
             eprintln!(
-                "table HUD: settings={use_settings}, scroll_out={scroll}, internal unchanged, exit saved exact bytes, neighbor unchanged"
+                "table HUD: settings={use_settings}, scroll_out={scroll}, internal unchanged, exit saved exact bytes ({digest:x}), neighbor unchanged"
             );
             drop(core);
             std::fs::remove_dir_all(dir).unwrap();

@@ -38,7 +38,9 @@ fn table_source(block: &Block, source: &str) -> Option<TableSource> {
     if block.opaque || block.node.ty().name() != "table" {
         return None;
     }
-    let raw = source.get(block.source.clone())?;
+    let table_span = block.table_source_span(source);
+    let raw = source.get(table_span.clone())?;
+    let has_header = block.table_header_marker(source).is_none();
     // Owner normally supplies canonical LF. Raw CRLF is deliberately outside
     // this seam so a CR can never be mistaken for cell padding or an LF byte.
     if raw.contains('\r') {
@@ -72,8 +74,8 @@ fn table_source(block: &Block, source: &str) -> Option<TableSource> {
         {
             return None;
         }
-        let start = block.source.start.checked_add(position.start.offset)?;
-        let end = block.source.start.checked_add(position.end.offset)?;
+        let start = table_span.start.checked_add(position.start.offset)?;
+        let end = table_span.start.checked_add(position.end.offset)?;
         let line_start = source.get(..start)?.rfind('\n').map_or(0, |at| at + 1);
         let line_end = source
             .get(end..)?
@@ -97,7 +99,7 @@ fn table_source(block: &Block, source: &str) -> Option<TableSource> {
             let mdast::Node::TableCell(cell) = child else {
                 return None;
             };
-            cell_paragraph(rich_row.child(j), i == 0)?;
+            cell_paragraph(rich_row.child(j), has_header && i == 0)?;
             let cell_position = cell.position.as_ref()?;
             if cell_position.start.offset > cell_position.end.offset
                 || cell_position.start.offset < position.start.offset
@@ -106,8 +108,8 @@ fn table_source(block: &Block, source: &str) -> Option<TableSource> {
                 return None;
             }
             cells.push(CellSource {
-                span: block.source.start.checked_add(cell_position.start.offset)?
-                    ..block.source.start.checked_add(cell_position.end.offset)?,
+                span: table_span.start.checked_add(cell_position.start.offset)?
+                    ..table_span.start.checked_add(cell_position.end.offset)?,
                 empty: cell.children.is_empty(),
             });
         }

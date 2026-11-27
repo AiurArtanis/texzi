@@ -19,6 +19,7 @@ mod local_patch;
 mod plain_insert;
 mod references;
 mod resources;
+mod table_header;
 mod table_rows;
 mod table_structures;
 mod text_map;
@@ -42,6 +43,22 @@ pub struct Block {
     pub node: Node,
     pub opaque: bool,
     text_map: text_map::TextMap,
+}
+impl Block {
+    fn table_source_span(&self, source: &str) -> Range<usize> {
+        let start = self
+            .table_header_marker(source)
+            .map_or(self.source.start, |marker| marker.end);
+        start..self.source.end
+    }
+
+    fn table_header_marker(&self, source: &str) -> Option<Range<usize>> {
+        if self.opaque || self.node.ty().name() != "table" {
+            return None;
+        }
+        let len = table_header::prefix_len(source.get(self.source.clone())?)?;
+        Some(self.source.start..self.source.start + len)
+    }
 }
 pub struct Projection {
     pub source: String,
@@ -99,6 +116,14 @@ impl Projection {
     ) -> Result<bool, String> {
         Ok(resources::transaction_edits(self, next, applied)?.is_some())
     }
+    pub(crate) fn supports_table_header_edit(&self, block: usize) -> bool {
+        self.blocks.get(block).is_some_and(|block| {
+            !block.opaque
+                && block.node.ty().name() == "table"
+                && table_structures::has_exact_rows(block, &self.source)
+        })
+    }
+
     pub fn verified_table_transaction(
         &self,
         next: &Node,
@@ -513,9 +538,8 @@ impl Projection {
         let import_started = trace.then(std::time::Instant::now);
         list_items::recognize_empty_tasks(&mut tree, &source);
         let mut blocks = Vec::new();
-        let definitions: Vec<_> = tree
-            .children()
-            .ok_or("missing Markdown root")?
+        let children = tree.children().ok_or("missing Markdown root")?;
+        let definitions: Vec<_> = children
             .iter()
             .filter_map(|n| {
                 if let mdast::Node::Definition(d) = n {
@@ -525,7 +549,7 @@ impl Projection {
                 }
             })
             .collect();
-        for child in tree.children().ok_or("missing Markdown root")? {
+        for (index, child) in children.iter().enumerate() {
             let heading = heading_import::prepare(child, &source);
             let child = heading
                 .as_ref()
@@ -571,7 +595,7 @@ impl Projection {
                 references::import_source(child, &source, &definitions)
                     .and_then(|input| MarkdownFormat::default().parse(schema, &input).ok())
             };
-            let node = match parsed.filter(|d| d.child_count() == 1) {
+            let mut node = match parsed.filter(|d| d.child_count() == 1) {
                 Some(d) => d.child(0).clone(),
                 None => {
                     opaque = true;
@@ -590,8 +614,22 @@ impl Projection {
                     child,
                     mdast::Node::Definition(_) | mdast::Node::FootnoteDefinition(_)
                 );
+            let mut block_source = span.clone();
+            if !opaque
+                && matches!(child, mdast::Node::Table(_))
+                && let Some(prior) = index.checked_sub(1).and_then(|prior| children.get(prior))
+                && let Some(start) = table_header::marker_before(prior, &source, span.start)
+                && blocks
+                    .last()
+                    .is_some_and(|block: &Block| block.source.start == start && block.opaque)
+                && let Some(ordinary) = table_header::without_header(schema, &node)
+            {
+                blocks.pop();
+                node = ordinary;
+                block_source.start = start;
+            }
             blocks.push(Block {
-                source: span.clone(),
+                source: block_source,
                 text_map: text_map::TextMap::build(&node, child, &source, opaque, span),
                 node,
                 opaque,
@@ -1346,10 +1384,13 @@ fn raw_text_start(b: &Block, text: &str, source: &str) -> Option<usize> {
     if let Some(at) = fenced_content_start(b, text, source) {
         return Some(at);
     }
-    let raw = &source[b.source.clone()];
-    let mut matches = raw.match_indices(text);
+    let content = b.table_source_span(source);
+    let mut matches = source.get(content.clone())?.match_indices(text);
     let (at, _) = matches.next()?;
-    matches.next().is_none().then_some(at)
+    matches
+        .next()
+        .is_none()
+        .then_some(content.start - b.source.start + at)
 }
 fn empty_position(b: &Block, source: &str) -> Option<usize> {
     if b.node.ty().name() == "codeBlock" && !b.opaque {
