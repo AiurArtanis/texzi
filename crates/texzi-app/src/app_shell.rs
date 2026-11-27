@@ -2925,6 +2925,7 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
     let width = shell.clone();
     let offset = shell.clone();
     let panel = shell.panel;
+    let search_trigger = shell.clone();
     let menus = shell.clone();
     let icon = ImageSrc::rgba(
         32,
@@ -2971,7 +2972,7 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                 .h(px(metric("menuHit")))
                 .window_drag(false)
                 .child(when(
-                    move || !is_quick_panel(&panel.get()),
+                    move || search_trigger.compact_menu() || !is_quick_panel(&panel.get()),
                     move || {
                         let search = search.clone();
                         let compact = search.clone();
@@ -3776,6 +3777,7 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
         .child(dynamic(move || {
             let doc = shell.current()?;
             let compact = shell.compact_menu();
+            let show_optional = !compact || status.get().1 == "muted-readable";
             if doc.large.is_some() {
                 return None;
             }
@@ -3799,7 +3801,7 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 .items_center()
                 .min_w(px(0.0))
                 .gap(px(12.0));
-            if !compact && let Some(position) = position {
+            if show_optional && let Some(position) = position {
                 fields = fields.child(text(position).number_of_lines(1));
             }
             if !rich {
@@ -3828,6 +3830,9 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 );
             }
             if compact {
+                if show_optional {
+                    fields = fields.child(text(encoding).number_of_lines(1));
+                }
                 return Some(fields.into_element());
             }
             Some(
