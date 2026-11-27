@@ -119,6 +119,8 @@ impl SpanTags {
 pub(crate) struct RowContent {
     pub(crate) spans: Vec<Span>,
     pub(crate) folded: bool,
+    /// Horizontal bounds and stroke color, relative to the already mounted row.
+    pub(crate) outlines: Vec<(Range<Points>, nsh_core::Hsla)>,
     /// The decorations whose line styles cover the row's line.
     pub(crate) line_decorations: Vec<usize>,
 }
@@ -734,13 +736,84 @@ impl State {
 
     // What the view draws.
 
+    fn outlined_row(
+        &self,
+        row: usize,
+        info: &super::display::Row,
+    ) -> (
+        super::display::RowText,
+        Vec<(Range<Points>, nsh_core::Hsla)>,
+    ) {
+        // Gather only outline endpoints on this row. Capture them during the
+        // row's existing glyph/tab layout, even for a very long unwrapped
+        // line. No scan from the beginning of the match or second text copy.
+        let last_row = self.row_is_last_of_line(row);
+        let newline = last_row && info.line + 1 < self.buffer.line_count();
+        let mut edges = Vec::new();
+        let mut strokes = Vec::new();
+        for (_, mark) in app_highlight::near(
+            &self.decorations,
+            self.decoration_reach,
+            info.range.start,
+            info.range.end,
+        ) {
+            let Some(color) = self.decoration_items[mark.item].outline_color else {
+                continue;
+            };
+            let r = &mark.range;
+            let from = r.start.max(info.range.start);
+            let to = r.end.min(info.range.end);
+            let caret = r.is_empty()
+                && (info.range.contains(&r.start) || r.start == info.range.end && last_row);
+            let eol = newline && r.start <= info.range.end && r.end > info.range.end;
+            if from >= to && !caret && !eol {
+                continue;
+            }
+            let i = 2 * strokes.len();
+            edges.extend([(from, i), (to, i + 1)]);
+            strokes.push((color, caret, eol));
+        }
+        if strokes.is_empty() {
+            return (
+                self.display.row_text(&self.buffer, row, |_, _| {}),
+                Vec::new(),
+            );
+        }
+        edges.sort_unstable();
+        let mut positions = vec![info.indent; edges.len()];
+        let mut edges = edges.into_iter().peekable();
+        let row_text = self.display.row_text(&self.buffer, row, |bytes, x| {
+            while let Some((at, i)) = edges.next_if(|(at, _)| *at <= bytes.end) {
+                positions[i] = if at == bytes.end || (i % 2 == 1 && at > bytes.start) {
+                    x.end
+                } else {
+                    x.start
+                };
+            }
+        });
+        let outlines = strokes
+            .into_iter()
+            .enumerate()
+            .map(|(i, (color, caret, eol))| {
+                let left = positions[2 * i];
+                let right = if caret {
+                    left + px(3.0)
+                } else {
+                    positions[2 * i + 1] + if eol { px(3.0) } else { px(0.0) }
+                };
+                (left..right.max(left + px(1.0)), color)
+            })
+            .collect();
+        (row_text, outlines)
+    }
+
     /// The content of display row `row`.
     pub(crate) fn row_content(&self, row: usize) -> RowContent {
         if row >= self.display.row_count() {
             return RowContent::default();
         }
         let info = self.display.row(row).clone();
-        let row_text = self.display.row_text(&self.buffer, row);
+        let (row_text, outlines) = self.outlined_row(row, &info);
         let line_start = self.buffer.line_start(info.line);
         // Boundaries where the style changes, in buffer offsets.
         let mut cuts: Vec<usize> = vec![info.range.start, info.range.end];
@@ -865,6 +938,7 @@ impl State {
         RowContent {
             spans,
             folded,
+            outlines,
             line_decorations,
         }
     }
@@ -1737,6 +1811,36 @@ mod tests {
             .into_iter()
             .map(|span| (span.text, span.token, span.decorations.len()))
             .collect()
+    }
+
+    #[test]
+    fn outlined_match_crosses_distant_rows_and_a_zero_width_mark_follows_its_wrap() {
+        let mut st = state(&format!("{}tail", "ab\n".repeat(48_000)));
+        let color = nsh_core::Hsla::default();
+        let mut across = decoration(0, 0, 0);
+        across.range.end = EditorPosition::new(48_000, 2);
+        across.outline_color = Some(color);
+        decorate(&mut st, vec![across, decoration(32_000, 0, 2)]);
+        assert_eq!(st.row_content(32_000).outlines, [(px(0.)..px(19.), color)]);
+        assert_eq!(st.row_content(48_000).outlines, [(px(0.)..px(16.), color)]);
+
+        let mut st = state("    aaaa bbbb cccc dddd\n🙂z");
+        st.display.set_wrap_width(Some(px(80.)));
+        st.display.rebuild(&st.buffer);
+        let wrap_byte = st.display.row(1).range.start;
+        let wrap_column = st.buffer.position(wrap_byte).column;
+        let mut wrap = decoration(0, wrap_column, wrap_column);
+        wrap.outline_color = Some(color);
+        let mut eof = decoration(1, 3, 3);
+        eof.outline_color = Some(color);
+        decorate(&mut st, vec![wrap, eof]);
+        assert!(st.row_content(0).outlines.is_empty());
+        let left = st.display.row(1).indent;
+        assert_eq!(st.row_content(1).outlines, [(left..left + px(3.), color)]);
+        assert_eq!(
+            st.row_content(st.display.line_row(1)).outlines,
+            [(px(16.)..px(19.), color)]
+        );
     }
 
     #[test]

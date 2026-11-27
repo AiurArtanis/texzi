@@ -16,6 +16,12 @@ impl Receipt {
             return Err(Error::StaleRevision);
         }
         self.previous_body.scalar(p.offset)?;
+        if let Some(map) = &self.bulk {
+            return Ok(SourceByte::at(
+                &self.snapshot,
+                map.map_offset(p.offset, affinity),
+            ));
+        }
         let mut shift = 0isize;
         for d in &self.forward {
             if p.offset < d.range.start {

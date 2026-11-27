@@ -52,46 +52,40 @@ pub(crate) struct InlineMap {
 impl InlineMap {
     /// The text offset of content offset `d`.
     pub(crate) fn to_text(&self, d: usize) -> u32 {
-        let mut t = 0;
-        for run in &self.runs {
-            if run.doc_len == 0 {
-                if run.doc < d || (run.doc == d && run.side < 0) {
-                    t = run.text + run.text_len;
-                    continue;
-                }
-                break;
+        // Runs are emitted in document order. Widgets at one position are
+        // ordered by side before the following text or inline leaf.
+        let i = self.runs.partition_point(|r| {
+            if r.doc_len == 0 {
+                r.doc < d || (r.doc == d && r.side < 0)
+            } else {
+                r.doc + r.doc_len <= d
             }
-            if d >= run.doc + run.doc_len {
-                t = run.text + run.text_len;
-                continue;
-            }
-            if d >= run.doc {
-                // Atoms are one unit either way: inside a text run the
-                // units match.
-                return run.text + (d - run.doc).min(run.text_len as usize) as u32;
-            }
-            break;
+        });
+        if let Some(r) = self.runs.get(i)
+            && r.doc_len != 0
+            && d >= r.doc
+        {
+            return r.text + (d - r.doc).min(r.text_len as usize) as u32;
         }
-        t
+        self.runs[..i].last().map_or(0, |r| r.text + r.text_len)
     }
 
     /// The content offset of text offset `t`.
     pub(crate) fn to_doc(&self, t: u32) -> usize {
-        for run in &self.runs {
-            if t < run.text + run.text_len {
-                if t < run.text {
-                    return run.doc;
-                }
-                return if run.doc_len == 0 {
-                    run.doc
-                } else if run.text_len as usize != run.doc_len {
-                    // A leaf drawn as text (a mention): the nearer side, the
-                    // caret never stands inside it.
-                    run.doc + usize::from(2 * (t - run.text) >= run.text_len) * run.doc_len
-                } else {
-                    run.doc + ((t - run.text) as usize).min(run.doc_len)
-                };
+        let i = self.runs.partition_point(|r| r.text + r.text_len <= t);
+        if let Some(run) = self.runs.get(i) {
+            if t < run.text {
+                return run.doc;
             }
+            return if run.doc_len == 0 {
+                run.doc
+            } else if run.text_len as usize != run.doc_len {
+                // A leaf drawn as text (a mention): the nearer side, the
+                // caret never stands inside it.
+                run.doc + usize::from(2 * (t - run.text) >= run.text_len) * run.doc_len
+            } else {
+                run.doc + ((t - run.text) as usize).min(run.doc_len)
+            };
         }
         self.size
     }
@@ -421,6 +415,125 @@ impl Geometry {
         out
     }
 
+    fn visible_lines(
+        &self,
+        id: u64,
+        viewport: &std::ops::Range<Points>,
+    ) -> Option<(Point<Points>, &TextGeo, std::ops::Range<usize>)> {
+        if viewport.is_empty() {
+            return None;
+        }
+        let (origin, block) = self.text_box(id)?;
+        let first = block
+            .lines
+            .partition_point(|l| origin.y + l.y + l.height <= viewport.start);
+        let past = block
+            .lines
+            .partition_point(|l| origin.y + l.y < viewport.end);
+        (first < past).then_some((origin, block, first..past))
+    }
+
+    /// Document positions on the currently visible lines of this textblock.
+    pub(crate) fn visible_offsets(
+        &self,
+        id: u64,
+        viewport: &std::ops::Range<Points>,
+    ) -> Option<(usize, usize)> {
+        let (_, block, lines) = self.visible_lines(id, viewport)?;
+        Some((
+            block.start + block.map.to_doc(block.lines[lines.start].start),
+            block.start + block.map.to_doc(block.lines[lines.end - 1].end),
+        ))
+    }
+
+    /// Local boxes for the mounted textblock, restricted to the viewport's
+    /// actual lines before asking the text engine for partial glyph ranges.
+    pub(crate) fn visible_outline(
+        &self,
+        id: u64,
+        range: &std::ops::Range<usize>,
+        viewport: std::ops::Range<Points>,
+    ) -> Vec<Bounds<Points>> {
+        let Some((origin, block, visible)) = self.visible_lines(id, &viewport) else {
+            return Vec::new();
+        };
+        let end = block.start + block.map.size;
+        if range.start > end || range.end < block.start {
+            return Vec::new();
+        }
+        let first = visible.start;
+        let lines = &block.lines[visible.clone()];
+        let a = Self::text_offset(block, range.start.clamp(block.start, end));
+        let b = Self::text_offset(block, range.end.clamp(block.start, end));
+        let through = range.end > end;
+        if range.is_empty() {
+            let caret_line = block
+                .lines
+                .partition_point(|line| line.start <= a)
+                .saturating_sub(1);
+            if !visible.contains(&caret_line) {
+                return Vec::new();
+            }
+            let caret = block
+                .geometry
+                .as_ref()
+                .and_then(|g| g.caret_rect(TextPosition::new(a, nsh_core::Affinity::Downstream)))
+                .or_else(|| {
+                    let l = &block.lines[caret_line];
+                    Some(Bounds::new(
+                        Point::new(fallback_x(l, a), l.y),
+                        Size::new(px(0.0), l.height),
+                    ))
+                });
+            return caret
+                .filter(|r| {
+                    origin.y + r.origin.y < viewport.end
+                        && origin.y + r.origin.y + r.size.height > viewport.start
+                })
+                .map(|r| vec![Bounds::new(r.origin, Size::new(px(3.0), r.size.height))])
+                .unwrap_or_default();
+        }
+        let mut boxes = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let lo = a.max(line.start);
+            let hi = b.min(line.end);
+            if lo < hi {
+                if lo == line.start && hi == line.end {
+                    boxes.push(Bounds::new(
+                        Point::new(line.x, line.y),
+                        Size::new(line.width.max(px(3.0)), line.height),
+                    ));
+                } else if let Some(g) = &block.geometry {
+                    boxes.extend(g.range_rects(lo..hi));
+                } else {
+                    fallback_range_rects(std::slice::from_ref(line), lo..hi, &mut boxes);
+                }
+            }
+            // A selected block boundary, including an empty paragraph, has
+            // a visible width even though it contains no glyph.
+            let has_break = match block.lines.get(first + i + 1) {
+                Some(next) => line.end < next.start && a <= line.end && b > line.end,
+                None => through,
+            };
+            if has_break {
+                let x = line.x + line.width;
+                if let Some(last) = boxes.last_mut()
+                    && last.origin.y == line.y
+                    && last.origin.x <= x
+                    && x <= last.origin.x + last.size.width + px(0.5)
+                {
+                    last.size.width = last.size.width.max(x + px(3.0) - last.origin.x);
+                } else {
+                    boxes.push(Bounds::new(
+                        Point::new(x, line.y),
+                        Size::new(px(3.0), line.height),
+                    ));
+                }
+            }
+        }
+        boxes
+    }
+
     /// The place at `p` (content box): an atom it is on, else the nearest
     /// textblock's nearest position.
     pub(crate) fn hit(&self, p: Point<Points>) -> Option<Hit> {
@@ -725,6 +838,91 @@ mod tests {
         assert_eq!(m.to_doc(3), 3);
         assert_eq!(m.to_doc(5), 4);
         assert_eq!(m.to_doc(6), 5);
+    }
+
+    #[test]
+    fn long_text_outline_clips_visual_lines_and_marks_the_wrapped_caret_once() {
+        let n = 12_000u32;
+        let mut geo = Geometry::default();
+        let lines = (0..n)
+            .map(|i| TextLine {
+                start: 4 * i,
+                end: 4 * (i + 1),
+                x: px(3.),
+                y: px(i as f32 * 10.),
+                width: px(32.),
+                height: px(10.),
+                ..Default::default()
+            })
+            .collect();
+        let units = 4 * n;
+        let text = TextGeo {
+            start: 1,
+            lines,
+            map: InlineMap {
+                runs: vec![Run {
+                    doc: 0,
+                    doc_len: units as usize,
+                    text: 0,
+                    text_len: units,
+                    side: 0,
+                }],
+                size: units as usize,
+                len: units,
+            },
+            ..Default::default()
+        };
+        geo.frames.insert(
+            1,
+            (
+                Some(DOC),
+                Bounds::new(
+                    Point::new(px(9.), px(20.)),
+                    Size::new(px(100.), px(120_000.)),
+                ),
+            ),
+        );
+        geo.texts.insert(1, text);
+        let top = px(90_020.);
+        let view = top..top + px(20.);
+        let entire = 1..1 + units as usize;
+        let rects = geo.visible_outline(1, &entire, view.clone());
+        assert_eq!(
+            geo.visible_offsets(1, &view),
+            Some((1 + 4 * 9000, 1 + 4 * 9002))
+        );
+        assert_eq!(rects.len(), 2);
+        assert_eq!(
+            rects[0],
+            Bounds::new(Point::new(px(3.), px(90_000.)), Size::new(px(32.), px(10.)))
+        );
+        let second = 1 + 4 * 9001;
+        let partial = geo.visible_outline(1, &(second + 1..second + 3), view.clone());
+        assert_eq!(
+            partial,
+            [Bounds::new(
+                Point::new(px(11.), px(90_010.)),
+                Size::new(px(16.), px(10.))
+            )]
+        );
+        assert_eq!(
+            geo.visible_outline(1, &(second..second), view.clone()),
+            [Bounds::new(
+                Point::new(px(3.), px(90_010.)),
+                Size::new(px(3.), px(10.))
+            )]
+        );
+        let next = second + 4;
+        assert!(
+            geo.visible_outline(1, &(next..next), view.clone())
+                .is_empty()
+        );
+        assert_eq!(
+            geo.visible_outline(1, &(next..next), view.end..view.end + px(10.))
+                .len(),
+            1
+        );
+        assert!(geo.visible_outline(1, &(1..2), view).is_empty());
     }
 
     #[test]

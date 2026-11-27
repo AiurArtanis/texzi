@@ -1,4 +1,5 @@
 //! Application shell. Native menus and the palette share command identities.
+pub(crate) mod find_panel;
 mod large_file;
 use crate::editor_owner::SaveError;
 use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
@@ -167,31 +168,33 @@ impl Document {
     }
 }
 
-async fn wait_for_editor_frame(reference: ElementRef) {
+async fn wait_for_editor_frame(reference: ElementRef) -> bool {
     // The first task runs after this turn's mount, allowing the ref to point
     // to the new element before observing native presentations.
     if run_on_main_thread(|| ()).await.is_err() {
-        return;
+        return false;
     }
-    let Some(node) = reference.node() else { return };
+    let Some(node) = reference.node() else {
+        return false;
+    };
     let Ok(Some((baseline, _))) =
         run_on_main_thread(move || nsh_platform_windows::node_presentation(node, None)).await
     else {
-        return;
+        return false;
     };
     while reference.node() == Some(node) {
         let _ = next_frame().await;
-        if !matches!(
-            run_on_main_thread(move || nsh_platform_windows::node_presentation(
-                node,
-                Some(baseline)
-            ))
-            .await,
-            Ok(Some((_, false)))
-        ) {
-            break;
+        match run_on_main_thread(move || {
+            nsh_platform_windows::node_presentation(node, Some(baseline))
+        })
+        .await
+        {
+            Ok(Some((_, true))) => return true,
+            Ok(Some((_, false))) => {}
+            _ => return false,
         }
     }
+    false
 }
 // Toolbar and command-palette entries share the same per-view drafts and
 // confirmation methods. Neither surface owns a second editable document.
@@ -284,6 +287,8 @@ fn bind_shell_shortcuts(run: Rc<dyn Fn(&str)>) {
             key,
             KeyOptions {
                 when: nsh_core::keymap::When::Always,
+                // The workspace owns find history, including after its panel closes.
+                over_focused: matches!(id, "texzi.find.next" | "texzi.find.previous"),
                 ..Default::default()
             },
             move |_| run(id),
@@ -344,7 +349,7 @@ struct Shell {
     panel: Signal<String>,
     query: Signal<String>,
     palette_query: Signal<String>,
-    replacement: Signal<String>,
+    find_panel: find_panel::State,
     zen: Signal<bool>,
     zen_exit: Rc<crate::zen_state::ZenState>,
     chord: Signal<bool>,
@@ -597,7 +602,7 @@ impl Shell {
             panel: signal(String::new()),
             query: signal(String::new()),
             palette_query: signal(String::new()),
-            replacement: signal(String::new()),
+            find_panel: find_panel::State::new(),
             zen: signal(false),
             zen_exit: crate::zen_state::ZenState::new(),
             chord: signal(false),
@@ -645,6 +650,7 @@ impl Shell {
             );
         effect(move || set_color_scheme(theme.get()));
         auto_save::install(&s);
+        find_panel::install(&s);
         // Notify observers must precede actual Shell bindings: NSH chooses
         // one newest match, so later registration could shadow a real command.
         let reset = s.zen_exit.clone();
@@ -890,6 +896,9 @@ impl Shell {
             && large_file::requires_editable(id)
         {
             return Some("此标签尚未载入完整编辑模型，分页内容仅供查看和复制。".into());
+        }
+        if find_panel::Toggle::command(id).is_some() && !find_panel::is_open(&self.panel.get()) {
+            return Some("请先打开文内查找".into());
         }
         if id == "texzi.editor.toggleWrap"
             && self.current().is_some_and(|doc| doc.source_wrap_limited())
@@ -1503,23 +1512,7 @@ impl Shell {
         }
     }
     fn find(self: &Rc<Self>, previous: bool) {
-        let Some(doc) = self.current() else {
-            return;
-        };
-        let scope = if doc.gate.rich_mode.get() {
-            "正文"
-        } else {
-            "源码"
-        };
-        match doc.gate.find_literal(&self.query.get(), previous) {
-            Ok((n, total)) => {
-                self.notice.set(format!("{scope} · {n}/{total}"));
-                if n > 0 {
-                    self.restore_editor_focus();
-                }
-            }
-            Err(e) => self.notice.set(e),
-        }
+        find_panel::navigate(self, previous);
     }
     fn source_action(&self, command: EditorCommand) -> Result<(), String> {
         let doc = self.current().ok_or("没有活动文档")?;
@@ -1746,10 +1739,32 @@ impl Shell {
     }
 
     fn close_panel(self: &Rc<Self>) {
+        let closing_find = find_panel::is_open(&self.panel.get());
+        let previous = closing_find.then(|| self.current()).flatten();
+        self.find_panel.close();
         self.zen_exit.reset();
         self.cancel_quick(false);
         self.panel.set(String::new());
-        self.restore_editor_focus();
+        if let Some(doc) = previous {
+            self.focus_active_page();
+            let shell = Rc::downgrade(self);
+            self.owner.run(|| {
+                spawn(async move {
+                    let _ = next_frame().await;
+                    if let Some(shell) = shell.upgrade()
+                        && shell.panel.get().is_empty()
+                        && !shell.modal.get()
+                        && shell
+                            .current()
+                            .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                    {
+                        shell.focus_active_page();
+                    }
+                })
+            });
+        } else if !closing_find {
+            self.restore_editor_focus();
+        }
     }
     fn search_folder(self: &Rc<Self>) {
         let Some(root) = self.root.get() else {
@@ -1819,6 +1834,10 @@ impl Shell {
         self.owner.run(|| self.run_ready(id));
     }
     fn run_ready(self: &Rc<Self>, id: &str) {
+        if let Some(option) = find_panel::Toggle::command(id) {
+            find_panel::change(self, option);
+            return;
+        }
         if crate::rich_commands::handles(id) {
             self.markdown_command(id);
             return;
@@ -1843,11 +1862,13 @@ impl Shell {
             "texzi.navigation.gotoLine"=>{if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}}self.query.set(String::new());self.panel.set("line".into());self.notice.set("转到行的范围已切换为源码".into());},
             "texzi.group.focusIndex"=>self.panel.set("groups".into()),
             "texzi.markdown.toggleSource"=>if let Some(doc)=self.current(){let target = !doc.displayed_rich(); self.request_mode(doc, target);},
-            "texzi.find.open"|"texzi.find.replaceOpen"=>{let replace=id.ends_with("replaceOpen");if replace{if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}}}self.panel.set(if replace{"replace"}else{"find"}.into());let scope=if self.current().is_some_and(|d|d.gate.rich_mode.get()){"正文"}else{"源码"};self.notice.set(format!("查找范围：{scope} · 普通文字 · 区分大小写"));},
+            "texzi.find.open"|"texzi.find.replaceOpen"=>find_panel::open(self,id.ends_with("replaceOpen")),
             "texzi.find.next"=>self.find(false),"texzi.find.previous"=>self.find(true),"texzi.find.close"=>self.close_panel(),
-            "texzi.find.replaceOne"|"texzi.find.replaceAll"=>if let Some(doc)=self.current(){doc.gate.to_source();if doc.gate.rich_mode.get(){self.notice.set(doc.gate.status.get());return;}match doc.source.replace_literal(&self.query.get(),&self.replacement.get(),id.ends_with("All")){Ok(n)=>{self.notice.set(format!("源码 · 已替换 {n} 处，可一次撤销"));self.restore_editor_focus();},Err(e)=>self.notice.set(e)}},
+            "texzi.find.replaceOne"|"texzi.find.replaceAll"=>find_panel::replace(self,id.ends_with("All")),
+            "texzi.multicursor.selectAllOccurrences" if find_panel::is_open(&self.panel.get())=>find_panel::select_all(self),
+            "texzi.find.selectAllMatches"=>find_panel::select_all(self),
             "texzi.appearance.light"=>self.set_theme("light"),"texzi.appearance.dark"=>self.set_theme("dark"),
-            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存和另存文档。编辑菜单提供查找和替换，外观菜单提供侧栏、自动换行和主题。\nCtrl+P 搜索文件，Ctrl+Shift+P 搜索命令。可搜索分屏或 Zen，亦可按 Ctrl+K Z 进入 Zen，连按两次 Esc 退出。编辑器右上可切换源码和富文本。"),
+            "texzi.help.guide"=>self.explain("使用说明","文件菜单可新建、打开、保存和另存文档。编辑菜单提供查找和替换，外观菜单提供侧栏、自动换行和主题。\nCtrl+P 搜索文件，Ctrl+Shift+P 搜索命令。可搜索分屏或 Zen，亦可按 Ctrl+K Z 进入 Zen，连按两次 Esc 退出。\n文内查找：Ctrl+F 打开、F3 或 Shift+F3 前后查找。可限定整词、大小写和打开前的选区。富文本普通查找匹配可见正文，正则和替换使用源码。\n正则采用 PCRE2 的 UTF/UCP 规则，多行锚点默认开启；点号默认不跨换行。替换支持 $&、$0、$1–$99、${name} 和 $$。全部替换可一次撤销。编辑器右上可切换源码和富文本。"),
             "texzi.help.about"=>self.explain("关于 texzi","texzi\n为日常文字、Markdown 与代码片段设计的 Windows 原生文本编辑器。"),
             _=>if let Some(command)=source_command(id){if let Err(e)=self.source_action(command){self.notice.set(e);}},
         }
@@ -2083,7 +2104,8 @@ impl Shell {
     }
 }
 pub(crate) fn supported(id: &str) -> bool {
-    crate::rich_commands::handles(id)
+    find_panel::Toggle::command(id).is_some()
+        || crate::rich_commands::handles(id)
         || source_command(id).is_some()
         || matches!(
             id,
@@ -2121,6 +2143,7 @@ pub(crate) fn supported(id: &str) -> bool {
                 | "texzi.find.inFolder"
                 | "texzi.find.replaceOne"
                 | "texzi.find.replaceAll"
+                | "texzi.find.selectAllMatches"
                 | "texzi.appearance.light"
                 | "texzi.appearance.dark"
                 | "texzi.help.guide"
@@ -2137,7 +2160,8 @@ fn line_column(value: &str) -> Result<(usize, usize), String> {
     }
 }
 fn document_action(id: &str) -> bool {
-    source_command(id).is_some()
+    find_panel::Toggle::command(id).is_some()
+        || source_command(id).is_some()
         || crate::rich_commands::handles(id)
         || matches!(
             id,
@@ -2149,6 +2173,7 @@ fn document_action(id: &str) -> bool {
                 | "texzi.find.previous"
                 | "texzi.find.replaceOne"
                 | "texzi.find.replaceAll"
+                | "texzi.find.selectAllMatches"
                 | "texzi.editor.toggleWrap"
                 | "texzi.navigation.gotoLine"
                 | "texzi.markdown.toggleSource"
@@ -2220,6 +2245,7 @@ fn bind_chord_continuations(run: Rc<dyn Fn(Option<&'static str>)>) {
                 "enter",
                 "space",
                 "tab",
+                "f3",
                 "\\",
             ]
             .into_iter()
@@ -2429,6 +2455,17 @@ fn scan_folder(root: PathBuf, query: String, cancel: Arc<AtomicBool>) -> SearchR
 }
 
 fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
+    let history_shell = Rc::downgrade(&s);
+    let history_doc = Rc::downgrade(&doc);
+    doc.gate.bind_history_pane(s.owner, move || {
+        let (Some(shell), Some(pane)) = (history_shell.upgrade(), history_doc.upgrade()) else {
+            return false;
+        };
+        shell.second_active.get() == second
+            && pane.pending_mode.get().is_none()
+            && !shell.modal.get()
+            && shell.current().is_some_and(|d| Rc::ptr_eq(&d, &pane))
+    });
     provide_context(doc.source.buffer());
     let document = doc.id;
     let reference = doc.reference;
@@ -2447,6 +2484,8 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let map_source = doc.source.clone();
     let map_document = doc.clone();
     let lines_shell = s.clone();
+    let finder = s.clone();
+    let find_doc = doc.clone();
     let body = doc.body;
     let source_focus = s.second_active;
     let rich_focus = s.second_active;
@@ -2571,13 +2610,23 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                         && map_shell.preference(settings::MINIMAP) == true
                 });
                 let viewport = signal((0, 0));
+                let find_feedback = finder.clone();
+                let find_target = find_doc.clone();
+                let find_scroll = finder.clone();
+                let scroll_doc = find_doc.clone();
+                let find_marks = finder.clone();
+                let mark_doc = find_doc.clone();
                 let editor = nsh_base::editor::editor()
                     .element_ref(&body)
                     .component_ref(&reference)
                     .anchor_wrap_reflow(true)
-                    .viewport_feedback(move || map_enabled.get())
+                    .decorations(move || find_panel::source_marks(&find_marks, &mark_doc))
+                    .viewport_feedback(move || {
+                        map_enabled.get() || find_panel::active(&find_feedback, &find_target)
+                    })
                     .on_viewport_change(move |range: &nsh_base::editor::EditorRange| {
                         viewport.set((range.start.line, range.end.line));
+                        find_panel::source_viewport(&find_scroll, &scroll_doc, *range);
                     })
                     .auto_focus(move || {
                         settings_tab.get() != SettingsTab::Active && source_focus.get() == second
@@ -2685,6 +2734,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
             },
         ))
         .child(content)
+        .child(find_panel::overlay(s.clone(), doc.clone()))
         .child(when(rich_mode, move || {
             format_button(format_shell.clone(), format_doc.clone(), second)
         }))
@@ -3875,11 +3925,10 @@ fn quick_panel(s: Rc<Shell>, files: bool) -> impl IntoElement {
 
 fn panel(s: Rc<Shell>) -> Option<AnyElement> {
     let mode = s.panel.get();
-    if mode.is_empty() || is_quick_panel(&mode) {
+    if mode.is_empty() || is_quick_panel(&mode) || find_panel::is_open(&mode) {
         return None;
     }
     let query = s.query;
-    let replacement = s.replacement;
     let close = s.clone();
     let mut panel = view().p(px(8.0)).gap(px(8.0)).bg(frame).child(
         nsh_base::button()
@@ -4019,81 +4068,6 @@ fn panel(s: Rc<Shell>) -> Option<AnyElement> {
                         }
                     }),
             );
-    } else {
-        let find = s.clone();
-        let query_composing = signal(false);
-        let replacement_composing = signal(false);
-        let scope = if s.current().is_some_and(|d| d.gate.rich_mode.get()) {
-            "正文"
-        } else {
-            "源码"
-        };
-        panel = panel
-            .child(text(format!("{scope} · 普通文字 · 区分大小写")))
-            .child(
-                input()
-                    .value(move || query.get())
-                    .placeholder("查找文字")
-                    .on_change(move |v: &str| query.set(v.into()))
-                    .on_composition_change(move |event: &Composition| {
-                        query_composing.set(event.composing)
-                    })
-                    .auto_focus(true)
-                    .on_submit(move |_: &str| find.find(false)),
-            )
-            .child(
-                view()
-                    .flex_row()
-                    .gap(px(8.0))
-                    .child(button("上一个", s.clone(), "texzi.find.previous"))
-                    .child(button("下一个", s.clone(), "texzi.find.next")),
-            );
-        if mode == "replace" {
-            let escape = s.clone();
-            effect(move || {
-                if escape.chord.get() {
-                    return;
-                }
-                let escape = escape.clone();
-                // Windows treats Escape as a text key. Keep receiving it while
-                // the panel is open, and let native input cancel composition.
-                on_key_with(
-                    "escape",
-                    KeyOptions {
-                        when: nsh_core::keymap::When::Always,
-                        pass_through: true,
-                        ..Default::default()
-                    },
-                    move |_| {
-                        if escape.panel.get() == "replace"
-                            && !escape.chord.get()
-                            && !escape.escape_blocked()
-                            && !query_composing.get()
-                            && !replacement_composing.get()
-                        {
-                            escape.close_panel();
-                        }
-                    },
-                );
-            });
-            panel = panel
-                .child(
-                    input()
-                        .value(move || replacement.get())
-                        .placeholder("替换为")
-                        .on_composition_change(move |event: &Composition| {
-                            replacement_composing.set(event.composing)
-                        })
-                        .on_change(move |v: &str| replacement.set(v.into())),
-                )
-                .child(
-                    view()
-                        .flex_row()
-                        .gap(px(8.0))
-                        .child(button("替换当前", s.clone(), "texzi.find.replaceOne"))
-                        .child(button("全部替换", s, "texzi.find.replaceAll")),
-                );
-        }
     }
     Some(panel.into_element())
 }

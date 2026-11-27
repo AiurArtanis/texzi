@@ -10,6 +10,7 @@
 use std::ops::Range;
 
 use nsh_core::geometry::Points;
+use texzi_word::{Class, class_of};
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
 use super::{buffer::Buffer, types::RowLayout};
@@ -72,42 +73,6 @@ pub(crate) fn prev_grapheme(buffer: &Buffer, offset: usize) -> usize {
             Err(_) => return offset - buffer.char_before(offset).map_or(0, char::len_utf8),
         }
     }
-}
-
-/// What a grapheme counts as, for word boundaries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Class {
-    Space,
-    Word,
-    /// CJK ideographs, kana and Hangul: a run of them is one word (there is
-    /// no dictionary), apart from Latin words next to them.
-    Ideograph,
-    Punct,
-}
-
-impl Class {
-    /// What VS Code calls a regular character: part of a word.
-    fn is_word(self) -> bool {
-        matches!(self, Class::Word | Class::Ideograph)
-    }
-}
-
-fn class_of(c: char, word_chars: &str) -> Class {
-    if c.is_whitespace() {
-        Class::Space
-    } else if is_ideograph(c) {
-        Class::Ideograph
-    } else if c.is_alphanumeric() || c == '_' || word_chars.contains(c) {
-        Class::Word
-    } else {
-        Class::Punct
-    }
-}
-
-fn is_ideograph(c: char) -> bool {
-    matches!(c as u32,
-        0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF
-        | 0xF900..=0xFAFF | 0x20000..=0x3134F)
 }
 
 /// The class of the grapheme at `offset` (by its first char; a grapheme's
@@ -753,6 +718,13 @@ mod tests {
 
     #[test]
     fn double_click_ranges() {
+        let scripts = Buffer::new("猫alpha猫咪カ한a‿b1e\u{301}");
+        for (inside, bytes) in [(0, 0..3), (4, 3..8), (14, 8..20), (24, 20..29)] {
+            assert_eq!(word_range(&scripts, inside, W), bytes);
+        }
+        let marked_han = Buffer::new("猫\u{301}alpha");
+        assert_eq!(word_range(&marked_han, 0, W), 0..5);
+        assert_eq!(word_range(&marked_han, 5, W), 5..10);
         let buffer = Buffer::new("let foo_bar = (x);\n\nend");
         assert_eq!(word_range(&buffer, 5, W), 4..11);
         // At a word's end, the word before rather than the space.

@@ -376,6 +376,16 @@ fn ShortcutFixture() -> impl IntoElement {
 }
 
 #[component]
+fn FocusedSourceShortcutFixture() -> impl IntoElement {
+    let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
+    bind_fixture_shortcuts(probe.clone());
+    provide_context(NativeView::fixture("first\nsecond").buffer());
+    nsh_base::editor::editor()
+        .auto_focus(true)
+        .on_focus(move |_: &()| probe.focus_events.set(probe.focus_events.get() + 1))
+}
+
+#[component]
 fn FocusedZenFixture() -> impl IntoElement {
     let probe = PROBE.with(|p| p.borrow().as_ref().unwrap().clone());
     let shell = super::Shell::new();
@@ -655,6 +665,55 @@ fn actual_shell_ctrl_o_fires_once_in_input_and_held_repeat_emits_no_second_open_
     assert_eq!(fixture.probe.input_changes.get(), 0);
     fixture.cancel_request(request);
     assert_eq!(fixture.probe.answers.get(), 1);
+}
+
+#[test]
+fn real_source_f3_and_shift_f3_route_once_to_shell_and_yield_to_pending_chords() {
+    let focused_editor = |install_shell| {
+        Harness::with_root(
+            install_shell,
+            Root::new::<FocusedSourceShortcutFixture>(|| ()),
+        )
+    };
+    {
+        let mut editor_only = focused_editor(false);
+        for key in ["f3", "shift+f3"] {
+            // The focused Editor installs its own repeatable find commands.
+            assert!(matches!(editor_only.press(key, false), KeyMatch::Fire(_)));
+            assert!(matches!(editor_only.press(key, true), KeyMatch::Fire(_)));
+        }
+        assert!(editor_only.probe.calls.borrow().is_empty());
+    }
+
+    let mut fixture = focused_editor(true);
+    for key in ["f3", "shift+f3"] {
+        assert!(matches!(fixture.press(key, false), KeyMatch::Fire(_)));
+        assert_eq!(fixture.press(key, true), KeyMatch::Held);
+    }
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        ["texzi.find.next", "texzi.find.previous"]
+    );
+
+    for key in ["f3", "shift+f3"] {
+        assert!(fixture.press("ctrl+k", false).consumed());
+        assert!(fixture.press(key, false).consumed());
+    }
+    assert_eq!(fixture.probe.cancellations.get(), 2);
+    assert!(fixture.press("ctrl+k", false).consumed());
+    assert!(fixture.press("s", false).consumed());
+    assert!(fixture.press("shift+f3", false).consumed());
+    assert!(fixture.press("f3", false).consumed());
+    assert_eq!(
+        fixture.probe.calls.borrow().as_slice(),
+        [
+            "texzi.find.next",
+            "texzi.find.previous",
+            "texzi.file.saveAll",
+            "texzi.find.previous",
+            "texzi.find.next",
+        ]
+    );
 }
 
 #[test]

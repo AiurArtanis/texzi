@@ -201,6 +201,8 @@ pub struct ContentChange {
     pub token: StateToken,
     pub forward: Arc<[Delta]>,
     pub inverse: Arc<[Delta]>,
+    /// With a bulk map the Global event in this batch carries the shared root.
+    pub bulk: Option<BulkMap>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObserverEvent {
@@ -525,6 +527,7 @@ impl Store {
                 token: r.snapshot.token,
                 forward: r.forward.into(),
                 inverse: r.inverse.into(),
+                bulk: r.bulk,
             })
         });
         let record = Arc::new(Record {
