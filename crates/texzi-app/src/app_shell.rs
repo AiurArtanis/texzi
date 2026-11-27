@@ -4473,12 +4473,10 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
     let scanning = s.quick_scanning;
     let stop = s.clone();
     let description = local_glass_description("muted-readable");
-    view()
-        .relative()
+    let content = view()
         .rounded(px(12.0))
         .overflow_hidden()
         .p(border_width)
-        .child(local_glass_surface(px(12.0)))
         .child(
             nsh_base::command()
                 .items(move || {
@@ -4605,7 +4603,12 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
                 .py(px(6.0))
                 .text_color(description)
                 .text_size(px(font_size("meta"))),
-        )
+        );
+    // Clip the controls after the glass has sampled the surrounding workbench.
+    view()
+        .relative()
+        .child(local_glass_surface(px(12.0)))
+        .child(content)
 }
 
 fn folder_search_panel(s: Rc<Shell>) -> impl IntoElement {
