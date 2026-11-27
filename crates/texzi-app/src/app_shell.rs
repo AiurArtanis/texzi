@@ -115,6 +115,7 @@ struct Document {
     retained_scroll: Signal<Option<(bool, f32, f32)>>,
     auto_save: Rc<auto_save::State>,
     pending_mode: Signal<Option<bool>>,
+    import_complete: Cell<bool>,
     progress: ElementRef,
     body: ElementRef,
 }
@@ -933,6 +934,7 @@ impl Shell {
             retained_scroll: self.owner.run(|| signal(None)),
             auto_save: self.owner.run(|| Rc::new(auto_save::State::new())),
             pending_mode: self.owner.run(|| signal(None)),
+            import_complete: Cell::new(false),
             progress: self.owner.run(element_ref),
             body: self.owner.run(element_ref),
         })
@@ -1693,6 +1695,7 @@ impl Shell {
             retained_scroll: signal(None),
             auto_save: doc.auto_save.clone(),
             pending_mode: signal(None),
+            import_complete: Cell::new(doc.import_complete.get()),
             progress: element_ref(),
             body: element_ref(),
         });
@@ -1921,8 +1924,6 @@ impl Shell {
         restore_position: bool,
     ) {
         if target_rich && doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES {
-            self.notice
-                .set("此大文件使用源码模式，已关闭语法高亮".into());
             return;
         }
         if doc.pending_mode.get().is_some() || doc.gate.rich_mode.get() == target_rich {
@@ -3689,6 +3690,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
 
 const LARGE_SOURCE_NO_HIGHLIGHT: &str = "大文件 · 无高亮";
 const LARGE_SOURCE_NO_WRAP: &str = "已暂停自动换行";
+const LARGE_IMPORT_COMPLETE: &str = "大文件加载完成 · 可编辑";
 
 fn source_protection(doc: &Document) -> (bool, bool) {
     doc.source.track();
@@ -3698,73 +3700,84 @@ fn source_protection(doc: &Document) -> (bool, bool) {
     )
 }
 
+fn workbench_status(document: &Shell) -> (String, &'static str) {
+    let mut message = document.notice.get();
+    let current = document.current();
+    let import_complete = message.is_empty()
+        && current
+            .as_ref()
+            .is_some_and(|doc| doc.import_complete.get());
+    if import_complete {
+        message = LARGE_IMPORT_COMPLETE.to_owned();
+    }
+    let dirty = current.as_ref().is_some_and(|doc| {
+        doc.source.track();
+        doc.needs_close_confirmation()
+    });
+    let large = current.as_ref().and_then(|doc| doc.large.as_ref());
+    let important = |message: &str| {
+        ["失败", "未能", "无法", "错误"]
+            .iter()
+            .any(|part| message.contains(part))
+    };
+    let tone = if important(&message) {
+        "error-fg"
+    } else if dirty || large.is_some() {
+        "warning-fg"
+    } else if message.starts_with("已保存") {
+        "success-fg"
+    } else {
+        "muted-readable"
+    };
+    let message = match (dirty, message.is_empty() || message.starts_with("已保存")) {
+        (true, true) => "未保存".to_owned(),
+        (true, false) => format!("{message} · 未保存"),
+        (false, _) if message.is_empty() && large.is_none() => "就绪".to_owned(),
+        _ => message,
+    };
+    let message = if let Some(large) = large {
+        let state = large.status();
+        if message.is_empty() {
+            state
+        } else if important(&message) {
+            format!("{message} · {state}")
+        } else {
+            format!("{state} · {message}")
+        }
+    } else {
+        message
+    };
+    if document.compact_menu()
+        && let Some(doc) = current
+            .as_ref()
+            .filter(|doc| doc.large.is_none() && !doc.displayed_rich())
+    {
+        let hints = match source_protection(doc) {
+            (true, true) => Some(format!(
+                "{LARGE_SOURCE_NO_HIGHLIGHT} · {LARGE_SOURCE_NO_WRAP}"
+            )),
+            (true, false) => Some(LARGE_SOURCE_NO_HIGHLIGHT.to_owned()),
+            (false, true) => Some(LARGE_SOURCE_NO_WRAP.to_owned()),
+            (false, false) => None,
+        };
+        if let Some(hints) = hints {
+            return if important(&message) {
+                (format!("{message} · {hints}"), tone)
+            } else if dirty {
+                (format!("未保存 · {hints}"), "warning-fg")
+            } else if import_complete {
+                (format!("{hints} · {LARGE_IMPORT_COMPLETE}"), "warning-fg")
+            } else {
+                (hints, "warning-fg")
+            };
+        }
+    }
+    (message, tone)
+}
+
 fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
     let document = shell.clone();
-    let status = computed(move || {
-        let message = document.notice.get();
-        let current = document.current();
-        let dirty = current.as_ref().is_some_and(|doc| {
-            doc.source.track();
-            doc.needs_close_confirmation()
-        });
-        let large = current.as_ref().and_then(|doc| doc.large.as_ref());
-        let important = |message: &str| {
-            ["失败", "未能", "无法", "错误"]
-                .iter()
-                .any(|part| message.contains(part))
-        };
-        let tone = if important(&message) {
-            "error-fg"
-        } else if dirty || large.is_some() {
-            "warning-fg"
-        } else if message.starts_with("已保存") {
-            "success-fg"
-        } else {
-            "muted-readable"
-        };
-        let message = match (dirty, message.is_empty() || message.starts_with("已保存")) {
-            (true, true) => "未保存".to_owned(),
-            (true, false) => format!("{message} · 未保存"),
-            (false, _) if message.is_empty() && large.is_none() => "就绪".to_owned(),
-            _ => message,
-        };
-        let message = if let Some(large) = large {
-            let state = large.status();
-            if message.is_empty() {
-                state
-            } else if important(&message) {
-                format!("{message} · {state}")
-            } else {
-                format!("{state} · {message}")
-            }
-        } else {
-            message
-        };
-        if document.compact_menu()
-            && let Some(doc) = current
-                .as_ref()
-                .filter(|doc| doc.large.is_none() && !doc.displayed_rich())
-        {
-            let hints = match source_protection(doc) {
-                (true, true) => Some(format!(
-                    "{LARGE_SOURCE_NO_HIGHLIGHT} · {LARGE_SOURCE_NO_WRAP}"
-                )),
-                (true, false) => Some(LARGE_SOURCE_NO_HIGHLIGHT.to_owned()),
-                (false, true) => Some(LARGE_SOURCE_NO_WRAP.to_owned()),
-                (false, false) => None,
-            };
-            if let Some(hints) = hints {
-                return if important(&message) {
-                    (format!("{message} · {hints}"), tone)
-                } else if dirty {
-                    (format!("未保存 · {hints}"), "warning-fg")
-                } else {
-                    (hints, "warning-fg")
-                };
-            }
-        }
-        (message, tone)
-    });
+    let status = computed(move || workbench_status(&document));
     view()
         .h(px(metric("status")))
         .flex_shrink_0()

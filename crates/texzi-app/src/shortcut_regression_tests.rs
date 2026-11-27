@@ -178,6 +178,122 @@ fn document_navigation_leaves_settings_without_mutating_retained_editors() {
     }
 }
 
+#[component]
+fn LargeImportStatusFixture() -> impl IntoElement {
+    use texzi_document::{
+        Eol,
+        files::{Encoding, Format},
+    };
+
+    let shell = super::Shell::new();
+    assert_eq!(
+        shell.compact_menu(),
+        nsh_core::element::window().width.0 < crate::origami::metric("compactBelow")
+    );
+    // Only the recorded disk baseline needs to cross A13's boundary. Keep the
+    // live text small so the fixture exercises status and group routing only.
+    let source = NativeView::recover_file(
+        Arc::from("# Large fixture\n"),
+        Format {
+            encoding: Encoding::Utf8,
+            bom: false,
+        },
+        Eol::Lf,
+        Some(Arc::from(vec![
+            b'x';
+            super::large_file::SOURCE_ONLY_BYTES as usize
+                + 1
+        ])),
+    )
+    .unwrap();
+    let large = shell.add_with_mode(source, Some(r"C:\texzi-test\large.md".into()), Some(false));
+    large.import_complete.set(true);
+    shell.request_mode(large.clone(), true);
+    assert!(!large.displayed_rich());
+    assert!(large.pending_mode.get().is_none());
+    assert!(shell.notice.get().is_empty());
+
+    let assert_large = || {
+        let current = shell.current().unwrap();
+        assert_eq!(current.id, large.id);
+        assert!(current.import_complete.get());
+        assert_eq!(super::source_protection(&current), (true, true));
+        let (feedback, _) = super::workbench_status(&shell);
+        if shell.compact_menu() {
+            assert!(feedback.contains(super::LARGE_SOURCE_NO_HIGHLIGHT));
+            assert!(feedback.contains(super::LARGE_SOURCE_NO_WRAP));
+        } else {
+            assert!(feedback.contains(super::LARGE_IMPORT_COMPLETE));
+        }
+    };
+    assert_large();
+    shell.mount_split(&large, false).unwrap();
+    shell.focus_group(2);
+    assert_large();
+    shell.focus_group(1);
+    assert_large();
+
+    let small = shell.add_with_mode(
+        NativeView::fixture("# Small fixture\n"),
+        Some(r"C:\texzi-test\small.md".into()),
+        Some(false),
+    );
+    let assert_small = || {
+        let current = shell.current().unwrap();
+        assert_eq!(current.id, small.id);
+        assert_eq!(super::source_protection(&current), (false, false));
+        let (feedback, _) = super::workbench_status(&shell);
+        assert!(!feedback.contains("大文件"));
+        assert!(!feedback.contains("语法高亮"));
+    };
+    assert_small();
+    shell.focus_group(2);
+    assert_large();
+    shell.focus_group(1);
+    assert_small();
+    shell.activate_primary(large.id);
+    assert_large();
+    shell.notice.set("保存失败 · 目标只读".into());
+    shell.activate_primary(small.id);
+    assert_small();
+    assert!(
+        super::workbench_status(&shell)
+            .0
+            .contains("保存失败 · 目标只读")
+    );
+    super::render_shell(shell)
+}
+
+#[test]
+fn large_import_status_follows_the_active_document_in_wide_and_compact_groups() {
+    use nsh_core::{
+        desktop::{WindowMode, WindowPlacement, WindowState},
+        geometry::{Bounds, point},
+    };
+    for width in [880.0, 333.0] {
+        let size = Size {
+            width: px(width),
+            height: px(600.0),
+        };
+        let bounds = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size,
+        };
+        let mut window = WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+        window.focused = true;
+        window.visible = true;
+        let mut environment = Environment::default();
+        environment.os = Os::Windows;
+        environment.window = size;
+        environment.window_state = Some(window);
+        let mut core = Core::new(ApproxTextEngine, size);
+        core.set_environment(environment);
+        core.mount_root(&Root::new::<LargeImportStatusFixture>(|| ()));
+        core.run_component_tasks();
+        core.commit();
+    }
+}
+
 #[test]
 fn compact_title_keeps_the_quick_search_input_below_the_system_controls() {
     use nsh_core::{

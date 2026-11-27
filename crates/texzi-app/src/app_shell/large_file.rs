@@ -650,6 +650,7 @@ impl Shell {
                                 view.restore_source(&source);
                             }
                             let doc = shell.make_document(job.doc.id, source, path, None, false);
+                            doc.import_complete.set(named);
                             if let Some(view) = restored {
                                 view.restore_in_mode(&doc, start_rich);
                             }
@@ -672,17 +673,14 @@ impl Shell {
                                     restored.is_some_and(|view| view.rich && view.has_scroll()),
                                 );
                             }
-                            if shell
-                                .current()
-                                .is_some_and(|current| Rc::ptr_eq(&current, &doc))
+                            if !named
+                                && shell
+                                    .current()
+                                    .is_some_and(|current| Rc::ptr_eq(&current, &doc))
                             {
-                                shell.notice.set(if !named {
-                                    "原文件无法重新关联 · 草稿已恢复到未命名标签".into()
-                                } else if job.large.len > SOURCE_ONLY_BYTES {
-                                    "大文件已用源码打开 · 已关闭语法高亮".into()
-                                } else {
-                                    "大文件加载完成 · 可编辑".into()
-                                });
+                                shell
+                                    .notice
+                                    .set("原文件无法重新关联 · 草稿已恢复到未命名标签".into());
                             }
                         }
                         Err(PrepareError::LineLimit(encoding)) => {
