@@ -5,11 +5,30 @@ use nsh_core::{
     prelude::*,
 };
 use serde_json::Value;
-use std::sync::LazyLock;
+use std::{cell::Cell, rc::Rc, sync::LazyLock};
 
 static DESIGN: LazyLock<Value> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../assets/origami-tokens.json"))
         .expect("Origami design tokens")
+});
+
+static GLASS_TINTS: LazyLock<[nsh_core::Gradient; 2]> = LazyLock::new(|| {
+    ["light", "dark"].map(|theme| {
+        let css = DESIGN["themes"][theme]["glass-bg"]
+            .as_str()
+            .expect("Origami glass gradient");
+        let mut style = nsh_core::Style::default();
+        style
+            .set("backgroundImage", nsh_core::StyleValue::Str(css))
+            .expect("Origami glass gradient parses");
+        style
+            .view
+            .effects
+            .as_deref()
+            .and_then(|effect| effect.background_images.first())
+            .expect("Origami glass gradient resolved")
+            .clone()
+    })
 });
 
 const ALIASES: &[(&str, &str)] = &[
@@ -132,6 +151,69 @@ pub(super) fn border_width() -> Points {
     px(tokens().number("workbench-border").unwrap_or(1.0))
 }
 
+/// First, non-interactive child of a relatively positioned HUD card.
+pub(super) fn local_glass_surface(radius: Points) -> View {
+    let preference = use_context::<VisualPreferences>();
+    let reference = element_ref();
+    let requested = Rc::new(Cell::new(None));
+    let registered = signal(false);
+    let enabled =
+        move || registered.get() && preference.is_some_and(|value| value.0.get().local_glass());
+    let style = nsh_platform_windows::LocalGlassStyle {
+        tint: &GLASS_TINTS,
+        glass_border: px(1.0),
+    };
+    view()
+        .absolute()
+        .inset(px(0.0))
+        .pointer_events(PointerEvents::None)
+        .accessible(false)
+        .element_ref(&reference)
+        .rounded(radius)
+        .border(px(metric("highContrastBorder")))
+        .border_color(|| color("ink-2"))
+        .bg(|| color("glass-solid"))
+        .style_when(enabled, |style| {
+            style
+                .backdrop_blur(px(metric("hudBlur")))
+                .backdrop_saturate(metric("hudSaturate"))
+        })
+        .on_layout(move |_: &Bounds<Points>| {
+            let Some(node) = reference.node() else { return };
+            if requested.replace(Some(node)) == Some(node) {
+                return;
+            }
+            registered.set(false);
+            let requested = requested.clone();
+            spawn(async move {
+                let result =
+                    run_on_main_thread(move || nsh_platform_windows::set_local_glass(node, style))
+                        .await;
+                if reference.node() == Some(node) {
+                    if matches!(result, Ok(true)) {
+                        registered.set(true);
+                    } else {
+                        requested.set(None);
+                    }
+                }
+            });
+        })
+}
+
+/// Keeps descriptive text legible over either extreme of the glass backdrop.
+pub(super) fn local_glass_description(
+    solid_token: &'static str,
+) -> impl Fn() -> AdaptiveColor + Copy {
+    let preference = use_context::<VisualPreferences>();
+    move || {
+        if preference.is_some_and(|value| value.0.get().local_glass()) {
+            AdaptiveColor::rgb(0x444a5b, 0xb4bdcc)
+        } else {
+            color(solid_token)
+        }
+    }
+}
+
 pub(super) fn ribbon<S: Styled>(style: S) -> S {
     style
         .bg_linear(deg(120.0))
@@ -163,8 +245,11 @@ impl VisualPreferences {
         let current = signal(SystemVisuals::read(None));
         let refresh = move || {
             spawn(async move {
-                if let Ok(observed) =
-                    run_on_main_thread(move || SystemVisuals::read(Some(title))).await
+                if let Ok(observed) = run_on_main_thread(move || {
+                    nsh_platform_windows::refresh_local_glass_pressure();
+                    SystemVisuals::read(Some(title))
+                })
+                .await
                     && current.get_untracked() != observed
                 {
                     current.set(observed);
@@ -191,8 +276,12 @@ struct SystemVisuals {
 }
 
 impl SystemVisuals {
+    fn local_glass(self) -> bool {
+        self.transparency && self.high_contrast.is_none()
+    }
+
     fn mica(self) -> bool {
-        self.transparency && self.mica_applied && self.high_contrast.is_none()
+        self.local_glass() && self.mica_applied
     }
 
     fn palette(self) -> Tokens {
@@ -217,6 +306,7 @@ impl SystemVisuals {
                         "mica-sidebar",
                         "mica-statusbar",
                         "shell-solid",
+                        "glass-solid",
                     ][..],
                     system.surface,
                 ),
@@ -225,6 +315,8 @@ impl SystemVisuals {
                         "ink-1",
                         "ink-2",
                         "muted-readable",
+                        "glass-label",
+                        "glass-description",
                         "comment-readable",
                         "number-readable",
                         "syn-kw",
@@ -439,6 +531,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_glass_parses_both_design_gradients_as_three_stop_brushes() {
+        for tint in GLASS_TINTS.iter() {
+            assert_eq!(
+                tint.kind,
+                nsh_core::GradientKind::Linear { angle: deg(145.0) }
+            );
+            assert_eq!(tint.stops.len(), 3);
+            assert!(tint.stops.iter().all(|stop| stop.color.0 & 0xff < 0xff));
+        }
+    }
+
+    #[test]
+    fn local_glass_uses_transparency_preferences_independently_of_window_mica() {
+        let local_only = SystemVisuals {
+            transparency: true,
+            mica_applied: false,
+            high_contrast: None,
+        };
+        assert!(local_only.local_glass());
+        assert!(!local_only.mica());
+        assert!(
+            !SystemVisuals {
+                transparency: false,
+                ..local_only
+            }
+            .local_glass()
+        );
+    }
+
+    #[test]
     fn windows_fallback_preserves_opaque_paper_and_system_focus_colors() {
         let mica = SystemVisuals {
             transparency: true,
@@ -485,6 +607,11 @@ mod tests {
             contrast.color("background"),
             Some(rgb(system.surface).into())
         );
+        assert_eq!(
+            contrast.color("glass-solid"),
+            Some(rgb(system.surface).into())
+        );
+        assert_eq!(contrast.color("glass-label"), Some(rgb(system.text).into()));
         assert_eq!(
             contrast.color("selected-text"),
             Some(rgb(system.highlight_text).into())

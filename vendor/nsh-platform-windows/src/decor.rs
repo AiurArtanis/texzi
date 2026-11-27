@@ -24,6 +24,7 @@ mod cache;
 pub(crate) mod frozen_modal;
 mod gradient;
 pub(crate) mod layer;
+pub(crate) mod local_glass;
 
 /// Marks a drawing pass for the decoration cache: bitmaps it reads or
 /// makes are not the first evicted when it overflows
@@ -34,7 +35,7 @@ pub(crate) fn begin_frame() -> cache::FrameGuard {
 
 use std::{cell::RefCell, hash::Hasher};
 
-use nsh_core::{BorderStyle, Borders, Bounds, Color, Outline, Points};
+use nsh_core::{BorderStyle, Borders, Bounds, Color, Outline, Points, geometry::Edges};
 use rustc_hash::FxHasher;
 use windows::{
     Win32::Graphics::{
@@ -62,7 +63,7 @@ use self::{cache::Baked, gradient::Paint};
 use crate::{
     geom::{Mat4, rect},
     gfx::Gfx,
-    render::{DrawCx, color_f, rect_f},
+    render::{DrawCx, color_f, intersection, rect_f},
     view::{NshView, ViewState},
 };
 
@@ -209,38 +210,71 @@ pub(crate) fn draw_layered(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
 }
 
 /// Draws the view's backdrop filter: what the window drew behind it,
-/// filtered, inside its rounded bounds.
-pub(crate) fn draw_backdrop(cx: &mut DrawCx<'_>, state: &ViewState) {
+/// filtered, inside its rounded bounds. Returns true only for an opted-in
+/// glass card whose filtered draw succeeded, allowing its tint in this pass.
+pub(crate) fn draw_backdrop(cx: &mut DrawCx<'_>, state: &ViewState) -> bool {
     #[cfg(test)]
     probe::count(state.id, |counts| counts.backdrops += 1);
     if !cx.backdrop {
-        return;
+        return false;
     }
     let Some(e) = state.style.effects.as_deref() else {
-        return;
+        return false;
     };
     if !layer::filters_visible(&e.backdrop_filters) {
-        return;
+        return false;
     }
     let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
     if w <= 0.0 || h <= 0.0 {
-        return;
+        return false;
     }
     let world = cx.transform;
     let lin = layer::linear(&world);
     // What lies around the bounds blurs into them.
     let o = layer::filters_outset(&e.backdrop_filters) * layer::length_scale(&lin);
     let Some((x, y, bw, bh)) = world.bounds(0.0, 0.0, w, h) else {
-        return;
+        return false;
     };
-    let Some((back, bx, by)) = layer::backdrop(cx, x - o, y - o, bw + 2.0 * o, bh + 2.0 * o) else {
-        return;
+    let glass = state.local_glass.is_some();
+    let capture = if glass {
+        let region = rect_f(x - o, y - o, bw + 2.0 * o, bh + 2.0 * o);
+        let Some(clip) = cx.local_glass_clip(rect_f(x, y, bw, bh)) else {
+            return false;
+        };
+        let Some(clipped) = intersection(&region, &clip) else {
+            return false;
+        };
+        layer::local_glass_backdrop(
+            cx,
+            clipped.left,
+            clipped.top,
+            clipped.right - clipped.left,
+            clipped.bottom - clipped.top,
+        )
+    } else {
+        layer::backdrop(cx, x - o, y - o, bw + 2.0 * o, bh + 2.0 * o)
+    };
+    let Some((back, bx, by)) = capture else {
+        return false;
+    };
+    let tint = if let Some(style) = state.local_glass {
+        let tint = &style.tint[usize::from(cx.dark)];
+        let Some(Paint::Brush(brush)) = gradient::paint(cx, tint, w, h) else {
+            return false;
+        };
+        Some(brush)
+    } else {
+        None
     };
     let image = match layer::apply_filters(cx.dc, back, &e.backdrop_filters, &lin, true) {
         Ok(image) => image,
         Err(err) => {
-            log::debug!("decor: backdrop filter not applied: {err}");
-            return;
+            if glass {
+                cx.local_glass_error(err);
+            } else {
+                log::debug!("decor: backdrop filter not applied: {err}");
+            }
+            return false;
         }
     };
     cx.push_clip_rounded_shapes(rect(0.0, 0.0, w, h), state.radii());
@@ -258,11 +292,23 @@ pub(crate) fn draw_backdrop(cx: &mut DrawCx<'_>, state: &ViewState) {
     }
     cx.set_transform(world);
     cx.pop();
+    let Some(tint) = tint else { return false };
+    BoxShape::new(w, h, state.radii(), under_border(state, true)).fill(cx, &tint);
+    // Direct2D reports image and brush draw errors at Flush. A recoverable
+    // failure still leaves the opaque background and border to be drawn.
+    // SAFETY: the context is in the active draw and its clips are closed.
+    match cx.flatten(|dc| unsafe { dc.Flush(None, None) }) {
+        Ok(()) => true,
+        Err(error) => {
+            cx.local_glass_error(error);
+            false
+        }
+    }
 }
 
 /// Draws the view's shadows, background color, gradients and inset
 /// shadows, under its content.
-pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
+pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState, glass: bool) {
     #[cfg(test)]
     probe::count(state.id, |counts| counts.backgrounds += 1);
     let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
@@ -291,11 +337,15 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
         }
     }
 
-    let bg = state.background();
+    let bg = if glass {
+        Color::TRANSPARENT
+    } else {
+        state.background()
+    };
     let gradients = effects.map_or(&[][..], |e| &e.background_images[..]);
     let fills = usize::from(!bg.is_transparent()) + gradients.len();
     if fills > 0 {
-        let mut shape = BoxShape::new(w, h, radii, under_border(state));
+        let mut shape = BoxShape::new(w, h, radii, under_border(state, glass));
         // Several fills of one rounded shape each cover its edge pixels
         // partly, and stacked they cover them more than once: clipped
         // once, the edge is covered once.
@@ -356,11 +406,11 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
 /// edge, and the two partial coverages stacked let the background show
 /// outside the border at the corners. Anything else is filled to the
 /// border box, as CSS's `background-clip: border-box`.
-fn under_border(state: &ViewState) -> f32 {
+fn under_border(state: &ViewState, glass: bool) -> f32 {
     if !state.radii().iter().any(|&r| r > 0.0) {
         return 0.0;
     }
-    let b = state.borders();
+    let b = painted_border(state, glass);
     if b.style != BorderStyle::Solid || !b.colors.iter().all(|c| c.0 & 0xff == 0xff) {
         return 0.0;
     }
@@ -775,14 +825,14 @@ fn record_fill(
 /// Draws the border and the outline, over the children (as UIKit draws
 /// layer borders, so content the core placed under a border never covers
 /// it).
-pub(crate) fn draw_border(cx: &mut DrawCx<'_>, state: &ViewState) {
+pub(crate) fn draw_border(cx: &mut DrawCx<'_>, state: &ViewState, glass: bool) {
     let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
     if w <= 0.0 || h <= 0.0 {
         return;
     }
     // With the animated color: a border declared transparent shows once
     // its color is animated.
-    let b = state.borders();
+    let b = painted_border(state, glass);
     let o = state.style.outline;
     if !b.is_visible() && !o.is_visible() {
         return;
@@ -794,6 +844,14 @@ pub(crate) fn draw_border(cx: &mut DrawCx<'_>, state: &ViewState) {
     if o.is_visible() {
         draw_outline(cx, &o, w, h, radii);
     }
+}
+
+fn painted_border(state: &ViewState, glass: bool) -> Borders {
+    let mut border = state.borders();
+    if let Some(style) = state.local_glass.filter(|_| glass) {
+        border.widths = Edges::all(style.glass_border);
+    }
+    border
 }
 
 /// The borders of a `w` x `h` box with `radii`.

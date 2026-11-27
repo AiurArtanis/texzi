@@ -480,43 +480,76 @@ pub(crate) fn backdrop(
     w: f32,
     h: f32,
 ) -> Option<(ID2D1Image, f32, f32)> {
+    capture_backdrop(cx, x, y, w, h, false)
+}
+
+pub(super) fn local_glass_backdrop(
+    cx: &mut DrawCx<'_>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) -> Option<(ID2D1Image, f32, f32)> {
+    capture_backdrop(cx, x, y, w, h, true)
+}
+
+fn capture_backdrop(
+    cx: &mut DrawCx<'_>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    local_glass: bool,
+) -> Option<(ID2D1Image, f32, f32)> {
     if !cx.backdrop {
         return None;
     }
     let scale = cx.scale;
+    // SAFETY: the live draw context retains its current bitmap until the
+    // copy has been recorded. Opening or closing clips does not change it.
+    let (target, size) = unsafe {
+        let target: ID2D1Bitmap1 = cx.dc.GetTarget().ok()?.cast().ok()?;
+        let size = target.GetPixelSize();
+        (target, size)
+    };
+    let left = ((x * scale).floor().max(0.0) as u32).min(size.width);
+    let top = ((y * scale).floor().max(0.0) as u32).min(size.height);
+    let right = (((x + w) * scale).ceil().max(0.0) as u32).min(size.width);
+    let bottom = (((y + h) * scale).ceil().max(0.0) as u32).min(size.height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let (width, height) = (right - left, bottom - top);
+    if local_glass {
+        let pressure = cx.gfx.local_glass.as_ref()?;
+        if !pressure.allows_glass()
+            || !cx
+                .local_glass
+                .as_mut()?
+                .reserve(width, height, [size.width, size.height])
+        {
+            return None;
+        }
+    }
     // Content drawn into pushed layers reaches the target when they pop:
     // the copy is made while they are closed.
-    cx.flatten(|dc| {
+    let captured = cx.flatten(|dc| -> Result<(ID2D1Image, f32, f32)> {
         // SAFETY: COM calls on the live context and its target; the copy
         // happens after the pending drawing is flushed into the target.
         unsafe {
-            dc.Flush(None, None).ok()?;
-            let target: ID2D1Bitmap1 = dc.GetTarget().ok()?.cast().ok()?;
-            let size = target.GetPixelSize();
-            let left = ((x * scale).floor().max(0.0) as u32).min(size.width);
-            let top = ((y * scale).floor().max(0.0) as u32).min(size.height);
-            let right = (((x + w) * scale).ceil().max(0.0) as u32).min(size.width);
-            let bottom = (((y + h) * scale).ceil().max(0.0) as u32).min(size.height);
-            if right <= left || bottom <= top {
-                return None;
-            }
-            let copy = dc
-                .CreateBitmap(
-                    D2D_SIZE_U {
-                        width: right - left,
-                        height: bottom - top,
-                    },
-                    None,
-                    0,
-                    &D2D1_BITMAP_PROPERTIES1 {
-                        pixelFormat: target.GetPixelFormat(),
-                        dpiX: 96.0 * scale,
-                        dpiY: 96.0 * scale,
-                        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
-                        colorContext: std::mem::ManuallyDrop::new(None),
-                    },
-                )
-                .ok()?;
+            dc.Flush(None, None)?;
+            let copy = dc.CreateBitmap(
+                D2D_SIZE_U { width, height },
+                None,
+                0,
+                &D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: target.GetPixelFormat(),
+                    dpiX: 96.0 * scale,
+                    dpiY: 96.0 * scale,
+                    bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                    colorContext: std::mem::ManuallyDrop::new(None),
+                },
+            )?;
             copy.CopyFromBitmap(
                 Some(&D2D_POINT_2U { x: 0, y: 0 }),
                 &target,
@@ -526,12 +559,27 @@ pub(crate) fn backdrop(
                     right,
                     bottom,
                 }),
-            )
-            .map_err(|err| log::debug!("decor: backdrop not copied: {err}"))
-            .ok()?;
-            Some((copy.cast().ok()?, left as f32 / scale, top as f32 / scale))
+            )?;
+            Ok((copy.cast()?, left as f32 / scale, top as f32 / scale))
         }
-    })
+    });
+    match captured {
+        Ok(capture) => {
+            if local_glass {
+                let bytes = u64::from(width) * u64::from(height) * 4;
+                log::trace!(target: "nsh::local_glass", "captured {width}x{height} BGRA ({bytes} bytes)");
+            }
+            Some(capture)
+        }
+        Err(error) => {
+            if local_glass {
+                cx.local_glass_error(error);
+            } else {
+                log::debug!("decor: backdrop not copied: {error}");
+            }
+            None
+        }
+    }
 }
 
 #[cfg(test)]

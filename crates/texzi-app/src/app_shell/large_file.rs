@@ -3,6 +3,7 @@ use super::*;
 use crate::editor_owner::{
     MAX_EDIT_BYTES, PrepareError, PreparedFile, SourcePreparation, line_limit_message,
 };
+use crate::origami::local_glass_description;
 use std::{
     collections::VecDeque,
     sync::Mutex,
@@ -1012,7 +1013,7 @@ fn import_progress(
             text(move || progress.get().label(total))
                 .tabular_nums()
                 .text_size(px(font_size("meta")))
-                .text_color(|| color("muted-readable")),
+                .text_color(local_glass_description("muted-readable")),
         )
         .child(
             nsh_base::progress()
@@ -1065,6 +1066,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let cancel_shell = shell.clone();
     let close = shell.clone();
     let archive = shell.clone();
+    let description = local_glass_description("muted-readable");
 
     let heading = view()
         .flex_row()
@@ -1097,7 +1099,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 .child(
                     text("只读分页")
                         .text_size(px(font_size("meta")))
-                        .text_color(|| color("muted-readable")),
+                        .text_color(description),
                 )
                 .child(when(
                     move || {
@@ -1115,7 +1117,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                             }
                         })
                         .text_size(px(font_size("meta")))
-                        .text_color(|| color("muted-readable"))
+                        .text_color(description)
                     },
                 )),
         )
@@ -1197,7 +1199,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                     .max_w(relative(1.0))
                     .tabular_nums()
                     .text_size(px(font_size("meta")))
-                    .text_color(|| color("muted-readable")),
+                    .text_color(description),
                 )
                 .child(
                     text(move || {
@@ -1210,7 +1212,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                     .min_w(px(0.0))
                     .max_w(relative(1.0))
                     .text_size(px(font_size("meta")))
-                    .text_color(|| color("muted-readable")),
+                    .text_color(description),
                 )
         },
     );
@@ -1366,15 +1368,16 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                         .child(
                             // An explicit group keeps the inspector text and its controls separately readable.
                             view()
+                                .relative()
                                 .min_w(px(0.0))
                                 .role(AccessibilityRole::Group)
                                 .label(inspector_label)
                                 .rounded(px(metric("paperRadius")))
-                                .border(border_width)
-                                .border_color(|| color("chrome-edge"))
-                                .bg(|| color("paper-subtle"))
-                                .p(px(14.0))
+                                .p(|| px(14.0 + border_width().0))
                                 .gap(px(8.0))
+                                .child(crate::origami::local_glass_surface(px(metric(
+                                    "paperRadius",
+                                ))))
                                 .child(heading)
                                 .child(when(
                                     move || import_state.get() == ImportState::Loading,
@@ -1401,11 +1404,11 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                                         text(move || message.with(|message| message.text.clone()))
                                             .text_size(px(font_size("meta")))
                                             .text_color(move || {
-                                                color(if message.with(|message| message.is_error) {
-                                                    "error-fg"
+                                                if message.with(|message| message.is_error) {
+                                                    color("error-fg")
                                                 } else {
-                                                    "muted-readable"
-                                                })
+                                                    description()
+                                                }
                                             })
                                     },
                                 ))
