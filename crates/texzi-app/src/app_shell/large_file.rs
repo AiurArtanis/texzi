@@ -1,3 +1,4 @@
+use super::session_recovery::{ArchiveLocation, ArchiveState};
 use super::*;
 use crate::editor_owner::{
     MAX_EDIT_BYTES, PrepareError, PreparedFile, SourcePreparation, line_limit_message,
@@ -460,6 +461,9 @@ impl Shell {
         self.remember(&path);
         let id = self.next.get();
         self.next.set(id + 1);
+        let restored_archive = restored_view.is_some()
+            && restored_draft.is_none()
+            && session_recovery::restoring_archived_original(self, id, &path);
         let initial_rich = self.initial_markdown_rich(
             Some(&path),
             size,
@@ -486,8 +490,10 @@ impl Shell {
             (doc, large)
         });
         self.show_new(doc.clone());
-        if size < HUGE_BYTES {
+        if size < HUGE_BYTES || restored_archive {
             large.load(self.owner, Position::Boundary(0), None);
+        }
+        if size < HUGE_BYTES && !restored_archive {
             self.queue_import(doc.clone(), large);
         }
         doc
@@ -744,6 +750,240 @@ fn action(label: &'static str, click: impl Fn() + 'static) -> nsh_base::ButtonEl
         .on_press(move |_: &()| click())
 }
 
+#[derive(Clone, Copy)]
+enum ArchiveAction {
+    Copy,
+    OpenDirectory,
+}
+
+fn act_on_archive(
+    shell: &Shell,
+    preview: u64,
+    original: Option<&Path>,
+    action: ArchiveAction,
+    missing: Signal<bool>,
+    feedback: Signal<Option<InspectorMessage>>,
+) {
+    let Some(location) = session_recovery::archive_location(shell, preview).filter(|archive| {
+        archive.state == ArchiveState::Written && archive.matches_original(original)
+    }) else {
+        feedback.set(Some(InspectorMessage::error("恢复记录位置不可用")));
+        return;
+    };
+    shell.owner.run(|| {
+        spawn(async move {
+            let path = match blocking(move || location.record_file().map(Path::to_owned)).await {
+                Ok(Ok(path)) => path,
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing.try_set(true);
+                    feedback.try_set(Some(InspectorMessage::error("找不到恢复记录文件")));
+                    return;
+                }
+                Ok(Err(error)) => {
+                    feedback.try_set(Some(InspectorMessage::error(format!(
+                        "无法定位恢复记录文件 · {error}"
+                    ))));
+                    return;
+                }
+                Err(error) => {
+                    feedback.try_set(Some(InspectorMessage::error(format!(
+                        "无法核对恢复记录位置 · {error}"
+                    ))));
+                    return;
+                }
+            };
+            let outcome = match action {
+                ArchiveAction::Copy => {
+                    match nsh_core::element::set_clipboard(display_path(&path)).await {
+                        nsh_core::element::ClipboardWrite::Written => {
+                            InspectorMessage::info("已复制恢复记录路径")
+                        }
+                        _ => InspectorMessage::error("无法复制恢复记录路径 · 系统剪贴板未确认写入"),
+                    }
+                }
+                ArchiveAction::OpenDirectory => {
+                    let Some(parent) = path.parent() else {
+                        feedback.try_set(Some(InspectorMessage::error(
+                            "无法打开恢复记录所在目录 · 缺少父目录",
+                        )));
+                        return;
+                    };
+                    match nsh_core::element::open_path(parent.to_owned()).await {
+                        Ok(()) => InspectorMessage::info("已打开恢复记录所在目录"),
+                        Err(error) => {
+                            InspectorMessage::error(format!("无法打开恢复记录所在目录 · {error}"))
+                        }
+                    }
+                }
+            };
+            missing.try_set(false);
+            feedback.try_set(Some(outcome));
+        });
+    });
+}
+
+fn archive_banner(
+    shell: Rc<Shell>,
+    preview: u64,
+    original: Signal<Option<PathBuf>>,
+) -> impl IntoElement {
+    let full_paths = signal(false);
+    let missing = signal(false);
+    let feedback = signal(None::<InspectorMessage>);
+    dynamic(move || {
+        let archive = session_recovery::archive_location(&shell, preview)
+            .filter(|archive| original.with(|path| archive.matches_original(path.as_deref())))?;
+        let written = archive.state == ArchiveState::Written;
+        let copy = shell.clone();
+        let location = shell.clone();
+        let status = match &archive.state {
+            ArchiveState::Writing => "正在写入恢复记录".into(),
+            ArchiveState::Unavailable => "恢复记录位置不可用".into(),
+            ArchiveState::Written => "草稿已写入此窗口的恢复记录，原文件以只读方式打开".into(),
+            ArchiveState::Failed(error) => format!("无法写入恢复记录 · {error}"),
+        };
+        let failed = matches!(archive.state, ArchiveState::Failed(_));
+        Some(
+            view()
+                .min_w(px(0.0))
+                .gap(px(6.0))
+                .p(px(10.0))
+                .rounded(px(8.0))
+                .border(border_width)
+                .border_color(|| color("chrome-edge"))
+                .bg(|| color("apricot-soft"))
+                .role(AccessibilityRole::Group)
+                .label("草稿归档")
+                .child(
+                    text(archive.reason.clone())
+                        .text_size(px(font_size("meta")))
+                        .text_color(|| color("warning-fg")),
+                )
+                .child(
+                    text(move || {
+                        if missing.get() {
+                            "找不到恢复记录文件".to_owned()
+                        } else {
+                            status.clone()
+                        }
+                    })
+                    .text_size(px(font_size("meta")))
+                    .text_color(move || {
+                        color(if failed || missing.get() {
+                            "error-fg"
+                        } else {
+                            "ink-1"
+                        })
+                    }),
+                )
+                .child(archive_paths(&archive, written, full_paths))
+                .child(when(written, move || {
+                    let copy = copy.clone();
+                    let location = location.clone();
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap(px(6.0))
+                        .child(action("复制恢复记录路径", move || {
+                            let original = original.get_untracked();
+                            act_on_archive(
+                                &copy,
+                                preview,
+                                original.as_deref(),
+                                ArchiveAction::Copy,
+                                missing,
+                                feedback,
+                            );
+                        }))
+                        .child(action("打开所在目录", move || {
+                            let original = original.get_untracked();
+                            act_on_archive(
+                                &location,
+                                preview,
+                                original.as_deref(),
+                                ArchiveAction::OpenDirectory,
+                                missing,
+                                feedback,
+                            );
+                        }))
+                }))
+                .child(when(
+                    move || !missing.get() && feedback.with(Option::is_some),
+                    move || {
+                        text(move || {
+                            feedback.with(|result| {
+                                result
+                                    .as_ref()
+                                    .map(|result| result.text.clone())
+                                    .unwrap_or_default()
+                            })
+                        })
+                        .text_size(px(font_size("meta")))
+                        .text_color(move || {
+                            color(
+                                if feedback
+                                    .with(|result| result.as_ref().is_some_and(|r| r.is_error))
+                                {
+                                    "error-fg"
+                                } else {
+                                    "success-fg"
+                                },
+                            )
+                        })
+                    },
+                )),
+        )
+    })
+}
+
+fn archive_paths(
+    archive: &ArchiveLocation,
+    written: bool,
+    full: Signal<bool>,
+) -> impl IntoElement + use<> {
+    let original = archive
+        .original
+        .as_deref()
+        .map(display_path)
+        .unwrap_or_else(|| "无原文件路径".into());
+    let record = if written {
+        display_path(&archive.record)
+    } else {
+        "恢复记录位置不可用".into()
+    };
+    view()
+        .gap(px(4.0))
+        .children(
+            [
+                text(format!("原文件 · {original}")),
+                text(format!("恢复记录 · {record}")),
+            ]
+            .into_iter()
+            .map(move |line| {
+                line.min_w(px(0.0))
+                    .max_w(relative(1.0))
+                    .number_of_lines(move || if full.get() { 0u32 } else { 1u32 })
+                    .text_overflow(EllipsizeMode::Middle)
+                    .text_size(px(font_size("meta")))
+                    .text_color(|| color("muted-readable"))
+            }),
+        )
+        .child(
+            nsh_base::button()
+                .items_start()
+                .h(px(metric("field")))
+                .app_class(CONTROL_STATES)
+                .on_press(move |_: &()| full.update(|full| *full = !*full))
+                .child(text(move || {
+                    if full.get() {
+                        "收起路径"
+                    } else {
+                        "显示完整路径"
+                    }
+                })),
+        )
+}
+
 fn import_progress(
     source: Signal<Option<Arc<Mutex<ImportProgress>>>>,
     total: u64,
@@ -816,6 +1056,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let progress = file.import_progress;
     let bytes = file.len;
     let name = doc.name();
+    let original = doc.path;
     let inspector_label = format!("大文件导入检视舱，{name}");
     let open = file.clone();
     let start = shell.clone();
@@ -823,6 +1064,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let cancel = file.clone();
     let cancel_shell = shell.clone();
     let close = shell.clone();
+    let archive = shell.clone();
 
     let heading = view()
         .flex_row()
@@ -1116,54 +1358,60 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 .max_h(relative(0.60))
                 .min_h(px(0.0))
                 .child(
-                    view().min_w(px(0.0)).px(px(12.0)).py(px(8.0)).child(
-                        // An explicit group keeps the inspector text and its controls separately readable.
-                        view()
-                            .min_w(px(0.0))
-                            .role(AccessibilityRole::Group)
-                            .label(inspector_label)
-                            .rounded(px(metric("paperRadius")))
-                            .border(border_width)
-                            .border_color(|| color("chrome-edge"))
-                            .bg(|| color("paper-subtle"))
-                            .p(px(14.0))
-                            .gap(px(8.0))
-                            .child(heading)
-                            .child(when(
-                                move || import_state.get() == ImportState::Loading,
-                                move || import_progress(progress, bytes),
-                            ))
-                            .child(page_details)
-                            .child(controls)
-                            .child(when(bytes > MAX_EDIT_BYTES, || {
-                                text(byte_limit_message())
-                                    .text_size(px(font_size("meta")))
-                                    .text_color(|| color("error-fg"))
-                            }))
-                            .child(when(
-                                move || import_state.get() == ImportState::LineLimit,
-                                || {
-                                    text(line_limit_message())
+                    view()
+                        .min_w(px(0.0))
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .gap(px(8.0))
+                        .child(
+                            // An explicit group keeps the inspector text and its controls separately readable.
+                            view()
+                                .min_w(px(0.0))
+                                .role(AccessibilityRole::Group)
+                                .label(inspector_label)
+                                .rounded(px(metric("paperRadius")))
+                                .border(border_width)
+                                .border_color(|| color("chrome-edge"))
+                                .bg(|| color("paper-subtle"))
+                                .p(px(14.0))
+                                .gap(px(8.0))
+                                .child(heading)
+                                .child(when(
+                                    move || import_state.get() == ImportState::Loading,
+                                    move || import_progress(progress, bytes),
+                                ))
+                                .child(page_details)
+                                .child(controls)
+                                .child(when(bytes > MAX_EDIT_BYTES, || {
+                                    text(byte_limit_message())
                                         .text_size(px(font_size("meta")))
                                         .text_color(|| color("error-fg"))
-                                },
-                            ))
-                            .child(when(
-                                move || message.with(|message| !message.text.is_empty()),
-                                move || {
-                                    text(move || message.with(|message| message.text.clone()))
-                                        .text_size(px(font_size("meta")))
-                                        .text_color(move || {
-                                            color(if message.with(|message| message.is_error) {
-                                                "error-fg"
-                                            } else {
-                                                "muted-readable"
+                                }))
+                                .child(when(
+                                    move || import_state.get() == ImportState::LineLimit,
+                                    || {
+                                        text(line_limit_message())
+                                            .text_size(px(font_size("meta")))
+                                            .text_color(|| color("error-fg"))
+                                    },
+                                ))
+                                .child(when(
+                                    move || message.with(|message| !message.text.is_empty()),
+                                    move || {
+                                        text(move || message.with(|message| message.text.clone()))
+                                            .text_size(px(font_size("meta")))
+                                            .text_color(move || {
+                                                color(if message.with(|message| message.is_error) {
+                                                    "error-fg"
+                                                } else {
+                                                    "muted-readable"
+                                                })
                                             })
-                                        })
-                                },
-                            ))
-                            .child(calibration_actions),
-                    ),
+                                    },
+                                ))
+                                .child(calibration_actions),
+                        )
+                        .child(archive_banner(archive, id, original)),
                 ),
         )
         .child(dynamic(move || {

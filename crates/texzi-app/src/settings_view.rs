@@ -2,6 +2,7 @@ use super::{divider, frame, secondary_foreground, selected_surface};
 use crate::origami::{CONTROL_STATES, border_width, color, font_size, metric};
 use crate::{native_menu, settings};
 use nsh_core::{
+    AccessibilityRole,
     element::{input, scroll},
     prelude::*,
 };
@@ -44,6 +45,8 @@ pub(super) struct SettingsView {
     section: Signal<&'static str>,
     query: Signal<String>,
     folder_scope: Signal<bool>,
+    target: Signal<Option<&'static str>>,
+    field: ElementRef,
     pub search: ElementRef,
     bindings: Vec<Binding>,
 }
@@ -85,10 +88,36 @@ impl SettingsView {
             section: signal(CATEGORIES[0]),
             query: signal(String::new()),
             folder_scope: signal(false),
+            target: signal(None),
+            field: element_ref(),
             search: element_ref(),
             bindings,
         }
     }
+
+    pub(super) fn locate(&self, id: &'static str) {
+        let category = settings::definition(id)["category"].as_str().unwrap();
+        self.section.set(category);
+        self.target.set(Some(id));
+        self.query.set(id.into());
+    }
+
+    pub(super) fn focus(&self) {
+        if self.target.get_untracked().is_some() && self.field.node().is_some() {
+            self.field.focus();
+        } else {
+            self.search.focus();
+        }
+    }
+}
+
+pub(super) fn spotlight_entries() -> impl Iterator<Item = nsh_base::CommandItem> {
+    settings::ENABLED.iter().map(|&id| {
+        let name = settings::definition(id)["name"].as_str().unwrap();
+        nsh_base::CommandItem::new(format!("setting:{id}"), format!("{name} · {id}"))
+            .keywords([id])
+            .group("设置")
+    })
 }
 
 fn pretty_key(stroke: &str) -> String {
@@ -168,6 +197,7 @@ fn theme_choice(
 pub(super) fn sidebar(state: Rc<SettingsView>, compact: bool) -> impl IntoElement {
     let section = state.section;
     let query = state.query;
+    let target = state.target;
     let labels = if compact {
         view().flex_row().items_center()
     } else {
@@ -182,6 +212,7 @@ pub(super) fn sidebar(state: Rc<SettingsView>, compact: bool) -> impl IntoElemen
                 .items_start()
                 .on_press(move |_: &()| {
                     section.set(category);
+                    target.set(None);
                     query.set(String::new());
                 })
         }));
@@ -256,6 +287,18 @@ fn control(
     root: Signal<Option<PathBuf>>,
 ) -> AnyElement {
     let spec = settings::definition(id);
+    if id == settings::DEFAULT_ENCODING {
+        return dynamic(move || {
+            let scope = selected_root(&state, root);
+            Some(encoding_picker(
+                settings.clone(),
+                state.clone(),
+                root,
+                scope,
+            ))
+        })
+        .into_element();
+    }
     if matches!(spec["type"].as_str(), Some("integer" | "string")) {
         let draft = signal(None::<FieldDraft>);
         let show = settings.clone();
@@ -362,6 +405,98 @@ fn control(
         .into_element()
 }
 
+fn encoding_picker(
+    prefs: Rc<settings::Settings>,
+    state: Rc<SettingsView>,
+    root: Signal<Option<PathBuf>>,
+    scope: Option<PathBuf>,
+) -> impl IntoElement {
+    let definition = settings::definition(settings::DEFAULT_ENCODING);
+    let options = definition["options"].as_array().unwrap();
+    let read = prefs.clone();
+    let read_scope = scope.clone();
+    let selected = computed(move || {
+        let value = read
+            .effective(settings::DEFAULT_ENCODING, read_scope.as_deref())
+            .0;
+        SharedString::from(value.as_str().unwrap_or("utf-8").to_owned())
+    });
+    let choose = Rc::new(move |encoding: &str| {
+        if selected_root(&state, root) != scope {
+            prefs
+                .error
+                .set(Some("设置范围已改变，未提交原选择。".into()));
+            return;
+        }
+        prefs.apply(
+            settings::DEFAULT_ENCODING,
+            scope.as_deref(),
+            Some(encoding.into()),
+        );
+    });
+    let choose_from_picker = choose.clone();
+    view()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(4.0))
+        .child(
+            nsh_base::select()
+                .items(
+                    options
+                        .iter()
+                        .map(|option| {
+                            nsh_base::SelectItem::new(
+                                option["value"].as_str().unwrap(),
+                                option["label"].as_str().unwrap(),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .accessibility_label("新文件默认编码")
+                .value(move || nsh_base::SelectValue::from(selected.get()))
+                .trigger(
+                    view()
+                        .h(px(metric("field")))
+                        .px(px(9.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .app_class(CONTROL_STATES)
+                        .rounded(px(6.0))
+                        .border(border_width)
+                        .border_color(divider)
+                        .bg(frame)
+                        .child(text(move || {
+                            let value = selected.get();
+                            options
+                                .iter()
+                                .find(|option| option["value"] == value.as_ref())
+                                .and_then(|option| option["label"].as_str())
+                                .unwrap_or_default()
+                        }))
+                        .child(text("▾").text_color(secondary_foreground)),
+                )
+                .on_change(move |value: &Option<SharedString>| {
+                    if let Some(value) = value {
+                        choose_from_picker(value);
+                    }
+                }),
+        )
+        .children(
+            [
+                ("utf-8-bom", "UTF-8 BOM"),
+                ("gb18030", "GB18030"),
+                ("utf-16le", "UTF-16 LE"),
+            ]
+            .into_iter()
+            .map(move |(value, label)| {
+                let choose = choose.clone();
+                choice(label, move || selected.get().as_ref() == value)
+                    .on_press(move |_: &()| choose(value))
+            }),
+        )
+}
+
 fn setting_description(id: &str) -> &'static str {
     match id {
         settings::RESTORE => {
@@ -393,6 +528,13 @@ fn row(
         .flex_row()
         .gap(px(16.0))
         .items_start()
+        .when(state.target.get() == Some(id), |row| {
+            row.element_ref(&state.field)
+                .focusable(true)
+                .role(AccessibilityRole::Group)
+                .label(spec["name"].as_str().unwrap())
+                .app_class("focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring")
+        })
         .style_when(move || narrow.get(), |style| style.flex_col())
         .child(
             view()
@@ -447,7 +589,7 @@ fn row(
                 let reset_scope = reset_scope.clone();
                 view()
                     .gap(px(6.0))
-                    .w(px(if id == settings::THEME {
+                    .w(px(if matches!(id, settings::THEME | settings::DEFAULT_ENCODING) {
                         THEME_OPTIONS_WIDTH
                     } else {
                         240.0
@@ -477,8 +619,12 @@ pub(super) fn content(
     let query = state.query;
     let section = state.section;
     let folder = state.folder_scope;
+    let target = state.target;
     let notice = settings.error;
     let rows = state.clone();
+    let search = state.clone();
+    let term = computed(move || query.with(|query| query.trim().to_lowercase()));
+    let results = computed(move || matching_rows(&search, &term.get()));
     let retry_settings = settings.clone();
     let retry_scope = state.clone();
     view().size_full().min_h(px(0.0)).items_center().child(
@@ -498,21 +644,39 @@ pub(super) fn content(
                     .style_when(move || narrow.get(), |style| style.flex_col().items_start())
                     .child(text("设置").text_size(px(font_size("section"))))
                     .child(
-                        input()
-                            .element_ref(&state.search)
-                            .auto_focus(true)
-                            .app_class(CONTROL_STATES)
-                            .label("搜索设置")
-                            .placeholder("搜索设置")
-                            .h(px(metric("field")))
+                        view()
                             .w(px(320.0))
                             .max_w(relative(1.0))
-                            .px(px(8.0))
-                            .bg(frame)
-                            .border(border_width)
-                            .border_color(divider)
-                            .value(move || query.get())
-                            .on_change(move |value: &str| query.set(value.into())),
+                            .gap(px(4.0))
+                            .child(
+                                input()
+                                    .element_ref(&state.search)
+                                    .auto_focus(true)
+                                    .app_class(CONTROL_STATES)
+                                    .label("搜索设置")
+                                    .placeholder("搜索设置")
+                                    .h(px(metric("field")))
+                                    .w_full()
+                                    .px(px(8.0))
+                                    .bg(frame)
+                                    .border(border_width)
+                                    .border_color(divider)
+                                    .value(move || query.get())
+                                    .on_change(move |value: &str| {
+                                        target.set(None);
+                                        query.set(value.into());
+                                    }),
+                            )
+                            .child(when(
+                                move || !term.get().is_empty(),
+                                move || {
+                                    text(move || {
+                                        results.with(|results| format!("{} 项匹配", results.len()))
+                                    })
+                                    .text_color(secondary_foreground)
+                                    .text_size(px(font_size("meta")))
+                                },
+                            )),
                     ),
             )
             .child(
@@ -556,25 +720,21 @@ pub(super) fn content(
                 })
             }))
             .child(scroll().flex_1().min_h(px(0.0)).child(dynamic(move || {
-                let term = query.get().trim().to_lowercase();
-                let category = section.get();
-                if category == "快捷键" {
+                let term = term.get();
+                let results = results.get();
+                if results.len() == 0 {
+                    return if term.is_empty() {
+                        text("此分类暂未接入可调设置")
+                            .text_color(secondary_foreground)
+                            .into_element()
+                    } else {
+                        no_results(term, query)
+                    };
+                }
+                if let SettingsRows::Bindings(indices) = results {
                     let mut items = view().gap(px(6.0));
-                    let mut found = false;
-                    for binding in &rows.bindings {
-                        if ![
-                            binding.name.as_str(),
-                            binding.id,
-                            binding.key.as_str(),
-                            binding.context,
-                            binding.source,
-                        ]
-                        .iter()
-                        .any(|part| part.to_lowercase().contains(&term))
-                        {
-                            continue;
-                        }
-                        found = true;
+                    for index in indices {
+                        let binding = &rows.bindings[index];
                         items = items.child(
                             view()
                                 .flex_row()
@@ -593,47 +753,82 @@ pub(super) fn content(
                                 .child(text(binding.key.clone())),
                         );
                     }
-                    return if found {
-                        items.into_element()
-                    } else {
-                        no_results(term, query)
-                    };
+                    return items.into_element();
                 }
-                let selected = settings::ENABLED
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        let spec = settings::definition(id);
-                        if term.is_empty() {
-                            return if category == "常用" {
-                                COMMON.contains(id)
-                            } else {
-                                spec["category"] == category
-                            };
-                        }
-                        [*id, spec["name"].as_str().unwrap(), setting_description(id)]
-                            .iter()
-                            .any(|part| part.to_lowercase().contains(&term))
-                    })
-                    .collect::<Vec<_>>();
-                if selected.is_empty() {
-                    return if term.is_empty() {
-                        text("此分类暂未接入可调设置")
-                            .text_color(secondary_foreground)
-                            .into_element()
-                    } else {
-                        no_results(term, query)
-                    };
-                }
+                let SettingsRows::Fields(selected) = results else {
+                    unreachable!()
+                };
                 let mut list = view();
                 if term.is_empty() {
-                    list = list.child(text(category).text_size(px(16.0)));
+                    list = list.child(text(section.get()).text_size(px(16.0)));
                 }
                 for id in selected {
                     list = list.child(row(settings.clone(), id, rows.clone(), root, narrow));
                 }
                 list.into_element()
             }))),
+    )
+}
+
+#[derive(Clone, PartialEq)]
+enum SettingsRows {
+    Fields(Vec<&'static str>),
+    Bindings(Vec<usize>),
+}
+
+impl SettingsRows {
+    fn len(&self) -> usize {
+        match self {
+            Self::Fields(fields) => fields.len(),
+            Self::Bindings(bindings) => bindings.len(),
+        }
+    }
+}
+
+fn matching_rows(state: &SettingsView, term: &str) -> SettingsRows {
+    if let Some(id) = state.target.get() {
+        return SettingsRows::Fields(vec![id]);
+    }
+    let category = state.section.get();
+    if category == "快捷键" {
+        return SettingsRows::Bindings(
+            state
+                .bindings
+                .iter()
+                .enumerate()
+                .filter_map(|(index, binding)| {
+                    [
+                        binding.name.as_str(),
+                        binding.id,
+                        binding.key.as_str(),
+                        binding.context,
+                        binding.source,
+                    ]
+                    .iter()
+                    .any(|part| part.to_lowercase().contains(term))
+                    .then_some(index)
+                })
+                .collect(),
+        );
+    }
+    SettingsRows::Fields(
+        settings::ENABLED
+            .iter()
+            .copied()
+            .filter(|id| {
+                let spec = settings::definition(id);
+                if term.is_empty() {
+                    return if category == "常用" {
+                        COMMON.contains(id)
+                    } else {
+                        spec["category"] == category
+                    };
+                }
+                [*id, spec["name"].as_str().unwrap(), setting_description(id)]
+                    .iter()
+                    .any(|part| part.to_lowercase().contains(term))
+            })
+            .collect(),
     )
 }
 
@@ -709,5 +904,78 @@ mod tests {
         core.mount_root(&Root::new::<DraftScopeFixture>(|| ()));
         core.run_component_tasks();
         let _ = core.commit();
+    }
+
+    #[component]
+    fn DefaultEncodingFixture() -> impl IntoElement {
+        let settings = Rc::new(settings::Settings::new());
+        let view = Rc::new(SettingsView::new(&[]));
+        view.locate(settings::DEFAULT_ENCODING);
+        content(settings, view, signal(None), signal(false))
+    }
+
+    #[test]
+    fn default_encoding_combobox_contains_all_seven_real_encodings() {
+        use nsh_core::{
+            ApproxTextEngine, Core, EventKind, EventPayload, MountItem, Size,
+            element::{Environment, Root},
+            platform::Os,
+        };
+        let size = Size::new(px(800.0), px(640.0));
+        let mut core = Core::new(ApproxTextEngine, size);
+        let mut environment = Environment::default();
+        environment.os = Os::Windows;
+        environment.window = size;
+        core.set_environment(environment);
+        core.mount_root(&Root::new::<DefaultEncodingFixture>(|| ()));
+        let mut trigger = None;
+        for _ in 0..5 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    if let MountItem::ViewProps { id, props } = item
+                        && props.accessibility.role == AccessibilityRole::Combobox
+                        && props.accessibility.label.as_deref() == Some("新文件默认编码")
+                    {
+                        trigger = Some(id);
+                    }
+                }
+            }
+        }
+        let trigger = trigger.unwrap();
+        let frame = core.measure(trigger).unwrap().frame;
+        assert!(core.component_event(trigger, EventKind::Layout, &EventPayload::Layout(frame)));
+        assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
+        let mut labels = std::collections::BTreeSet::new();
+        for _ in 0..6 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    match item {
+                        MountItem::ViewProps { props, .. } => {
+                            if let Some(label) = props.accessibility.label {
+                                labels.insert(label.to_string());
+                            }
+                        }
+                        MountItem::AccessibilityLabel {
+                            label: Some(label), ..
+                        } => {
+                            labels.insert(label.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for expected in settings::definition(settings::DEFAULT_ENCODING)["options"]
+            .as_array()
+            .unwrap()
+        {
+            let label = expected["label"].as_str().unwrap();
+            assert!(
+                labels.contains(label),
+                "missing {label}; observed {labels:?}"
+            );
+        }
     }
 }

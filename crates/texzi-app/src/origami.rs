@@ -212,6 +212,7 @@ impl SystemVisuals {
                     &[
                         "paper",
                         "paper-subtle",
+                        "apricot-soft",
                         "mica-shell",
                         "mica-sidebar",
                         "mica-statusbar",

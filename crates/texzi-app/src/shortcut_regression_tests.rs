@@ -356,16 +356,117 @@ fn compact_title_keeps_the_quick_search_input_below_the_system_controls() {
 }
 
 #[component]
+fn SpotlightSettingsFixture() -> impl IntoElement {
+    let shell = super::Shell::new();
+    shell.add_with_mode(
+        NativeView::fixture("原始正文"),
+        Some(r"C:\texzi-test\主题记录.txt".into()),
+        Some(false),
+    );
+    super::render_shell(shell)
+}
+
+#[test]
+fn spotlight_search_keeps_result_domains_distinct_and_opens_the_actual_setting() {
+    let size = Size::new(px(800.0), px(640.0));
+    let mut core = Core::new(ApproxTextEngine, size);
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    environment.window = size;
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<SpotlightSettingsFixture>(|| ()));
+
+    let mut labels = std::collections::BTreeMap::new();
+    let mut drain = |core: &mut Core<ApproxTextEngine>| {
+        for _ in 0..6 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    match item {
+                        MountItem::ViewProps { id, props } => {
+                            if let Some(label) = props.accessibility.label {
+                                labels.insert(id, label.to_string());
+                            }
+                        }
+                        MountItem::AccessibilityLabel { id, label } => {
+                            if let Some(label) = label {
+                                labels.insert(id, label.to_string());
+                            } else {
+                                labels.remove(&id);
+                            }
+                        }
+                        MountItem::Text { id, text, .. } => {
+                            labels.insert(id, text.visible_text().into_owned());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        labels.retain(|id, _| core.measure(*id).is_some());
+        labels.clone()
+    };
+    let labelled = |labels: &std::collections::BTreeMap<NodeId, String>, text: &str| {
+        labels
+            .iter()
+            .find_map(|(id, label)| (label == text).then_some(*id))
+    };
+    let trigger = labelled(&drain(&mut core), "搜索文件或命令").unwrap();
+    assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
+    let input = drain(&mut core)
+        .into_iter()
+        .find_map(|(id, label)| (id != trigger && label == "搜索文件或命令").then_some(id))
+        .unwrap();
+    assert_ne!(trigger, input);
+    assert!(core.component_event(
+        input,
+        EventKind::ChangeText,
+        &EventPayload::Text {
+            text: "主题".into(),
+            count: 1,
+        }
+    ));
+    let results = drain(&mut core);
+    assert!(labelled(&results, "主题记录.txt").is_some(), "{results:?}");
+    assert!(labelled(&results, "浅色主题").is_some(), "{results:?}");
+    let setting = labelled(&results, "主题 · appearance.theme").expect("supported theme setting");
+    assert!(core.component_event(setting, EventKind::Press, &EventPayload::None));
+    let settings = drain(&mut core);
+    assert!(labelled(&settings, "搜索设置").is_some());
+    assert!(labelled(&settings, "主题").is_some());
+    assert!(labelled(&settings, "重置主题").is_some());
+    assert!(labelled(&settings, "重置字体大小").is_none());
+    assert!(labelled(&settings, "1 项匹配").is_some());
+    let search = labelled(&settings, "搜索设置").unwrap();
+    assert!(core.component_event(
+        search,
+        EventKind::ChangeText,
+        &EventPayload::Text {
+            text: "无任何匹配值".into(),
+            count: 1,
+        }
+    ));
+    let no_match = drain(&mut core);
+    assert!(labelled(&no_match, "0 项匹配").is_some(), "{no_match:?}");
+}
+
+#[component]
 fn ZenReadingColumnFixture() -> impl IntoElement {
     let shell = super::Shell::new();
     shell.add_with_mode(NativeView::fixture("阅读列测试"), None, Some(false));
     let toggle = shell.clone();
+    let escape = shell.clone();
     view()
         .size_full()
         .child(
             nsh_base::button()
                 .test_id("test.toggle-zen")
                 .on_press(move |_: &()| toggle.run("texzi.view.toggleZen")),
+        )
+        .child(
+            nsh_base::button()
+                .test_id("test.zen-escape")
+                .on_press(move |_: &()| escape.handle_escape()),
         )
         .child(super::render_shell(shell))
 }
@@ -382,15 +483,18 @@ fn zen_measured_column_reuses_the_editor_and_fits_a_narrow_window() {
             origin: point(px(0.0), px(0.0)),
             size,
         };
-        let window = WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+        let mut window = WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+        window.focused = true;
         let mut environment = Environment::default();
         environment.os = Os::Windows;
         environment.window = size;
+        environment.title_bar.right = px(138.0);
         environment.window_state = Some(window);
         let mut core = Core::new(ApproxTextEngine, size);
         core.set_environment(environment);
         core.mount_root(&Root::new::<ZenReadingColumnFixture>(|| ()));
         let mut trigger = None;
+        let mut escape = None;
         let mut column = None;
         for _ in 0..4 {
             core.run_component_tasks();
@@ -399,6 +503,7 @@ fn zen_measured_column_reuses_the_editor_and_fits_a_narrow_window() {
                     if let MountItem::ViewProps { id, props } = item {
                         match props.test_id.as_deref() {
                             Some("test.toggle-zen") => trigger = Some(id),
+                            Some("test.zen-escape") => escape = Some(id),
                             Some("texzi.editor.reading-column") => column = Some(id),
                             _ => {}
                         }
@@ -416,7 +521,25 @@ fn zen_measured_column_reuses_the_editor_and_fits_a_narrow_window() {
                 core.commit();
             }
         };
+        let escape = escape.unwrap();
         toggle(&mut core);
+        assert!(core.component_event(escape, EventKind::Press, &EventPayload::None));
+        let mut hint = None;
+        for _ in 0..4 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    if let MountItem::Text { id, text, .. } = item
+                        && text.visible_text() == "再按一次 Esc 退出 Zen"
+                    {
+                        hint = Some(id);
+                    }
+                }
+            }
+        }
+        let hint = core.measure(hint.unwrap()).unwrap();
+        let hint_center = hint.page.x.0 + hint.frame.size.width.0 / 2.0;
+        assert!((hint_center - width / 2.0).abs() < 3.0);
         let reading = core.measure(column).unwrap();
         assert!(reading.frame.size.width.0 <= width);
         if width > 1000.0 {
@@ -426,7 +549,11 @@ fn zen_measured_column_reuses_the_editor_and_fits_a_narrow_window() {
         } else {
             assert!(reading.frame.size.width.0 > width - 24.0);
         }
-        toggle(&mut core);
+        assert!(core.component_event(escape, EventKind::Press, &EventPayload::None));
+        for _ in 0..4 {
+            core.run_component_tasks();
+            core.commit();
+        }
         assert_eq!(core.measure(column).unwrap().frame.size.width.0, before);
     }
 }
@@ -513,6 +640,8 @@ fn FolderSearchSidebarFixture() -> impl IntoElement {
         path: root.join(r"nested\note.txt"),
         line: 7,
         text: "hit text".into(),
+        matched: 0..3,
+        source_match: 0..3,
     }]);
     shell.run("texzi.find.inFolder");
     let modify = shell.search_query;
