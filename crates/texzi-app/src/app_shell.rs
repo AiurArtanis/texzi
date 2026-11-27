@@ -1,5 +1,6 @@
 //! Application shell. Native menus and the palette share command identities.
 mod large_file;
+mod splitter;
 use crate::editor_owner::SaveError;
 use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
 use crate::settings;
@@ -356,6 +357,7 @@ struct Shell {
     auto_saving: Signal<Option<u64>>,
     split: Signal<Option<Rc<Document>>>,
     split_down: Signal<bool>,
+    split_share: Signal<f32>,
     second_active: Signal<bool>,
     expanded: Signal<Vec<PathBuf>>,
     hits: Signal<Vec<SearchHit>>,
@@ -608,6 +610,7 @@ impl Shell {
             auto_saving: signal(None),
             split: signal(None),
             split_down: signal(false),
+            split_share: signal(splitter::EQUAL_SHARE),
             second_active: signal(false),
             expanded: signal(vec![]),
             hits: signal(vec![]),
@@ -1674,6 +1677,7 @@ impl Shell {
             progress: element_ref(),
             body: element_ref(),
         });
+        self.split_share.set(splitter::EQUAL_SHARE);
         self.split.set(Some(second.clone()));
         self.split_down.set(down);
         Some(second)
@@ -2856,24 +2860,13 @@ fn document_paper(
 
 fn groups(s: Rc<Shell>) -> AnyElement {
     let down = s.split_down.get();
-    let split = s.split;
     let second_active = s.second_active;
     let primary = s.clone();
     let second = s.clone();
-    (if down { view() } else { view().flex_row() })
-        .flex_1()
-        .min_w(px(0.0))
-        .min_h(px(0.0))
-        .px(px(metric("splitGap")))
-        .pb(px(metric("splitGap")))
-        .gap(move || {
-            px(if split.with(Option::is_some) {
-                metric("splitGap")
-            } else {
-                0.0
-            })
-        })
-        .child(dynamic(move || {
+    splitter::groups(
+        s,
+        down,
+        dynamic(move || {
             primary.primary().map(|doc| {
                 let content = if let Some(large) = &doc.large {
                     large_file::viewer(primary.clone(), doc.clone(), large.clone()).into_element()
@@ -2882,15 +2875,18 @@ fn groups(s: Rc<Shell>) -> AnyElement {
                 };
                 document_paper(content, move || !second_active.get())
             })
-        }))
-        .child(dynamic(move || {
-            second.split.get().map(|doc| {
-                document_paper(editor(second.clone(), doc, true), move || {
-                    second_active.get()
+        }),
+        move || {
+            let second = second.clone();
+            dynamic(move || {
+                second.split.get().map(|doc| {
+                    document_paper(editor(second.clone(), doc, true), move || {
+                        second_active.get()
+                    })
                 })
             })
-        }))
-        .into_element()
+        },
+    )
 }
 
 pub fn view_shell() -> impl IntoElement {
