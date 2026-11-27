@@ -51,12 +51,13 @@ mod settings_view;
 
 use crate::origami::{
     CONTROL_STATES, border_width, color, current_color, font_size, local_glass_description,
-    local_glass_surface, metric,
+    local_glass_surface, local_glass_surface_when, metric,
 };
 const TITLE_ICON_WIDTH: f32 = 42.0;
 const TITLE_MENU_WIDTH: f32 = 50.0;
 const TITLE_SEARCH_GAP: f32 = 10.0;
 const TITLE_DRAG_MIN: f32 = 18.0;
+const SPOTLIGHT_LABEL: &str = "搜索文件、命令或设置";
 
 #[derive(Clone, PartialEq)]
 struct SearchHit {
@@ -581,6 +582,15 @@ impl Shell {
         } else {
             self.primary()
         }
+    }
+
+    fn mode_glass_allowed(&self) -> bool {
+        let panel = self.panel.get();
+        !is_quick_panel(&panel)
+            && !find_panel::is_open(&panel)
+            && !self
+                .current()
+                .is_some_and(|doc| doc.displayed_rich() && doc.controls.table.is_open())
     }
 
     fn settings_active(&self) -> bool {
@@ -1236,7 +1246,8 @@ impl Shell {
                 .borrow()
                 .as_ref()
                 .is_some_and(|active| Arc::ptr_eq(active, &cancel));
-            if !current || shell.root.get() != Some(root) || shell.panel.get() != "files" {
+            if !current || shell.root.get() != Some(root) || !quick_lists_files(&shell.panel.get())
+            {
                 return;
             }
             shell.quick_scanning.set(false);
@@ -3070,6 +3081,7 @@ fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoEl
     let name = doc.clone();
     let disabled = doc.clone();
     let backdrop = doc.clone();
+    let material = shell.clone();
     view()
         .absolute()
         .w(px(metric("modeWidth")))
@@ -3077,7 +3089,9 @@ fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoEl
         .top(px(12.0))
         .right(px(16.0))
         .z_index(1)
-        .child(local_glass_surface(px(6.0)))
+        .child(local_glass_surface_when(px(6.0), move || {
+            material.mode_glass_allowed()
+        }))
         .child(
             icon_button(SOURCE_ICON, "切换到源码", metric("modeWidth"), 18.0)
                 .size_full()
@@ -3290,12 +3304,12 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                         .border_color(divider)
                         .focusable(true)
                         .role(AccessibilityRole::Button)
-                        .label("搜索文件或命令")
+                        .label(SPOTLIGHT_LABEL)
                         .child(shell_glyph(SEARCH_ICON, 16.0))
                         .child(when(
                             move || !compact.compact_menu(),
                             || {
-                                text("搜索文件或命令…")
+                                text("搜索文件、命令或设置…")
                                     .min_w(px(0.0))
                                     .number_of_lines(1)
                                     .text_overflow(EllipsizeMode::Tail)
@@ -4365,49 +4379,78 @@ fn folder(s: Rc<Shell>) -> AnyElement {
         .into_element()
 }
 
+fn palette_commands(
+    shell: &Shell,
+    registry: &[crate::native_menu::Command],
+    query: &str,
+    spotlight: bool,
+) -> Vec<nsh_base::CommandItem> {
+    let matched: Vec<_> = registry
+        .iter()
+        .filter(|command| supported(&command.id))
+        .filter_map(|command| {
+            let keys = command.keys.join(" / ");
+            (query.is_empty()
+                || [&command.name, &command.id, &keys]
+                    .iter()
+                    .any(|text| text.to_lowercase().contains(query)))
+            .then_some((command, keys))
+        })
+        .collect();
+    let rich_ids: Vec<_> = matched
+        .iter()
+        .map(|(command, _)| command.id.as_str())
+        .filter(|id| crate::rich_commands::handles(id))
+        .collect();
+    let markdown = (!rich_ids.is_empty())
+        .then(|| shell.current())
+        .flatten()
+        .map(|doc| {
+            crate::rich_commands::availability_all(
+                &doc.gate,
+                &doc.source,
+                doc.editable_body_ready(),
+                &rich_ids,
+            )
+        });
+    matched
+        .into_iter()
+        .map(|(command, keys)| {
+            let reason = markdown
+                .as_ref()
+                .and_then(|results| results.get(command.id.as_str()))
+                .map_or_else(
+                    || shell.blocked(&command.id),
+                    |result| result.as_ref().err().cloned(),
+                );
+            let label = reason.as_ref().map_or_else(
+                || command.name.clone(),
+                |reason| format!("{} · {reason}", command.name),
+            );
+            let mut item = nsh_base::CommandItem::new(command.id.clone(), label)
+                .keywords([command.id.clone()])
+                .group(if spotlight {
+                    "命令".to_owned()
+                } else {
+                    command.group.clone()
+                })
+                .disabled(reason.is_some());
+            if !keys.is_empty() {
+                item = item.shortcut(keys.clone()).keywords([keys]);
+            }
+            item
+        })
+        .collect()
+}
+
 fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
     let query = s.palette_query;
     let compact = s.compact_menu();
     let files = quick_lists_files(mode);
     let spotlight = mode == "spotlight";
-    let include_spotlight_matches =
-        computed(move || spotlight && query.with(|value| !value.trim().is_empty()));
-    let markdown = if !files || spotlight {
-        s.current()
-            .map(|doc| crate::rich_commands::availability_all(&doc.gate, &doc.source, true))
-    } else {
-        None
-    };
-    let commands = if !files || spotlight {
-        crate::native_menu::commands()
-            .into_iter()
-            .filter_map(|c| {
-                // One immutable source projection per palette build, not
-                // one full parse for every Markdown command row.
-                if !supported(&c.id) {
-                    return None;
-                }
-                let reason = markdown
-                    .as_ref()
-                    .and_then(|results| results.get(&c.id))
-                    .map_or_else(|| s.blocked(&c.id), |result| result.as_ref().err().cloned());
-                let label = reason
-                    .as_ref()
-                    .map_or_else(|| c.name.clone(), |reason| format!("{} · {reason}", c.name));
-                let mut item = nsh_base::CommandItem::new(c.id.clone(), label)
-                    .keywords([c.id])
-                    .group(if spotlight { "命令".into() } else { c.group })
-                    .disabled(reason.is_some());
-                if !c.keys.is_empty() {
-                    let keys = c.keys.join(" / ");
-                    item = item.shortcut(keys.clone()).keywords([keys]);
-                }
-                Some(item)
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    let registry = (!files || spotlight)
+        .then(crate::native_menu::commands)
+        .unwrap_or_default();
     let mut quick_paths: Vec<PathBuf> = vec![];
     let file_entries = if files {
         let docs = s.docs.get();
@@ -4472,6 +4515,7 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
     } else {
         Vec::new()
     };
+    let command_shell = s.clone();
     let run = s.clone();
     let cancel = s.clone();
     let search = s.clone();
@@ -4487,12 +4531,16 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
             nsh_base::command()
                 .items(move || {
                     if !files {
-                        return commands.clone();
+                        let folded = query.with(|query| query.trim().to_lowercase());
+                        return palette_commands(&command_shell, &registry, &folded, false);
                     }
                     let mut items = file_entries.clone();
-                    if include_spotlight_matches.get() {
-                        items.extend(settings.iter().cloned());
-                        items.extend(commands.iter().cloned());
+                    if spotlight {
+                        let folded = query.with(|query| query.trim().to_lowercase());
+                        if !folded.is_empty() {
+                            items.extend(settings.iter().cloned());
+                            items.extend(palette_commands(&command_shell, &registry, &folded, true));
+                        }
                     }
                     items
                 })
@@ -4504,7 +4552,7 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
                 .query(move || Some(query.get().into()))
                 .placeholder(match mode {
                     "spotlight" => "搜索文件、命令或设置…",
-                    "files" => "搜索文件或命令…（> 查找命令）",
+                    "files" => "搜索文件…（> 查找命令）",
                     _ => "搜索命令名称或 ID",
                 })
                 .auto_focus(true)
@@ -4522,7 +4570,11 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
                         .search_prefix(shell_glyph(SEARCH_ICON, 16.0))
                         .search_suffix(text(if spotlight { "全部" } else if files { "文件" } else { "命令" }).text_color(description))
                 })
-                .search_accessibility_label("搜索文件或命令")
+                .search_accessibility_label(match mode {
+                    "spotlight" => SPOTLIGHT_LABEL,
+                    "files" => "搜索文件",
+                    _ => "搜索命令",
+                })
                 .list_class("max-h-64")
                 .item_class("focus:bg-sidebar-accent focus:text-sidebar-accent-foreground disabled:text-(--control-disabled)")
                 .item_style(|s| s.mx(px(6.0)).px(px(8.0)).py(px(7.0)).rounded(px(6.0)))

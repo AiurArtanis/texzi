@@ -8,7 +8,7 @@ use nsh_base::{
     rich_editor::view::RichEditorApi,
 };
 use nsh_core::{desktop::WindowPlacement, geometry::point, prelude::*};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use sha2::{Digest, Sha256};
 use std::{
     cell::{Cell, RefCell},
@@ -286,6 +286,32 @@ struct WindowRecord {
     split: Option<Split>,
 }
 
+#[derive(Deserialize)]
+struct ArchiveRecordIndex {
+    version: u32,
+    tabs: Vec<ArchiveRecordEntry>,
+}
+
+#[derive(Deserialize)]
+struct ArchiveRecordEntry {
+    id: u64,
+    path: Option<LocalPath>,
+    draft: Option<ArchiveDraftEntry>,
+    archived: Option<ArchivedDraft>,
+}
+
+#[derive(Deserialize)]
+struct ArchiveDraftEntry {
+    #[serde(rename = "text")]
+    _text: IgnoredAny,
+    #[serde(rename = "encoding")]
+    _encoding: String,
+    #[serde(rename = "bom")]
+    _bom: bool,
+    #[serde(rename = "eol")]
+    _eol: String,
+}
+
 struct Disk {
     path: PathBuf,
     _lease: File,
@@ -398,11 +424,34 @@ impl ArchiveLocation {
     }
 
     pub(super) fn record_file(&self) -> io::Result<&Path> {
-        if fs::symlink_metadata(&self.record)?.is_file() {
-            Ok(&self.record)
-        } else {
-            Err(io::Error::other("恢复记录位置不是文件"))
+        if !fs::symlink_metadata(&self.record)?.is_file() {
+            return Err(io::Error::other("恢复记录位置不是文件"));
         }
+        // Read the saved identities without materializing any draft text.
+        let record: ArchiveRecordIndex =
+            serde_json::from_reader(BufReader::new(File::open(&self.record)?))?;
+        let matches = |tab: &ArchiveRecordEntry| {
+            self.matches_original(tab.path.as_ref().map(LocalPath::to_path).as_deref())
+        };
+        let archive = record.tabs.iter().any(|tab| {
+            tab.id == self.id
+                && tab.draft.is_some()
+                && tab.archived.as_ref().is_some_and(|archive| {
+                    archive.preview_id == self.preview && archive.reason == self.reason
+                })
+                && matches(tab)
+        });
+        let preview = record
+            .tabs
+            .iter()
+            .any(|tab| tab.id == self.preview && tab.archived.is_none() && matches(tab));
+        if record.version != 1 || !archive || !preview {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "恢复记录与当前归档草稿不匹配",
+            ));
+        }
+        Ok(&self.record)
     }
 
     pub(super) fn matches_original(&self, path: Option<&Path>) -> bool {
@@ -1525,15 +1574,32 @@ mod tests {
         assert_ne!(first.original, second.original);
         assert_eq!(first.record_file().unwrap(), disk.path);
         assert_eq!(second.record_file().unwrap(), disk.path);
+        let saved = disk.read().unwrap();
         let moved = directory.join("moved record.json");
         fs::rename(&disk.path, &moved).unwrap();
         assert_eq!(
             first.record_file().unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+        let mut other_window = saved.clone();
+        other_window.tabs.retain(|tab| [4, 20].contains(&tab.id));
+        for tab in &mut other_window.tabs {
+            tab.path = Some(LocalPath::from_path(&paths[2]));
+        }
+        serde_json::to_writer(File::create(&disk.path).unwrap(), &other_window).unwrap();
+        assert_eq!(
+            first.record_file().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::write(&disk.path, b"unrelated text at this filename").unwrap();
+        assert_eq!(
+            first.record_file().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::remove_file(&disk.path).unwrap();
         fs::rename(&moved, &disk.path).unwrap();
         assert!(second.record_file().is_ok());
-        let saved = disk.read().unwrap();
+        assert!(first.record_file().is_ok());
         assert_eq!(
             saved
                 .tabs
@@ -1551,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn archive_links_follow_both_saved_previews_and_reject_a_moved_record() {
+    fn archive_links_follow_both_saved_previews_and_reject_moved_or_replaced_records() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

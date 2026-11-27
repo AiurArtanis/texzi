@@ -569,6 +569,7 @@ mod mounted_tests {
         session.dispatch(insert).unwrap();
         assert!(doc.source.is_dirty().unwrap());
         let begin = doc.controls.table.clone();
+        let material = shell.clone();
         let settings = shell.clone();
         let next = shell.clone();
         view()
@@ -580,7 +581,9 @@ mod mounted_tests {
                     .focusable(true)
                     .h(px(28.0))
                     .on_press(move |_: &()| {
+                        assert!(material.mode_glass_allowed());
                         begin.begin().unwrap();
+                        assert!(!material.mode_glass_allowed());
                     }),
             )
             .child(

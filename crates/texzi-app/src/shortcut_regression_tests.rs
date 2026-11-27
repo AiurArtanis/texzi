@@ -327,7 +327,7 @@ fn compact_title_keeps_the_quick_search_input_below_the_system_controls() {
             if let Some(batch) = core.commit() {
                 for item in batch.items {
                     if let MountItem::ViewProps { id, props } = item
-                        && props.accessibility.label.as_deref() == Some("搜索文件或命令")
+                        && props.accessibility.label.as_deref() == Some(super::SPOTLIGHT_LABEL)
                         && !nodes.contains(&id)
                     {
                         nodes.push(id);
@@ -355,9 +355,16 @@ fn compact_title_keeps_the_quick_search_input_below_the_system_controls() {
     assert!(input.page.x.0 + input.frame.size.width.0 <= 321.0 - 8.0);
 }
 
+thread_local! {
+    static SPOTLIGHT_TEST_FOLDER: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+}
+
 #[component]
 fn SpotlightSettingsFixture() -> impl IntoElement {
     let shell = super::Shell::new();
+    if let Some(root) = SPOTLIGHT_TEST_FOLDER.with(|slot| slot.borrow_mut().take()) {
+        shell.open_folder(&root);
+    }
     shell.add_with_mode(
         NativeView::fixture("原始正文"),
         Some(r"C:\texzi-test\主题记录.txt".into()),
@@ -368,8 +375,29 @@ fn SpotlightSettingsFixture() -> impl IntoElement {
 
 #[test]
 fn spotlight_search_keeps_result_domains_distinct_and_opens_the_actual_setting() {
+    use std::{
+        fs, thread,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!("texzi-spotlight-{nonce}"));
+    fs::create_dir(&workspace).unwrap();
+    fs::create_dir(workspace.join("nested")).unwrap();
+    let unopened = "nested/spotlight-disk-only-0625.txt";
+    let disk_body = "SPOTLIGHT-WORKSPACE-BODY-0625";
+    fs::write(workspace.join(unopened), disk_body).unwrap();
+    SPOTLIGHT_TEST_FOLDER.with(|slot| *slot.borrow_mut() = Some(workspace.clone()));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let _runtime = runtime.enter();
     let size = Size::new(px(800.0), px(640.0));
     let mut core = Core::new(ApproxTextEngine, size);
+    core.set_task_runtime(runtime.handle().clone());
     let mut environment = Environment::default();
     environment.os = Os::Windows;
     environment.window = size;
@@ -411,11 +439,11 @@ fn spotlight_search_keeps_result_domains_distinct_and_opens_the_actual_setting()
             .iter()
             .find_map(|(id, label)| (label == text).then_some(*id))
     };
-    let trigger = labelled(&drain(&mut core), "搜索文件或命令").unwrap();
+    let trigger = labelled(&drain(&mut core), super::SPOTLIGHT_LABEL).unwrap();
     assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
     let input = drain(&mut core)
         .into_iter()
-        .find_map(|(id, label)| (id != trigger && label == "搜索文件或命令").then_some(id))
+        .find_map(|(id, label)| (id != trigger && label == super::SPOTLIGHT_LABEL).then_some(id))
         .unwrap();
     assert_ne!(trigger, input);
     assert!(core.component_event(
@@ -448,6 +476,104 @@ fn spotlight_search_keeps_result_domains_distinct_and_opens_the_actual_setting()
     ));
     let no_match = drain(&mut core);
     assert!(labelled(&no_match, "0 项匹配").is_some(), "{no_match:?}");
+
+    let trigger = labelled(&no_match, super::SPOTLIGHT_LABEL).unwrap();
+    assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
+    let input = drain(&mut core)
+        .into_iter()
+        .find_map(|(id, label)| (id != trigger && label == super::SPOTLIGHT_LABEL).then_some(id))
+        .unwrap();
+    assert!(core.component_event(
+        input,
+        EventKind::ChangeText,
+        &EventPayload::Text {
+            text: "spotlight-disk-only-0625".into(),
+            count: 1,
+        }
+    ));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let result = loop {
+        let results = drain(&mut core);
+        if let Some(result) = labelled(&results, unopened) {
+            assert!(results.values().any(|label| label.starts_with("扫描结束")));
+            break result;
+        }
+        assert!(Instant::now() < deadline, "{results:?}");
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(core.component_event(result, EventKind::Press, &EventPayload::None));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let editor = drain(&mut core);
+        if labelled(&editor, disk_body).is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{editor:?}");
+        thread::sleep(Duration::from_millis(10));
+    }
+    drop(core);
+    fs::remove_file(workspace.join(unopened)).unwrap();
+    fs::remove_dir(workspace.join("nested")).unwrap();
+    fs::remove_dir(workspace).unwrap();
+}
+
+#[component]
+fn DualMarkdownGlassFixture() -> impl IntoElement {
+    let shell = super::Shell::new();
+    shell.add_with_mode(
+        NativeView::fixture("# Second group"),
+        Some(r"C:\texzi-test\second.md".into()),
+        Some(true),
+    );
+    shell.split_editor(false);
+    shell.split.get().unwrap().gate.to_rich();
+    shell.add_with_mode(
+        NativeView::fixture("# First group"),
+        Some(r"C:\texzi-test\first.md".into()),
+        Some(true),
+    );
+    let first = shell.primary().unwrap();
+    let second = shell.split.get().unwrap();
+    assert_ne!(first.id, second.id);
+    assert!(first.displayed_rich() && second.displayed_rich());
+    assert!(shell.mode_glass_allowed());
+    shell.open_quick("spotlight");
+    assert!(!shell.mode_glass_allowed());
+    shell.close_panel();
+    assert!(shell.mode_glass_allowed());
+    shell.run("texzi.find.open");
+    assert!(super::find_panel::is_open(&shell.panel.get()));
+    assert!(!shell.mode_glass_allowed());
+    shell.close_panel();
+    assert!(shell.mode_glass_allowed());
+    super::render_shell(shell)
+}
+
+#[test]
+fn spotlight_and_find_have_material_priority_over_both_mounted_mode_buttons() {
+    let mut core = Core::new(ApproxTextEngine, Size::new(px(960.0), px(640.0)));
+    core.set_environment(Environment {
+        os: Os::Windows,
+        ..Default::default()
+    });
+    core.mount_root(&Root::new::<DualMarkdownGlassFixture>(|| ()));
+    let mut ids = std::collections::BTreeSet::new();
+    for _ in 0..5 {
+        core.run_component_tasks();
+        if let Some(batch) = core.commit() {
+            for item in batch.items {
+                if let MountItem::ViewProps { id, props } = item
+                    && props.accessibility.label.as_deref() == Some("切换到源码")
+                {
+                    ids.insert(id);
+                }
+            }
+        }
+    }
+    let mut bounds: Vec<_> = ids.into_iter().filter_map(|id| core.measure(id)).collect();
+    bounds.sort_by(|a, b| a.page.x.0.total_cmp(&b.page.x.0));
+    assert_eq!(bounds.len(), 2);
+    assert!(bounds[0].page.x + bounds[0].frame.size.width < bounds[1].page.x);
 }
 
 #[component]

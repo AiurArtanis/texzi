@@ -153,12 +153,23 @@ pub(super) fn border_width() -> Points {
 
 /// First, non-interactive child of a relatively positioned HUD card.
 pub(super) fn local_glass_surface(radius: Points) -> View {
+    local_glass_surface_when(radius, || true)
+}
+
+/// A lower-priority card keeps the same size and controls when it must use solid paint.
+pub(super) fn local_glass_surface_when(
+    radius: Points,
+    may_sample: impl Fn() -> bool + 'static,
+) -> View {
     let preference = use_context::<VisualPreferences>();
     let reference = element_ref();
     let requested = Rc::new(Cell::new(None));
     let registered = signal(false);
-    let enabled =
-        move || registered.get() && preference.is_some_and(|value| value.0.get().local_glass());
+    let enabled = move || {
+        registered.get()
+            && may_sample()
+            && preference.is_some_and(|value| value.0.get().local_glass())
+    };
     let style = nsh_platform_windows::LocalGlassStyle {
         tint: &GLASS_TINTS,
         glass_border: px(1.0),

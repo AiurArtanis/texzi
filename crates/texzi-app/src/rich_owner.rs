@@ -658,9 +658,16 @@ impl ModeGate {
         &self,
         revision: u64,
     ) -> Option<nsh_base::rich_editor::model::Node> {
+        self.with_visible_projection(revision, |projection| projection.doc.clone())
+    }
+    pub(crate) fn with_visible_projection<T>(
+        &self,
+        revision: u64,
+        inspect: impl FnOnce(&Projection) -> T,
+    ) -> Option<T> {
         let active = self.active.borrow();
         let owner = active.as_ref()?;
-        (owner.revision.get() == revision).then(|| owner.projection.borrow().doc.clone())
+        (owner.revision.get() == revision).then(|| inspect(&owner.projection.borrow()))
     }
     pub(crate) fn selection_view(&self) -> &NativeView {
         if self.rich_mode.get() {
