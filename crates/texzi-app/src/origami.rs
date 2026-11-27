@@ -21,6 +21,8 @@ const ALIASES: &[(&str, &str)] = &[
     ("input", "seam-strong"),
     ("accent", "pill-hover"),
     ("accent-foreground", "ink-1"),
+    ("sidebar-accent", "pill-active"),
+    ("sidebar-accent-foreground", "ink-1"),
     ("primary", "iris"),
     ("primary-foreground", "on-primary"),
     ("secondary", "paper-subtle"),
@@ -47,6 +49,9 @@ static PALETTE: LazyLock<Tokens> = LazyLock::new(|| {
     palette.set_color("shell-solid", shell);
     palette.set_color("chrome-edge", required(&palette, "seam-strong"));
     palette.set_number("workbench-border", 1.0);
+    palette.set_color("control-face", AdaptiveColor::TRANSPARENT);
+    palette.set_color("control-text", required(&palette, "ink-1"));
+    palette.set_color("control-disabled", required(&palette, "muted-readable"));
     palette.set_color("active-paper-edge", required(&palette, "iris-border"));
     for (index, name) in ["ribbon-start", "ribbon-middle", "ribbon-end"]
         .into_iter()
@@ -119,7 +124,11 @@ pub(super) fn border_width() -> Points {
     px(tokens().number("workbench-border").unwrap_or(1.0))
 }
 
-pub(super) const CONTROL_STATES: &str = "hover:bg-pill-hover hover:text-accent-foreground active:bg-pill-active focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
+pub(super) const CONTROL_STATES: &str = "hover:bg-accent hover:text-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:bg-(--control-face) disabled:text-(--control-disabled) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
+
+pub(super) fn initial_tokens() -> Tokens {
+    SystemVisuals::default().palette()
+}
 
 pub(super) fn install() {
     let visuals = use_context::<VisualPreferences>();
@@ -133,14 +142,20 @@ pub(super) fn install() {
 pub(super) struct VisualPreferences(Signal<SystemVisuals>);
 
 impl VisualPreferences {
-    pub(super) fn watch() -> Self {
-        let current = signal(SystemVisuals::read());
-        set_interval(std::time::Duration::from_secs(1), move || {
-            let observed = SystemVisuals::read();
-            if current.get_untracked() != observed {
-                current.set(observed);
-            }
-        });
+    pub(super) fn watch(title: &'static str) -> Self {
+        let current = signal(SystemVisuals::read(None));
+        let refresh = move || {
+            spawn(async move {
+                if let Ok(observed) =
+                    run_on_main_thread(move || SystemVisuals::read(Some(title))).await
+                    && current.get_untracked() != observed
+                {
+                    current.set(observed);
+                }
+            });
+        };
+        refresh();
+        set_interval(std::time::Duration::from_secs(1), refresh);
         Self(current)
     }
 
@@ -154,13 +169,13 @@ impl VisualPreferences {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct SystemVisuals {
     transparency: bool,
-    composition: bool,
+    mica_applied: bool,
     high_contrast: Option<SystemColors>,
 }
 
 impl SystemVisuals {
     fn mica(self) -> bool {
-        self.transparency && self.composition && self.high_contrast.is_none()
+        self.transparency && self.mica_applied && self.high_contrast.is_none()
     }
 
     fn palette(self) -> Tokens {
@@ -228,11 +243,18 @@ impl SystemVisuals {
                 palette.set_color(alias, required(&palette, name));
             }
             palette.set_color("accent-foreground", rgb(system.highlight_text).into());
+            palette.set_color(
+                "sidebar-accent-foreground",
+                rgb(system.highlight_text).into(),
+            );
+            palette.set_color("control-face", rgb(system.button_face).into());
+            palette.set_color("control-text", rgb(system.button_text).into());
+            palette.set_color("control-disabled", rgb(system.disabled_text).into());
         }
         palette
     }
 
-    fn read() -> Self {
+    fn read(title: Option<&str>) -> Self {
         use nsh_platform_windows::windows::{
             Win32::{
                 System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
@@ -277,7 +299,9 @@ impl SystemVisuals {
         };
         Self {
             transparency,
-            composition: mica_supported(),
+            mica_applied: transparency
+                && !high_contrast
+                && title.is_some_and(workbench_uses_mica_alt),
             high_contrast: high_contrast.then(SystemColors::read),
         }
     }
@@ -289,12 +313,16 @@ struct SystemColors {
     text: u32,
     highlight: u32,
     highlight_text: u32,
+    button_face: u32,
+    button_text: u32,
+    disabled_text: u32,
 }
 
 impl SystemColors {
     fn read() -> Self {
         use nsh_platform_windows::windows::Win32::Graphics::Gdi::{
-            COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT, GetSysColor,
+            COLOR_BTNFACE, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
+            COLOR_WINDOW, COLOR_WINDOWTEXT, GetSysColor,
         };
         let rgb_value = |role| {
             // SAFETY: GetSysColor reads a system color and takes no pointers.
@@ -306,46 +334,80 @@ impl SystemColors {
             text: rgb_value(COLOR_WINDOWTEXT),
             highlight: rgb_value(COLOR_HIGHLIGHT),
             highlight_text: rgb_value(COLOR_HIGHLIGHTTEXT),
+            button_face: rgb_value(COLOR_BTNFACE),
+            button_text: rgb_value(COLOR_BTNTEXT),
+            disabled_text: rgb_value(COLOR_GRAYTEXT),
         }
     }
 }
 
-fn mica_supported() -> bool {
+fn workbench_uses_mica_alt(title: &str) -> bool {
     use nsh_platform_windows::windows::{
         Win32::{
-            Graphics::Dwm::DwmIsCompositionEnabled,
-            System::{
-                LibraryLoader::{GetModuleHandleW, GetProcAddress},
-                SystemInformation::OSVERSIONINFOW,
+            Foundation::{HWND, LPARAM},
+            Graphics::Dwm::{DWMWA_SYSTEMBACKDROP_TYPE, DwmGetWindowAttribute},
+            System::Threading::GetCurrentThreadId,
+            UI::WindowsAndMessaging::{
+                EnumThreadWindows, GetClassNameW, GetWindowTextW, IsWindowVisible,
             },
         },
-        core::{s, w},
+        core::{BOOL, w},
     };
 
-    type RtlGetVersion = unsafe extern "system" fn(*mut OSVERSIONINFOW) -> i32;
-    static BUILD: LazyLock<u32> = LazyLock::new(|| {
-        let mut version = OSVERSIONINFOW {
-            dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
-            ..Default::default()
+    struct Query<'a> {
+        title: &'a [u16],
+        handle: Option<HWND>,
+    }
+
+    unsafe extern "system" fn find_visible_workbench(hwnd: HWND, data: LPARAM) -> BOOL {
+        // SAFETY: EnumThreadWindows invokes this synchronously with the live Query below.
+        let query = unsafe { &mut *(data.0 as *mut Query<'_>) };
+        let mut class = [0u16; 32];
+        let mut title = [0u16; 96];
+        // SAFETY: the calling UI thread owns hwnd and the output buffers are local.
+        let matches = unsafe {
+            IsWindowVisible(hwnd).as_bool()
+                && GetClassNameW(hwnd, &mut class) == 9
+                && &class[..9] == w!("NshWindow").as_wide()
+                && GetWindowTextW(hwnd, &mut title) as usize == query.title.len()
+                && title.get(..query.title.len()) == Some(query.title)
         };
-        // SAFETY: the module is already loaded and RtlGetVersion takes the sized Windows struct.
-        unsafe {
-            let Ok(module) = GetModuleHandleW(w!("ntdll.dll")) else {
-                return 0;
-            };
-            let Some(entry) = GetProcAddress(module, s!("RtlGetVersion")) else {
-                return 0;
-            };
-            let get_version: RtlGetVersion = std::mem::transmute(entry);
-            if get_version(&mut version) == 0 {
-                version.dwBuildNumber
-            } else {
-                0
-            }
+        if matches {
+            query.handle = Some(hwnd);
         }
-    });
-    // SAFETY: DwmIsCompositionEnabled reports a system boolean without taking a pointer from the app.
-    *BUILD >= 22621 && unsafe { DwmIsCompositionEnabled() }.is_ok_and(|enabled| enabled.as_bool())
+        BOOL::from(!matches)
+    }
+
+    let title = title.encode_utf16().collect::<Vec<_>>();
+    let mut query = Query {
+        title: &title,
+        handle: None,
+    };
+    // The platform owns one visible Texzi workbench per process. Its hidden host
+    // and any OS dialogs are excluded by the visible class and caption above.
+    // SAFETY: query outlives the synchronous enumeration on the UI thread.
+    unsafe {
+        let _ = EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(find_visible_workbench),
+            LPARAM((&mut query as *mut Query<'_>) as isize),
+        );
+    }
+    let Some(hwnd) = query.handle else {
+        return false;
+    };
+    let mut kind = 0i32;
+    // SAFETY: the query uses the visible HWND and an i32 output of the required size.
+    unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            (&mut kind as *mut i32).cast(),
+            size_of::<i32>() as u32,
+        )
+    }
+    .is_ok()
+        && kind == 4
 }
 
 #[cfg(test)]
@@ -356,13 +418,13 @@ mod tests {
     fn windows_fallback_preserves_opaque_paper_and_system_focus_colors() {
         let mica = SystemVisuals {
             transparency: true,
-            composition: true,
+            mica_applied: true,
             high_contrast: None,
         }
         .palette();
         let solid = SystemVisuals {
             transparency: false,
-            composition: true,
+            mica_applied: true,
             high_contrast: None,
         }
         .palette();
@@ -371,10 +433,13 @@ mod tests {
             text: 0xf7fff0,
             highlight: 0xffff10,
             highlight_text: 0x08051a,
+            button_face: 0x241536,
+            button_text: 0xfff8f0,
+            disabled_text: 0x887791,
         };
         let contrast = SystemVisuals {
             transparency: true,
-            composition: true,
+            mica_applied: true,
             high_contrast: Some(system),
         }
         .palette();
@@ -399,6 +464,28 @@ mod tests {
         assert_eq!(
             contrast.color("selected-text"),
             Some(rgb(system.highlight_text).into())
+        );
+        assert_eq!(contrast.color("accent"), Some(rgb(system.highlight).into()));
+        assert_eq!(
+            contrast.color("accent-foreground"),
+            Some(rgb(system.highlight_text).into())
+        );
+        assert_eq!(contrast.color("sidebar-accent"), contrast.color("accent"));
+        assert_eq!(
+            contrast.color("sidebar-accent-foreground"),
+            contrast.color("accent-foreground")
+        );
+        assert_eq!(
+            contrast.color("control-face"),
+            Some(rgb(system.button_face).into())
+        );
+        assert_eq!(
+            contrast.color("control-text"),
+            Some(rgb(system.button_text).into())
+        );
+        assert_eq!(
+            contrast.color("control-disabled"),
+            Some(rgb(system.disabled_text).into())
         );
         assert_eq!(contrast.number("workbench-border"), Some(1.5));
     }

@@ -124,7 +124,7 @@ mod app {
 
     #[component]
     pub fn Window() -> impl IntoElement {
-        let visuals = crate::origami::VisualPreferences::watch();
+        let visuals = crate::origami::VisualPreferences::watch(WINDOW_TITLE);
         provide_context(visuals);
         nsh_core::element::desktop::window()
             .id("main")
@@ -141,7 +141,11 @@ mod app {
         title_bar.height = Some(px(crate::origami::metric("title")));
         main_window.attributes.title_bar = Some(title_bar);
         platform::run_app(
-            platform::AppSource::Rust(platform::Root::of::<Window>().main_window(main_window)),
+            platform::AppSource::Rust(
+                platform::Root::of::<Window>()
+                    .tokens(crate::origami::initial_tokens())
+                    .main_window(main_window),
+            ),
             platform::AppOptions {
                 title: WINDOW_TITLE.to_owned(),
                 app_id: "dev.texzi.tx00".to_owned(),
