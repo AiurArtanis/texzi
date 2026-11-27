@@ -1,4 +1,5 @@
 use super::{divider, frame, secondary_foreground, selected_surface};
+use crate::origami::{CONTROL_STATES, border_width, color, font_size, metric};
 use crate::{native_menu, settings};
 use nsh_core::{
     element::{input, scroll},
@@ -99,50 +100,104 @@ fn pretty_key(stroke: &str) -> String {
         .join("+")
 }
 
+fn choice_control(selected: impl Fn() -> bool + Clone + 'static) -> nsh_base::ButtonElement {
+    let fill = selected.clone();
+    let ink = selected.clone();
+    nsh_base::button()
+        .h(px(metric("field")))
+        .px(px(10.0))
+        .items_center()
+        .justify_center()
+        .app_class(CONTROL_STATES)
+        .rounded(px(6.0))
+        .bg(move || if fill() { selected_surface() } else { frame() })
+        .text_color(move || color(if ink() { "selected-text" } else { "ink-1" }))
+        .selected(selected)
+}
+
 fn choice(
     label: impl Into<SharedString>,
     selected: impl Fn() -> bool + Clone + 'static,
 ) -> nsh_base::ButtonElement {
-    let fill = selected.clone();
-    nsh_base::button()
-        .h(px(34.0))
-        .px(px(10.0))
-        .items_center()
-        .justify_center()
-        .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
-        .bg(move || if fill() { selected_surface() } else { frame() })
-        .selected(selected)
-        .child(text(label.into()))
+    choice_control(selected).child(text(label.into()))
 }
 
-pub(super) fn sidebar(state: Rc<SettingsView>) -> impl IntoElement {
+fn theme_choice(
+    label: &'static str,
+    mode: &str,
+    selected: impl Fn() -> bool + Clone + 'static,
+) -> nsh_base::ButtonElement {
+    let chosen = selected.clone();
+    let sample = crate::origami::sample_color("paper");
+    let first = if mode == "dark" {
+        sample.dark
+    } else {
+        sample.light
+    };
+    let second = if mode == "light" {
+        sample.light
+    } else {
+        sample.dark
+    };
+    choice_control(selected)
+        .w(px(104.0))
+        .h(px(78.0))
+        .p(px(6.0))
+        .gap(px(5.0))
+        .border(border_width)
+        .border_color(move || color(if chosen() { "iris" } else { "chrome-edge" }))
+        .accessibility_label(label)
+        .child(
+            view()
+                .w_full()
+                .h(px(42.0))
+                .rounded(px(4.0))
+                .bg(first)
+                .flex_row()
+                .child(view().flex_1())
+                .child(view().flex_1().bg(second).rounded_r(px(4.0))),
+        )
+        .child(text(label).text_size(px(font_size("meta"))))
+}
+
+pub(super) fn sidebar(state: Rc<SettingsView>, compact: bool) -> impl IntoElement {
     let section = state.section;
     let query = state.query;
-    view()
-        .w(px(232.0))
-        .flex_shrink_0()
-        .min_h(px(0.0))
-        .bg(frame)
-        .border_r(px(1.0))
-        .border_color(divider)
-        .child(
-            scroll()
-                .flex_1()
-                .child(
-                    view()
-                        .p(px(8.0))
-                        .gap(px(2.0))
-                        .children(CATEGORIES.iter().copied().map(move |category| {
-                            choice(category, move || section.get() == category)
-                                .h(px(36.0))
-                                .items_start()
-                                .on_press(move |_: &()| {
-                                    section.set(category);
-                                    query.set(String::new());
-                                })
-                        })),
-                ),
-        )
+    let labels = if compact {
+        view().flex_row().items_center()
+    } else {
+        view()
+    };
+    let categories = labels
+        .p(px(6.0))
+        .gap(px(2.0))
+        .children(CATEGORIES.iter().copied().map(move |category| {
+            choice(category, move || section.get() == category)
+                .flex_shrink_0()
+                .items_start()
+                .on_press(move |_: &()| {
+                    section.set(category);
+                    query.set(String::new());
+                })
+        }));
+    if compact {
+        view()
+            .h(px(44.0))
+            .w_full()
+            .flex_shrink_0()
+            .border_b(border_width)
+            .border_color(divider)
+            .child(scroll().horizontal().child(categories))
+    } else {
+        view()
+            .w(px(metric("sidebar")))
+            .flex_shrink_0()
+            .min_h(px(0.0))
+            .bg(|| color("mica-sidebar"))
+            .border_r(border_width)
+            .border_color(divider)
+            .child(scroll().flex_1().child(categories))
+    }
 }
 
 fn selected_root(state: &SettingsView, root: Signal<Option<PathBuf>>) -> Option<PathBuf> {
@@ -216,7 +271,7 @@ fn control(
         });
         let blur = commit.clone();
         return input()
-            .h(px(34.0))
+            .h(px(metric("field")))
             .w(px(if spec["type"] == "integer" {
                 100.0
             } else {
@@ -225,8 +280,9 @@ fn control(
             .max_w(relative(1.0))
             .px(px(8.0))
             .bg(frame)
-            .border(px(1.0))
+            .border(border_width)
             .border_color(divider)
+            .app_class(CONTROL_STATES)
             .label(spec["name"].as_str().unwrap())
             .value(move || {
                 let active_root = selected_root(&show_scope, root);
@@ -275,12 +331,17 @@ fn control(
                     let read = settings.clone();
                     let read_scope = state.clone();
                     let apply_scope = state.clone();
-                    choice(label, move || {
+                    let is_selected = move || {
                         read.effective(id, selected_root(&read_scope, root).as_deref())
                             .0
                             == selected
-                    })
-                    .on_press(move |_: &()| {
+                    };
+                    let button = if id == settings::THEME {
+                        theme_choice(label, value.as_str().unwrap_or_default(), is_selected)
+                    } else {
+                        choice(label, is_selected)
+                    };
+                    button.on_press(move |_: &()| {
                         apply.apply(
                             id,
                             selected_root(&apply_scope, root).as_deref(),
@@ -318,7 +379,7 @@ fn row(
     let font_scope = state.clone();
     view()
         .py(px(12.0))
-        .border_b(px(1.0))
+        .border_b(border_width)
         .border_color(divider)
         .flex_row()
         .gap(px(16.0))
@@ -332,7 +393,7 @@ fn row(
                 .child(text(spec["name"].as_str().unwrap()))
                 .child(
                     text(setting_description(id))
-                        .text_size(px(12.0))
+                        .text_size(px(font_size("meta")))
                         .text_color(secondary_foreground),
                 )
                 .child(
@@ -344,7 +405,7 @@ fn row(
                                 .1
                         )
                     })
-                    .text_size(px(12.0))
+                    .text_size(px(font_size("meta")))
                     .text_color(secondary_foreground),
                 )
                 .child(when(id == settings::FONT_FAMILY, move || {
@@ -361,7 +422,7 @@ fn row(
                             installed.as_deref().unwrap_or("Windows 字形回退")
                         )
                     })
-                    .text_size(px(12.0))
+                    .text_size(px(font_size("meta")))
                     .text_color(secondary_foreground)
                 })),
         )
@@ -388,7 +449,7 @@ fn row(
                             .on_press(move |_: &()| {
                                 reset.apply(id, selected_root(&reset_scope, root).as_deref(), None);
                             })
-                            .child(text("重置此项").text_size(px(12.0))),
+                            .child(text("重置此项").text_size(px(font_size("meta")))),
                     )
             }),
         )
@@ -413,7 +474,7 @@ pub(super) fn content(
             .max_w(px(1040.0))
             .flex_1()
             .min_h(px(0.0))
-            .p(px(32.0))
+            .p(move || px(if narrow.get() { 12.0 } else { 32.0 }))
             .gap(px(16.0))
             .child(
                 view()
@@ -422,19 +483,20 @@ pub(super) fn content(
                     .justify_between()
                     .gap(px(12.0))
                     .style_when(move || narrow.get(), |style| style.flex_col().items_start())
-                    .child(text("设置").text_size(px(22.0)))
+                    .child(text("设置").text_size(px(font_size("section"))))
                     .child(
                         input()
                             .element_ref(&state.search)
                             .auto_focus(true)
+                            .app_class(CONTROL_STATES)
                             .label("搜索设置")
                             .placeholder("搜索设置")
-                            .h(px(34.0))
+                            .h(px(metric("field")))
                             .w(px(320.0))
                             .max_w(relative(1.0))
                             .px(px(8.0))
                             .bg(frame)
-                            .border(px(1.0))
+                            .border(border_width)
                             .border_color(divider)
                             .value(move || query.get())
                             .on_change(move |value: &str| query.set(value.into())),
@@ -505,13 +567,13 @@ pub(super) fn content(
                                 .flex_row()
                                 .py(px(10.0))
                                 .gap(px(12.0))
-                                .border_b(px(1.0))
+                                .border_b(border_width)
                                 .border_color(divider)
                                 .style_when(move || narrow.get(), |style| style.flex_col())
                                 .child(
                                     view().flex_1().child(text(binding.name.clone())).child(
                                         text(format!("{} · {}", binding.source, binding.context))
-                                            .text_size(px(12.0))
+                                            .text_size(px(font_size("meta")))
                                             .text_color(secondary_foreground),
                                     ),
                                 )

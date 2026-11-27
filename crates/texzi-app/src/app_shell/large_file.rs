@@ -653,6 +653,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
         .flex_1()
         .min_w(px(0.))
         .min_h(px(0.))
+        .rounded(px(crate::origami::metric("paperRadius")))
         .overflow_hidden()
         .p(px(8.))
         .gap(px(4.))

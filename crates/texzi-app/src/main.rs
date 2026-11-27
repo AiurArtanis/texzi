@@ -34,6 +34,8 @@ mod cross_view_history_tests;
 #[cfg(windows)]
 mod native_menu;
 #[cfg(windows)]
+mod origami;
+#[cfg(windows)]
 mod quick_open;
 #[cfg(windows)]
 mod settings;
@@ -87,11 +89,11 @@ mod app {
     pub(crate) fn rich_classes() -> nsh_base::rich_editor::view::RichEditorClasses {
         use std::collections::BTreeMap;
         let mut classes = nsh_base::rich_editor::view::RichEditorClasses::default();
-        classes.content = Some("p-4 text-base".into());
+        classes.content = Some("p-4 text-[16px] leading-[27px]".into());
         classes.nodes = Some(BTreeMap::from([
             ("paragraph".into(), "mb-3".into()),
             ("heading".into(), "font-bold mt-4 mb-3".into()),
-            ("heading[level=1]".into(), "text-3xl".into()),
+            ("heading[level=1]".into(), "text-[26px]".into()),
             ("heading[level=2]".into(), "text-2xl".into()),
             ("heading[level=3]".into(), "text-xl".into()),
             ("heading[level=4]".into(), "text-lg".into()),
@@ -122,10 +124,12 @@ mod app {
 
     #[component]
     pub fn Window() -> impl IntoElement {
-        nsh_core::element::set_tokens(nsh_base::tokens_of(Some(r##"{"cssVars":{"light":{"foreground":"#20242b","background":"#ffffff","muted":"#f3f4f6","muted-foreground":"#616975","border":"#dee2e8","accent":"#edf1f6","accent-foreground":"#20242b","input":"#dee2e8"},"dark":{"foreground":"#e5e9f0","background":"#191d23","muted":"#20242b","muted-foreground":"#a7b0bd","border":"#3b4350","accent":"#303845","accent-foreground":"#e5e9f0","input":"#3b4350"}}}"##)).expect("application palette"));
+        let visuals = crate::origami::VisualPreferences::watch(WINDOW_TITLE);
+        provide_context(visuals);
         nsh_core::element::desktop::window()
             .id("main")
             .title(WINDOW_TITLE)
+            .attributes(crate::origami::VisualPreferences::window_attributes())
             .default_size(size(px(960.0), px(640.0)))
             .content(crate::app_shell::view_shell)
     }
@@ -134,10 +138,14 @@ mod app {
         let mut main_window = nsh_core::desktop::MainWindowOptions::default();
         let mut title_bar = nsh_core::desktop::TitleBarOptions::default();
         title_bar.style = nsh_core::desktop::TitleBarStyle::Hidden;
-        title_bar.height = Some(px(crate::app_shell::TITLE_BAR_HEIGHT));
+        title_bar.height = Some(px(crate::origami::metric("title")));
         main_window.attributes.title_bar = Some(title_bar);
         platform::run_app(
-            platform::AppSource::Rust(platform::Root::of::<Window>().main_window(main_window)),
+            platform::AppSource::Rust(
+                platform::Root::of::<Window>()
+                    .tokens(crate::origami::initial_tokens())
+                    .main_window(main_window),
+            ),
             platform::AppOptions {
                 title: WINDOW_TITLE.to_owned(),
                 app_id: "dev.texzi.tx00".to_owned(),
