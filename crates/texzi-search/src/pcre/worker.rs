@@ -1,6 +1,5 @@
 use std::{
-    fs::File,
-    io::{self, BufRead, BufWriter, Write},
+    io::{self, BufRead, BufWriter, Read, Write},
     ops::{ControlFlow, Range},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -8,7 +7,6 @@ use std::{
 use super::{
     RegexError,
     engine::{Match, Pattern},
-    process,
     template::Parsed,
     wire::{self, Operation, Request},
 };
@@ -96,7 +94,11 @@ struct Query {
 }
 
 impl Query {
-    fn open(request: Request) -> Result<(Self, Operation), RegexError> {
+    fn open(
+        request: Request,
+        input: &mut impl Read,
+        output: &mut impl Write,
+    ) -> Result<(Self, Operation), RegexError> {
         let Request {
             subject_len,
             pattern,
@@ -104,8 +106,14 @@ impl Query {
             scope,
             operation,
         } = request;
+        if subject_len > super::MAX_SUBJECT_BYTES || pattern.len() > super::MAX_EXPRESSION_BYTES {
+            return Err(RegexError::Resource);
+        }
         let mut compiled = Pattern::compile(&pattern, options.case_sensitive)?;
-        let text = private_text(&process::inherited_subject()?, subject_len)?;
+        // A compile error reaches the caller before it starts writing the subject.
+        wire::frame(output, wire::SUBJECT_READY, &[])?;
+        output.flush()?;
+        let text = private_text(input, subject_len)?;
         if scope.ranges().is_some_and(|ranges| {
             ranges.len() > super::MAX_SCOPES
                 || ranges.iter().any(|range| text.get(range.clone()).is_none())
@@ -245,28 +253,12 @@ impl Query {
     }
 }
 
-fn read_at(file: &File, chunk: &mut [u8], offset: u64) -> io::Result<usize> {
-    #[cfg(windows)]
-    {
-        std::os::windows::fs::FileExt::seek_read(file, chunk, offset)
-    }
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::FileExt::read_at(file, chunk, offset)
-    }
-}
-
-fn private_text(file: &File, len: usize) -> Result<String, RegexError> {
+fn private_text(input: &mut impl Read, len: usize) -> Result<String, RegexError> {
     if len > super::MAX_SUBJECT_BYTES {
         return Err(RegexError::Resource);
     }
-    let meta = file.metadata()?;
-    if !meta.is_file() || len as u64 != meta.len() {
-        return Err(RegexError::InvalidSubject);
-    }
-    // Even a standalone invocation can supply an ordinary file. Never lend PCRE2
-    // or Rust a str backed by externally mutable pages. This is the sole contiguous
-    // private subject in the worker, and String::from_utf8 reuses its allocation.
+    // Even a standalone invocation must provide an exact, valid UTF-8 payload.
+    // String::from_utf8 reuses the worker's sole private contiguous allocation.
     let mut owned = Vec::new();
     owned
         .try_reserve_exact(len)
@@ -274,14 +266,16 @@ fn private_text(file: &File, len: usize) -> Result<String, RegexError> {
     let mut chunk = [0u8; wire::BATCH_BYTES];
     while owned.len() < len {
         let take = chunk.len().min(len - owned.len());
-        let count = read_at(file, &mut chunk[..take], owned.len() as u64)?;
-        if count == 0 {
-            return Err(RegexError::InvalidSubject);
-        }
-        owned.extend_from_slice(&chunk[..count]);
-        SUBJECT_BYTES_READ.fetch_add(count as u64, Ordering::Relaxed);
+        input
+            .read_exact(&mut chunk[..take])
+            .map_err(|_| RegexError::InvalidSubject)?;
+        owned.extend_from_slice(&chunk[..take]);
+        SUBJECT_BYTES_READ.fetch_add(take as u64, Ordering::Relaxed);
     }
-    if read_at(file, &mut chunk[..1], len as u64)? != 0 {
+    input
+        .read_exact(&mut chunk[..1])
+        .map_err(|_| RegexError::InvalidSubject)?;
+    if chunk[0] != wire::SUBJECT_END {
         return Err(RegexError::InvalidSubject);
     }
     String::from_utf8(owned).map_err(|_| RegexError::InvalidSubject)
@@ -289,9 +283,9 @@ fn private_text(file: &File, len: usize) -> Result<String, RegexError> {
 
 fn run(output: &mut impl Write) -> Result<(), RegexError> {
     let mut input = Vec::new();
-    let mut reader = io::BufReader::new(io::stdin().lock());
+    let mut reader = io::BufReader::with_capacity(wire::BATCH_BYTES, io::stdin().lock());
     wire::read_blob(&mut reader, &mut input, wire::CONTROL_BYTES)?;
-    let (mut query, mut op) = Query::open(wire::parse(&input)?)?;
+    let (mut query, mut op) = Query::open(wire::parse(&input)?, &mut reader, output)?;
     let mut completed_operations = 0;
     loop {
         query.execute(op, output)?;
@@ -329,13 +323,21 @@ mod tests {
 
     #[test]
     fn subject_checks_declared_length_and_bytes_before_matching() {
-        let mut file = tempfile::tempfile().unwrap();
-        file.write_all(b"abc").unwrap();
-        assert_eq!(private_text(&file, 3).unwrap(), "abc");
-        assert_eq!(private_text(&file, 2), Err(RegexError::InvalidSubject));
-        assert_eq!(private_text(&file, 4), Err(RegexError::InvalidSubject));
-        let mut malformed = tempfile::tempfile().unwrap();
-        malformed.write_all(&[0xe4, 0xb8]).unwrap();
-        assert_eq!(private_text(&malformed, 2), Err(RegexError::InvalidSubject));
+        let mut stream = Vec::new();
+        wire::write_subject(&mut stream, &crate::Rope::from_str("a猫\nb")).unwrap();
+        let mut input = stream.as_slice();
+        assert_eq!(private_text(&mut input, 6).unwrap(), "a猫\nb");
+        assert!(input.is_empty());
+        for (mut bytes, len) in [
+            (stream.as_slice(), 5),
+            (stream.as_slice(), 7),
+            (&stream[..6], 6),
+            (&[0xe4, 0xb8, wire::SUBJECT_END][..], 2),
+        ] {
+            assert_eq!(
+                private_text(&mut bytes, len),
+                Err(RegexError::InvalidSubject)
+            );
+        }
     }
 }

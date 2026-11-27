@@ -1,12 +1,12 @@
 use std::{
-    io::{Read, Write},
+    io::{self, BufWriter, Read, Write},
     ops::Range,
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::RegexError;
-use crate::{Navigation, NavigationReplay, Options, Scope, VisibleReplay};
+use crate::{Navigation, NavigationReplay, Options, Rope, Scope, VisibleReplay};
 
 // Only numbered source offsets travel per match. Patterns and templates are sent down
 // stdin, never through command lines, diagnostics, or an externally named file.
@@ -19,6 +19,10 @@ pub const BATCH: u8 = 3;
 pub const COUNT: u8 = 4;
 pub const ERROR: u8 = 5;
 pub const STATS: u8 = 6;
+pub const SUBJECT_READY: u8 = 7;
+// A UTF-8 subject cannot itself contain this byte. It separates the initial
+// length-delimited byte stream from later control requests on the same pipe.
+pub const SUBJECT_END: u8 = 0xff;
 
 #[derive(Serialize, Deserialize)]
 pub struct Request {
@@ -60,6 +64,23 @@ pub fn write_blob(writer: &mut impl Write, data: &[u8]) -> Result<(), RegexError
     Ok(())
 }
 
+pub fn write_subject(writer: &mut impl Write, rope: &Rope) -> io::Result<()> {
+    let mut out = BufWriter::with_capacity(BATCH_BYTES, writer);
+    let result = (|| {
+        for chunk in rope.chunks() {
+            for bytes in chunk.as_bytes().chunks(BATCH_BYTES) {
+                out.write_all(bytes)?;
+            }
+        }
+        out.write_all(&[SUBJECT_END])?;
+        out.flush()
+    })();
+    // Discard unwritten bytes after a closed pipe. BufWriter's Drop would
+    // otherwise try to send the failed block again.
+    let _ = out.into_parts();
+    result
+}
+
 pub fn read_blob(
     reader: &mut impl Read,
     buf: &mut Vec<u8>,
@@ -95,6 +116,7 @@ pub fn next_frame(reader: &mut impl Read, buf: &mut Vec<u8>) -> Result<u8, Regex
     let mut tag = [0];
     reader.read_exact(&mut tag)?;
     let limit = match tag[0] {
+        SUBJECT_READY => 0,
         FIRST | COUNT => 8,
         ERROR => 1024,
         BATCH => BATCH_BYTES,

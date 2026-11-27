@@ -1,5 +1,4 @@
 use std::{
-    fs::File,
     io::{self, BufReader},
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
@@ -12,6 +11,7 @@ use std::{
 };
 
 use super::{Budget, RegexError, VisitError, WORKER_FLAG, wire};
+use crate::Rope;
 
 #[cfg(windows)]
 mod platform {
@@ -23,49 +23,12 @@ mod platform {
         },
         ptr,
     };
-    use windows_sys::Win32::{
-        Foundation::{DuplicateHandle, GENERIC_READ},
-        System::{
-            JobObjects::*,
-            Threading::{CREATE_NO_WINDOW, GetCurrentProcess},
-        },
-    };
+    use windows_sys::Win32::System::{JobObjects::*, Threading::CREATE_NO_WINDOW};
 
     use super::*;
 
-    pub fn stage(
-        write: impl FnOnce(&mut File) -> Result<(), RegexError>,
-    ) -> Result<File, RegexError> {
-        // tempfile uses zero sharing and FILE_FLAG_DELETE_ON_CLOSE on Windows. No
-        // pathname is reopened. Once the writer closes, only the read handle survives.
-        let mut writer = tempfile::tempfile()?;
-        write(&mut writer)?;
-        let process = unsafe { GetCurrentProcess() };
-        let mut readonly = ptr::null_mut();
-        if unsafe {
-            DuplicateHandle(
-                process,
-                writer.as_raw_handle(),
-                process,
-                &mut readonly,
-                GENERIC_READ,
-                0,
-                0,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error().into());
-        }
-        Ok(unsafe { File::from_raw_handle(readonly) })
-    }
-
     pub fn command(cmd: &mut Command) {
         cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    pub fn inherited_subject() -> io::Result<File> {
-        use std::os::windows::io::AsHandle;
-        Ok(File::from(io::stderr().as_handle().try_clone_to_owned()?))
     }
 
     pub type Job = OwnedHandle;
@@ -101,33 +64,12 @@ mod platform {
 #[cfg(unix)]
 mod platform {
     use super::*;
-    use std::os::fd::AsFd;
-    use std::os::unix::fs::PermissionsExt;
-
-    pub fn stage(
-        write: impl FnOnce(&mut File) -> Result<(), RegexError>,
-    ) -> Result<File, RegexError> {
-        // A private directory protects the name between creation and opening read-only.
-        // Returning drops both names; the inherited file descriptor keeps the inode alive.
-        let dir = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()?;
-        let mut file = tempfile::NamedTempFile::new_in(dir.path())?;
-        write(file.as_file_mut())?;
-        Ok(File::open(file.path())?)
-    }
-
     pub fn command(_: &mut Command) {}
-    pub fn inherited_subject() -> io::Result<File> {
-        Ok(File::from(io::stderr().as_fd().try_clone_to_owned()?))
-    }
     pub type Job = ();
     pub fn job(_: &Child) -> io::Result<Job> {
         Ok(())
     }
 }
-
-pub(super) use platform::{inherited_subject, stage};
 
 struct ChildGuard {
     child: Child,
@@ -150,14 +92,12 @@ struct Session {
 }
 
 impl Session {
-    fn spawn(executable: &Path, file: &File, generation: u64) -> Result<Self, RegexError> {
+    fn spawn(executable: &Path, generation: u64) -> Result<Self, RegexError> {
         let mut cmd = Command::new(executable);
-        // stdin and stdout are the control and response streams. The third stdio
-        // slot passes a private read-only subject handle without a pathname.
         cmd.arg(WORKER_FLAG)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(file.try_clone()?);
+            .stderr(Stdio::null());
         platform::command(&mut cmd);
         let mut guard = ChildGuard {
             child: cmd.spawn().map_err(|_| RegexError::Launch)?,
@@ -178,6 +118,7 @@ impl Session {
     fn call<T, E>(
         &mut self,
         payload: &[u8],
+        subject: Option<&Rope>,
         budget: &Budget<'_>,
         generation: &AtomicU64,
         viewport: bool,
@@ -214,6 +155,15 @@ impl Session {
                 .map_err(|_| RegexError::Launch)?;
             let result = (|| {
                 wire::write_blob(&mut self.stdin, payload)?;
+                if let Some(rope) = subject {
+                    let mut ready = Vec::new();
+                    if wire::next_frame(&mut self.reader, &mut ready)? != wire::SUBJECT_READY {
+                        return Err(RegexError::Worker.into());
+                    }
+                    // The watchdog is already live. Killing this child closes the
+                    // only pipe reader and releases even a blocked write/flush.
+                    wire::write_subject(&mut self.stdin, rope).map_err(|_| RegexError::Staging)?;
+                }
                 let value = receive(&mut self.reader)?;
                 let mut buffer = Vec::new();
                 if wire::next_frame(&mut self.reader, &mut buffer)? != wire::STATS {
@@ -355,7 +305,7 @@ impl Sessions {
     pub fn exchange<T, E>(
         &self,
         executable: &Path,
-        file: &File,
+        rope: &Rope,
         request: &wire::Request,
         budget: &Budget<'_>,
         receive: impl FnOnce(
@@ -387,7 +337,7 @@ impl Sessions {
             return Err(RegexError::Resource.into());
         }
         if initial {
-            slot.worker = Some(Session::spawn(executable, file, generation)?);
+            slot.worker = Some(Session::spawn(executable, generation)?);
         }
         let worker = slot.worker.as_mut().ok_or(RegexError::Worker)?;
         let active = || {
@@ -396,6 +346,7 @@ impl Sessions {
         };
         let result = worker.call(
             &payload,
+            initial.then_some(rope),
             budget,
             &self.generation,
             view.is_some(),
@@ -427,16 +378,58 @@ impl Drop for Sessions {
 mod tests {
     use super::*;
     use crate::{Navigation, Options, Scope};
-    use std::io::Write;
 
     #[test]
-    fn anonymous_subject_is_read_only_and_missing_worker_is_a_launch_error() {
-        let file = stage(|writer| {
-            writer.write_all(b"unchanged")?;
-            Ok(())
-        })
-        .unwrap();
-        assert!((&file).write_all(b"!").is_err());
+    fn closing_the_only_pipe_reader_releases_an_inflight_subject_write() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::AtomicUsize;
+
+        struct Probe<'a> {
+            pipe: io::PipeWriter,
+            entered: &'a AtomicUsize,
+            returned: &'a AtomicUsize,
+        }
+        impl Write for Probe<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.entered.fetch_add(1, Ordering::Release);
+                let result = self.pipe.write(bytes);
+                self.returned.fetch_add(1, Ordering::Release);
+                result
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.pipe.flush()
+            }
+        }
+
+        let (mut reader, pipe) = io::pipe().unwrap();
+        let entered = AtomicUsize::new(0);
+        let returned = AtomicUsize::new(0);
+        let rope = Rope::from_str(&"x".repeat(8 * 1024 * 1024));
+        thread::scope(|scope| {
+            let mut probe = Probe {
+                pipe,
+                entered: &entered,
+                returned: &returned,
+            };
+            let write = scope.spawn(move || wire::write_subject(&mut probe, &rope));
+            let mut first = [0u8];
+            reader.read_exact(&mut first).unwrap();
+            assert_eq!(first[0], b'x');
+            // The reader is paused and a real OS write has entered without returning.
+            thread::sleep(Duration::from_millis(25));
+            assert!(entered.load(Ordering::Acquire) > returned.load(Ordering::Acquire));
+            drop(reader);
+            assert!(write.join().unwrap().is_err());
+            assert_eq!(
+                entered.load(Ordering::Acquire),
+                returned.load(Ordering::Acquire)
+            );
+        });
+    }
+
+    #[test]
+    fn missing_worker_is_a_launch_error_before_any_subject_transfer() {
+        let rope = Rope::from_str("unchanged");
         let folder = tempfile::tempdir().unwrap();
         let missing = folder.path().join("absent-worker");
         let request = wire::Request {
@@ -453,7 +446,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let result: Result<(), VisitError<()>> = Sessions::default().exchange(
             &missing,
-            &file,
+            &rope,
             &request,
             &Budget::new(&cancel),
             |_, _| panic!("an absent worker cannot send results"),

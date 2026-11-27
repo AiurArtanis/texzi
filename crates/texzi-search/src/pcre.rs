@@ -9,9 +9,7 @@ mod worker;
 
 use std::{
     convert::Infallible,
-    env, fmt,
-    fs::File,
-    io::{self, BufWriter, Write},
+    env, fmt, io,
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -85,7 +83,7 @@ impl fmt::Display for RegexError {
             }
             Self::Engine { code } => write!(f, "正则匹配失败（{}）", engine::error_text(*code)),
             Self::Resource => f.write_str("搜索请求或结果超过资源额度"),
-            Self::Staging => f.write_str("无法准备只读搜索快照"),
+            Self::Staging => f.write_str("无法传送只读搜索快照"),
             Self::InvalidSubject => f.write_str("搜索快照的长度或 UTF-8 编码无效"),
             Self::Launch => f.write_str("无法启动隔离搜索进程"),
             Self::Worker => f.write_str("隔离搜索进程未能返回完整结果"),
@@ -156,7 +154,7 @@ pub struct RegexQuery<'a> {
 /// It is independent of the document's original on-disk path and encoding.
 pub struct RegexSubject {
     sessions: process::Sessions,
-    file: File,
+    rope: Rope,
     len: usize,
 }
 
@@ -167,26 +165,10 @@ impl RegexSubject {
         if len > MAX_SUBJECT_BYTES {
             return Err(RegexError::Resource);
         }
-        let file = process::stage(|file| {
-            let mut out = BufWriter::with_capacity(wire::BATCH_BYTES, file);
-            for chunk in rope.chunks() {
-                budget.check()?;
-                out.write_all(chunk.as_bytes())
-                    .map_err(|_| RegexError::Staging)?;
-            }
-            out.flush().map_err(|_| RegexError::Staging)?;
-            Ok(())
-        })
-        .map_err(|error| {
-            if error == RegexError::Worker {
-                RegexError::Staging
-            } else {
-                error
-            }
-        })?;
-        budget.check()?;
         Ok(Self {
-            file,
+            // Rope clones share immutable nodes. The first exchange transfers them
+            // over the watched child's pipe; preparing this handle performs no I/O.
+            rope: rope.clone(),
             len,
             sessions: process::Sessions::default(),
         })
@@ -238,7 +220,7 @@ impl RegexSubject {
         self.sessions
             .exchange(
                 &executable,
-                &self.file,
+                &self.rope,
                 &request,
                 budget,
                 |reader, active| {
@@ -294,7 +276,7 @@ impl RegexSubject {
         let request = self.request(query, operation)?;
         let executable = env::current_exe().map_err(|_| RegexError::Launch)?;
         self.sessions
-            .exchange(&executable, &self.file, &request, budget, |reader, _| {
+            .exchange(&executable, &self.rope, &request, budget, |reader, _| {
                 let mut buf = Vec::new();
                 if wire::next_frame(reader, &mut buf)? != wire::SUMMARY {
                     return Err(RegexError::Worker.into());
@@ -326,7 +308,7 @@ impl RegexSubject {
         let executable = env::current_exe().map_err(|_| RegexError::Launch)?;
         self.sessions.exchange(
             &executable,
-            &self.file,
+            &self.rope,
             &request,
             budget,
             |reader, active| {

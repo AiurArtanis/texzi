@@ -1,5 +1,7 @@
 //! Harness-free so each search starts this same real executable in worker mode.
 #![cfg_attr(windows, windows_subsystem = "windows")]
+#[path = "pcre_worker/transport.rs"]
+mod transport;
 use std::{
     env,
     ops::{ControlFlow, Range},
@@ -396,16 +398,29 @@ fn deadline() {
 
 fn check_cleanup(mode: &str, expected_exit: i32) {
     let dir = tempfile::tempdir().unwrap();
+    let signals = tempfile::tempdir().unwrap();
     let mut process = Command::new(env::current_exe().unwrap());
     process
         .arg(mode)
         .env("TMP", dir.path())
         .env("TEMP", dir.path())
-        .env("TMPDIR", dir.path());
-    if mode == "deadline" {
-        process.env(CASE, "1");
+        .env("TMPDIR", dir.path())
+        .env(CASE, mode)
+        .env(transport::SIGNALS, signals.path());
+    let mut child = process.spawn().unwrap();
+    #[cfg(windows)]
+    let abrupt_worker = if mode == "exit-with-worker" {
+        let handle = transport::observe_signalled_pid(signals.path());
+        std::fs::write(signals.path().join("go"), []).unwrap();
+        Some(handle)
+    } else {
+        None
+    };
+    assert_eq!(child.wait().unwrap().code(), Some(expected_exit));
+    #[cfg(windows)]
+    if let Some(worker) = abrupt_worker {
+        worker.assert_exited(1_000);
     }
-    assert_eq!(process.status().unwrap().code(), Some(expected_exit));
     let until = Instant::now() + Duration::from_secs(1);
     while dir.path().read_dir().unwrap().next().is_some() {
         assert!(Instant::now() < until, "subject file remained after {mode}");
@@ -416,10 +431,12 @@ fn check_cleanup(mode: &str, expected_exit: i32) {
 fn main() {
     let mode = env::args().nth(1);
     if mode.as_deref() == Some(pcre::WORKER_FLAG) {
-        if env::var_os(CASE).is_some() {
-            std::thread::sleep(Duration::from_secs(30));
-        }
+        transport::fixture_before_worker();
         process::exit(pcre::worker_main());
+    }
+    if matches!(mode.as_deref(), Some("paused-reader" | "paused-timeout")) {
+        transport::paused_transfer(mode.as_deref() == Some("paused-timeout"));
+        return;
     }
     if mode.as_deref() == Some("deadline") {
         deadline();
@@ -446,6 +463,10 @@ fn main() {
     bounded();
     cancellation();
     check_cleanup("deadline", 0);
+    for _ in 0..10 {
+        check_cleanup("paused-reader", 0);
+    }
+    check_cleanup("paused-timeout", 0);
     #[cfg(windows)]
     check_cleanup("exit-with-worker", 42);
 }
