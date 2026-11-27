@@ -2,6 +2,7 @@
 mod draft_close;
 mod large_file;
 mod splitter;
+mod table_hud;
 use crate::editor_owner::SaveError;
 use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
 use crate::settings;
@@ -2545,7 +2546,6 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let settings_tab = s.settings_tab;
     let block_controls = doc.controls.blocks.clone();
     let resource_controls = doc.controls.resources.clone();
-    let table_controls = doc.controls.table.clone();
     let code_controls = doc.controls.code.clone();
     let image_document_path = doc.path;
     let controls_owner = s.owner;
@@ -2593,6 +2593,12 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 let focus: Rc<dyn Fn()> =
                     Rc::new(move || shell.focus_group(if second { 2 } else { 1 }));
                 let raw_focus = focus.clone();
+                let table = table_hud::TableHud::new(escape.clone(), focus_doc.clone(), second);
+                let rich_escape = table.clone();
+                // Use the native view that owns the editor and its viewport tools.
+                let focus_scope = element_ref();
+                focus_scope.on_focus_in(move || focus_shell.body_focused(&focus_doc, second, true));
+                focus_scope.on_focus_out(move || blur_shell.body_blurred(&blur_doc, second, true));
                 view()
                     .flex_1()
                     .w_full()
@@ -2607,11 +2613,10 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                         resource_controls.clone(),
                         focus.clone(),
                     ))
-                    .child(crate::table_controls::dialog(
-                        table_controls.clone(),
+                    .child(crate::code_controls::dialog(
+                        code_controls.clone(),
                         focus.clone(),
                     ))
-                    .child(crate::code_controls::dialog(code_controls.clone(), focus))
                     .child(
                         scroll()
                             .w_full()
@@ -2624,26 +2629,35 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             )),
                     )
                     .child(
-                        nsh_base::rich_editor::view::rich_editor()
-                            .element_ref(&body)
-                            .component_ref(&rich_reference)
-                            .editor(rich.session())
-                            .application_shortcuts(crate::native_menu::application_shortcuts())
-                            .classes(crate::app::rich_classes())
-                            .auto_focus(move || {
-                                settings_tab.get() != SettingsTab::Active
-                                    && rich_focus.get() == second
-                            })
-                            .on_focus(move |_: &()| {
-                                focus_shell.body_focused(&focus_doc, second, true)
-                            })
-                            .on_blur(move |_: &()| blur_shell.body_blurred(&blur_doc, second, true))
-                            .on_unhandled_escape(move |_: &()| {
-                                escape.handle_rich_escape(document, second)
-                            })
+                        view()
+                            .element_ref(&focus_scope)
+                            .test_id("texzi.rich.focus-scope")
                             .flex_1()
                             .min_w(px(0.0))
-                            .min_h(px(0.0)),
+                            .min_h(px(0.0))
+                            .child(
+                                nsh_base::rich_editor::view::rich_editor()
+                                    .element_ref(&body)
+                                    .component_ref(&rich_reference)
+                                    .editor(rich.session())
+                                    .application_shortcuts(
+                                        crate::native_menu::application_shortcuts(),
+                                    )
+                                    .classes(crate::app::rich_classes())
+                                    .auto_focus(move || {
+                                        settings_tab.get() != SettingsTab::Active
+                                            && rich_focus.get() == second
+                                    })
+                                    .viewport_layer(table.layer(focus))
+                                    .on_unhandled_escape(move |_: &()| {
+                                        if !rich_escape.escape_from_body() {
+                                            escape.handle_rich_escape(document, second);
+                                        }
+                                    })
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .min_h(px(0.0)),
+                            ),
                     )
             })
             .otherwise(move || {

@@ -332,6 +332,29 @@ fn table_cancel_ime_and_stale_revision_never_publish() {
 }
 
 #[test]
+fn table_selection_revision_invalidates_the_open_anchor_without_writing() {
+    runtime(|| {
+        let (source, gate, controls) = setup("| h | v |\n| --- | --- |\n| a | b |\n", 0, 1, 0);
+        controls.begin().unwrap();
+        let anchor = controls.anchor().unwrap();
+        let state = gate.session().state();
+        assert_eq!(anchor.revision, state.revision());
+        assert_eq!(
+            state.doc().node_at(anchor.table).unwrap().ty().name(),
+            "table"
+        );
+        assert_eq!(
+            state.doc().node_at(anchor.cell).unwrap().ty().name(),
+            "tableCell"
+        );
+        select(&gate, 0, 1, 1);
+        let before_action = audit(&source);
+        assert!(controls.apply(TableAction::RowAfter).is_err());
+        assert_eq!(audit(&source), before_action);
+    });
+}
+
+#[test]
 fn table_metadata_cannot_authorize_changed_text_or_another_block() {
     runtime(|| {
         let (source, gate, _) = setup("| h | v |\n| --- | --- |\n| a | b |\n\nkeep\n", 0, 1, 0);

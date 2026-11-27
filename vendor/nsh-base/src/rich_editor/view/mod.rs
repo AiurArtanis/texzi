@@ -26,6 +26,7 @@ mod parts;
 mod render;
 mod session;
 mod table;
+mod table_anchor;
 mod thumb;
 mod touch;
 
@@ -35,6 +36,7 @@ use nsh_core::prelude::*;
 use serde_json::Value;
 
 use self::controller::Rv;
+pub use self::table_anchor::{TableAnchor, TableAnchorGeometry};
 pub use self::{
     node_view::{MarkView, NodeView, NodeViewCx, NodeViewEvent},
     parts::{PartStyles, RichEditorClasses, RichEditorStyles},
@@ -142,6 +144,9 @@ pub struct RichEditorProps {
     /// in the content box's points, where `nodeRect` and `coordsAtPos`
     /// answer.
     pub content_layer: Prop<Option<Slot>>,
+    /// The host's overlay fixed to this editor's visible viewport. The
+    /// layer passes pointer events through outside the host's controls.
+    pub viewport_layer: Prop<Option<Slot>>,
 }
 
 /// A change of a `RichEditor`'s document. The document itself is read on

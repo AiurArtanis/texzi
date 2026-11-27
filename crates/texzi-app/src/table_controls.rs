@@ -7,9 +7,13 @@ use nsh_base::{
         model::{Fragment, Node},
         state::{EditorState, TextSelection, Transaction, TransactionOrigin},
         tables::{commands as tables, selected_rect},
+        view::TableAnchor,
     },
 };
-use nsh_core::{element::view as box_view, prelude::*};
+use nsh_core::{
+    element::{scroll, view as box_view},
+    prelude::*,
+};
 use serde_json::{Value, json};
 use std::{cell::RefCell, rc::Rc};
 
@@ -48,22 +52,10 @@ impl TableAction {
         }
     }
     pub(crate) fn parse(value: &str) -> Option<Self> {
-        [
-            Self::RowBefore,
-            Self::RowAfter,
-            Self::DeleteRow,
-            Self::ColumnBefore,
-            Self::ColumnAfter,
-            Self::DeleteColumn,
-            Self::AlignDefault,
-            Self::AlignLeft,
-            Self::AlignCenter,
-            Self::AlignRight,
-            Self::Header,
-            Self::DeleteTable,
-        ]
-        .into_iter()
-        .find(|action| action.name() == value)
+        ACTIONS
+            .into_iter()
+            .map(|(_, _, action)| action)
+            .find(|action| action.name() == value)
     }
 }
 
@@ -252,7 +244,7 @@ pub(crate) struct TableControls {
     gate: Rc<ModeGate>,
     source: Rc<NativeView>,
     draft: RefCell<Option<Draft>>,
-    open: Signal<bool>,
+    anchor: Signal<Option<TableAnchor>>,
 }
 impl TableControls {
     pub(crate) fn new(gate: Rc<ModeGate>, source: Rc<NativeView>) -> Rc<Self> {
@@ -260,7 +252,7 @@ impl TableControls {
             gate,
             source,
             draft: RefCell::new(None),
-            open: signal(false),
+            anchor: signal(None),
         })
     }
     pub(crate) fn begin(&self) -> Result<(), String> {
@@ -285,6 +277,9 @@ impl TableControls {
                 at + 1 == rect.table_start
             })
             .ok_or("嵌套表格请编辑源码")?;
+        let cell = cell_position(state.doc(), block, rect.rect.top, rect.rect.left)
+            .and_then(|position| position.checked_sub(2))
+            .ok_or("无法定位当前表格单元格")?;
         *self.draft.borrow_mut() = Some(Draft {
             revision: snapshot.revision,
             doc: state.doc().clone(),
@@ -293,15 +288,26 @@ impl TableControls {
             column: rect.rect.left,
         });
         self.gate.status.set(String::new());
-        self.open.set(true);
+        self.anchor.set(Some(TableAnchor {
+            revision: state.revision(),
+            table: rect.table_start - 1,
+            cell,
+        }));
         Ok(())
     }
     pub(crate) fn cancel(&self) {
-        self.draft.borrow_mut().take();
-        self.open.set(false);
+        if self.draft.borrow_mut().take().is_some() {
+            self.anchor.set(None);
+        }
     }
     pub(crate) fn is_open(&self) -> bool {
-        self.open.get()
+        self.anchor().is_some()
+    }
+    pub(crate) fn anchor(&self) -> Option<TableAnchor> {
+        self.anchor.get()
+    }
+    pub(crate) fn status(&self) -> Signal<String> {
+        self.gate.status
     }
     pub(crate) fn apply(&self, action: TableAction) -> Result<(), String> {
         if self.gate.busy() {
@@ -315,30 +321,55 @@ impl TableControls {
         let state = session.state();
         let draft_guard = self.draft.borrow();
         let draft = draft_guard.as_ref().ok_or("请先打开表格面板")?;
-        if snapshot.revision != draft.revision || state.doc() != &draft.doc {
+        if snapshot.revision != draft.revision
+            || self
+                .anchor
+                .get_untracked()
+                .is_none_or(|target| target.revision != state.revision())
+            || state.doc() != &draft.doc
+        {
             return Err("表格面板版本已过期，请取消后重新打开".into());
         }
         let tr = action_transaction(&state, draft.block, draft.row, draft.column, action)?;
+        drop(draft_guard);
         self.gate.status.set(String::new());
         session.dispatch(tr).map_err(|e| e.to_string())?;
         let status = self.gate.status.get();
         if !status.is_empty() {
             return Err(status);
         }
-        drop(draft_guard);
         self.cancel();
         Ok(())
     }
-    fn report(&self, result: Result<(), String>) {
+    pub(crate) fn report(&self, result: Result<(), String>) {
         if let Err(error) = result {
             self.gate.status.set(error);
         }
     }
 }
 
-pub fn dialog(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl IntoElement {
+pub(crate) const ACTIONS: [(&str, &str, TableAction); 12] = [
+    ("上方插入行", "上插行", TableAction::RowBefore),
+    ("下方插入行", "下插行", TableAction::RowAfter),
+    ("删除当前行", "删行", TableAction::DeleteRow),
+    ("左侧插入列", "左插列", TableAction::ColumnBefore),
+    ("右侧插入列", "右插列", TableAction::ColumnAfter),
+    ("删除当前列", "删列", TableAction::DeleteColumn),
+    ("当前列默认对齐", "默认对齐", TableAction::AlignDefault),
+    ("当前列左对齐", "左对齐", TableAction::AlignLeft),
+    ("当前列居中", "居中", TableAction::AlignCenter),
+    ("当前列右对齐", "右对齐", TableAction::AlignRight),
+    ("将当前行设为表头", "设为表头", TableAction::Header),
+    ("删除表格", "删除表格", TableAction::DeleteTable),
+];
+
+pub fn dialog(
+    controls: Rc<TableControls>,
+    fallback: impl Fn() -> bool + 'static,
+    return_focus: Rc<dyn Fn()>,
+) -> impl IntoElement {
     dynamic(move || {
-        if !controls.open.get() {
+        if !fallback() || !controls.is_open() {
             return None;
         }
         let dismiss = controls.clone();
@@ -347,7 +378,7 @@ pub fn dialog(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl I
         let cancel_focus = return_focus.clone();
         let status = controls.gate.status;
         let mut body = box_view()
-            .w(px(420.0))
+            .w_full()
             .p(px(16.0))
             .gap(px(6.0))
             .bg(crate::app_shell::background)
@@ -356,20 +387,7 @@ pub fn dialog(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl I
             .child(text(
                 "对当前单元格所在行或列操作；删除最后一行或列会留下可输入的空段。",
             ));
-        for (label, action) in [
-            ("上方插入行", TableAction::RowBefore),
-            ("下方插入行", TableAction::RowAfter),
-            ("删除当前行", TableAction::DeleteRow),
-            ("左侧插入列", TableAction::ColumnBefore),
-            ("右侧插入列", TableAction::ColumnAfter),
-            ("删除当前列", TableAction::DeleteColumn),
-            ("当前列默认对齐", TableAction::AlignDefault),
-            ("当前列左对齐", TableAction::AlignLeft),
-            ("当前列居中", TableAction::AlignCenter),
-            ("当前列右对齐", TableAction::AlignRight),
-            ("将当前行设为表头", TableAction::Header),
-            ("删除表格", TableAction::DeleteTable),
-        ] {
+        for (label, _, action) in ACTIONS {
             let apply = controls.clone();
             let focus = return_focus.clone();
             body = body.child(
@@ -393,14 +411,20 @@ pub fn dialog(controls: Rc<TableControls>, return_focus: Rc<dyn Fn()>) -> impl I
                     dismiss_focus();
                 })
                 .child(
-                    body.child(text(move || status.get())).child(
-                        nsh_base::button()
-                            .child(text("取消"))
-                            .on_press(move |_: &()| {
-                                cancel.cancel();
-                                cancel_focus();
-                            }),
-                    ),
+                    scroll()
+                        .w(px(420.0))
+                        .max_w(relative(1.0))
+                        .max_h(relative(0.85))
+                        .child(
+                            body.child(text(move || status.get())).child(
+                                nsh_base::button()
+                                    .child(text("取消"))
+                                    .on_press(move |_: &()| {
+                                        cancel.cancel();
+                                        cancel_focus();
+                                    }),
+                            ),
+                        ),
                 )
                 .into_element(),
         )

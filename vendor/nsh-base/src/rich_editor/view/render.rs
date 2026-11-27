@@ -93,6 +93,7 @@ fn rect(b: Bounds<Points>) -> View {
 /// The editor.
 pub(crate) fn render(rv: Rv) -> impl IntoElement {
     let (scroll_rv, layout_rv) = (rv.clone(), rv.clone());
+    let props = rv.props;
     let thumb =
         (os() == nsh_core::platform::Os::Windows).then(|| super::thumb::receiver(rv.clone()));
     let root = part(
@@ -133,7 +134,17 @@ pub(crate) fn render(rv: Rv) -> impl IntoElement {
                     .child(content(rv.clone()))
                     .children(thumb),
             )
-            .child(sink(rv)),
+            .child(sink(rv))
+            .child(when(
+                move || props.viewport_layer.get().is_some(),
+                move || {
+                    view()
+                        .absolute()
+                        .inset(px(0.0))
+                        .pointer_events(PointerEvents::BoxNone)
+                        .child(props.viewport_layer.place(|slot| slot))
+                },
+            )),
     )
 }
 
