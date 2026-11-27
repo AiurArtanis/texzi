@@ -13,6 +13,12 @@ pub(crate) struct Aliases {
     pub(crate) encoding: Encoding,
     rows: Table,
 }
+/// The decoded String is transferred to the Body's shared provenance. Only
+/// GB inputs also need the original wire bytes after that transfer.
+pub(crate) struct LegacyBytes {
+    encoding: Encoding,
+    wire: Arc<[u8]>,
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Variant {
     pub(crate) utf8: usize,
@@ -62,22 +68,29 @@ fn next_unit<'a>(data: &mut &'a [u8]) -> Result<&'a [u8], Error> {
     *data = rest;
     Ok(head)
 }
-impl Aliases {
-    pub(crate) fn capture(
-        loaded: &LoadedBytes,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<Option<Arc<Self>>, Error> {
+impl LegacyBytes {
+    pub(crate) fn from_loaded(loaded: &LoadedBytes) -> Option<Self> {
         let encoding = loaded.format.encoding;
-        if !matches!(
+        matches!(
             encoding,
             Encoding::GbkWebEncodingRs0844 | Encoding::Gb18030WebEncodingRs0844
-        ) {
-            return Ok(None);
-        }
+        )
+        .then(|| Self {
+            encoding,
+            wire: loaded.original.clone(),
+        })
+    }
+    pub(crate) fn capture(
+        &self,
+        mut text: &str,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<Arc<Aliases>>, Error> {
+        #[cfg(test)]
+        tests::CAPTURE_STARTS.set(tests::CAPTURE_STARTS.get() + 1);
+        let encoding = self.encoding;
         let codec = legacy(encoding).map_err(|_| Error::InvalidProfile)?;
         let mut builder = Builder::default();
-        let mut text = loaded.text.as_str();
-        let mut original = &loaded.original[..];
+        let mut original = &self.wire[..];
         let mut at = 0;
         while !text.is_empty() {
             if cancelled() {
@@ -114,11 +127,13 @@ impl Aliases {
             return Ok(None);
         };
         builder.table.push(last)?;
-        Ok(Some(Arc::new(Self {
+        Ok(Some(Arc::new(Aliases {
             encoding,
             rows: builder.table.finish()?,
         })))
     }
+}
+impl Aliases {
     pub(crate) fn visit<E>(
         &self,
         range: Range<usize>,
@@ -158,15 +173,58 @@ impl Aliases {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::files::encode_body;
+    use crate::{HistoryBudget, Store};
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(super) static CAPTURE_STARTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn capture(
+        loaded: &LoadedBytes,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Option<Arc<Aliases>>, Error> {
+        LegacyBytes::from_loaded(loaded)
+            .unwrap()
+            .capture(loaded.text(), &cancelled)
+    }
+
+    #[test]
+    fn over_line_limit_gb18030_never_starts_collecting_aliases() {
+        let encoding = Encoding::Gb18030WebEncodingRs0844;
+        // 0x80 is a valid noncanonical euro in this codec. Irregularly spaced
+        // originals would spill to disk when this same fixture is admitted.
+        let wire: Arc<[u8]> = [0x80, b'\r', b'\n', 0x80].repeat(24_000).into();
+        let load = || LoadedBytes::decode(wire.clone(), Some(encoding)).unwrap();
+        let before = CAPTURE_STARTS.get();
+        let mut store = Store::new(HistoryBudget::default());
+        let rejected = store.open_loaded_with_line_limit(load(), 100, || false);
+        assert!(matches!(rejected, Err(Error::LineLimit)));
+        assert_eq!(CAPTURE_STARTS.get(), before);
+
+        let cancelled =
+            store.open_loaded_with_line_limit(load(), 24_001, || CAPTURE_STARTS.get() > before);
+        assert!(matches!(cancelled, Err(Error::Cancelled)));
+        assert_eq!(CAPTURE_STARTS.get(), before + 1);
+
+        let accepted = store
+            .open_loaded_with_line_limit(load(), 24_001, || false)
+            .unwrap();
+        assert_eq!(CAPTURE_STARTS.get(), before + 2);
+        assert!(accepted.body.legacy.as_ref().unwrap().rows.disk_bytes() > 128 * 1024);
+        let format = accepted.body.profile.file_format.unwrap();
+        assert_eq!(encode_body(&accepted.body, format).unwrap(), wire.as_ref());
+    }
 
     #[test]
     fn canonical_import_has_no_catalog_and_uniform_aliases_use_one_run_across_chunks() {
         let encoding = Encoding::Gb18030WebEncodingRs0844;
         let clean =
             LoadedBytes::decode([0xa2, 0xe3].repeat(30_000).into(), Some(encoding)).unwrap();
-        assert!(Aliases::capture(&clean, &|| false).unwrap().is_none());
+        assert!(capture(&clean, || false).unwrap().is_none());
         let alternate = LoadedBytes::decode(vec![0x80; 30_000].into(), Some(encoding)).unwrap();
-        let meta = Aliases::capture(&alternate, &|| false).unwrap().unwrap();
+        let meta = capture(&alternate, || false).unwrap().unwrap();
         assert_eq!(meta.rows.len(), 1);
         assert!(meta.rows.allocation() <= 128);
         assert_eq!(meta.rows.disk_bytes(), 0);
@@ -196,7 +254,7 @@ mod tests {
         }
         let loaded =
             LoadedBytes::decode(wire.into(), Some(Encoding::Gb18030WebEncodingRs0844)).unwrap();
-        let m = Aliases::capture(&loaded, &|| false).unwrap().unwrap();
+        let m = capture(&loaded, || false).unwrap().unwrap();
         assert_eq!(m.rows.allocation(), 0);
         assert!(m.rows.disk_bytes() > 128 * 1024);
         let range = offsets[19_998]..offsets[20_002];
@@ -207,9 +265,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(found, offsets[19_998..20_002]);
-        assert!(matches!(
-            Aliases::capture(&loaded, &|| true),
-            Err(Error::Cancelled)
-        ));
+        assert!(matches!(capture(&loaded, || true), Err(Error::Cancelled)));
     }
 }

@@ -43,6 +43,9 @@ impl SearchScope {
 
 pub(super) type ScopeRegistry = RefCell<Vec<Weak<RefCell<SearchScope>>>>;
 impl NativeView {
+    pub(crate) fn track_selection(&self) {
+        self.selection_changed.get();
+    }
     pub(crate) fn search_snapshot(&self) -> Result<(doc::Snapshot, u64), String> {
         let store = self.owner.store.borrow();
         let view = store.view(self.view).map_err(err)?;

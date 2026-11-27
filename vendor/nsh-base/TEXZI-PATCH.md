@@ -4,6 +4,8 @@ The source baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78ea
 
 ## Source editor
 
+- Word movement and double-click selection use the shared `texzi-word` grapheme classification. Whole-word find uses the same CJK, kana, Hangul and Unicode 16 word runs. Language-specific editor word characters still extend the default classification.
+
 - `EditorDecoration::outline_color` adds a pointer-transparent stroke to each displayed row of an external range. The row captures its endpoints during normal grapheme and tab layout. A zero-width range draws a narrow marker at its own position.
 - `ExternalDocument::request_history` returns an immediate update for resident history. A disk-backed history owner returns a pending result, then notifies the editor after the restored revision has been published. The buffer keeps the current revision and selection while it waits.
 - `editor/external.rs`, `buffer.rs`, `commands.rs`, `controller.rs` and `mod.rs` connect a mounted editor to texzi's versioned document owner. Both editor modes share the owner's history. The view consumes incremental changes and publishes composition transitions without serializing the full rope on each change.

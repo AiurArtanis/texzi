@@ -2,6 +2,7 @@
 #[cfg(test)]
 pub(crate) mod fixtures;
 mod jobs;
+mod selection;
 mod view;
 
 use super::*;
@@ -18,12 +19,13 @@ use std::{
 use texzi_search::{Hit, Navigation, Options};
 pub(super) use view::{overlay, source_marks, source_viewport};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(PartialEq)]
 enum Intent {
     Count,
     Navigate(bool),
     AfterReplace(usize),
     SelectAll,
+    Replace { all: bool, template: String },
 }
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Toggle {
@@ -53,6 +55,7 @@ pub(super) struct State {
     regex: Signal<bool>,
     scoped: Signal<bool>,
     has_scope: Signal<bool>,
+    capture: selection::ScopeCapture,
     composing_query: Signal<bool>,
     composing_replacement: Signal<bool>,
     status: Signal<String>,
@@ -64,6 +67,7 @@ pub(super) struct State {
     version: Cell<Option<(u64, bool)>>,
     subject: RefCell<Option<Subject>>,
     index: RefCell<Option<Arc<Index>>>,
+    index_ready: Signal<bool>,
     current: RefCell<Option<Hit>>,
     viewport: RefCell<Range<usize>>,
     visible: RefCell<Vec<Range<usize>>>,
@@ -88,6 +92,7 @@ impl State {
             regex: signal(false),
             scoped: signal(false),
             has_scope: signal(false),
+            capture: selection::ScopeCapture::default(),
             composing_query: signal(false),
             composing_replacement: signal(false),
             status: signal(String::new()),
@@ -99,6 +104,7 @@ impl State {
             version: Cell::new(None),
             subject: RefCell::default(),
             index: RefCell::default(),
+            index_ready: signal(false),
             current: RefCell::default(),
             viewport: RefCell::new(0..0),
             visible: RefCell::default(),
@@ -137,6 +143,16 @@ impl State {
         self.current_mark.take();
         self.marks_rev.update(|n| *n += 1);
     }
+    fn set_index(&self, index: Option<Arc<Index>>) {
+        let ready = index.is_some();
+        self.index.replace(index);
+        self.index_ready.set(ready);
+    }
+    pub(super) fn is_replace_blocked(&self) -> bool {
+        // A failed scan never publishes its index. Errors in a replacement
+        // template keep the valid index so the user can correct the template.
+        self.regex.get() && !self.index_ready.get()
+    }
     pub(super) fn close(&self) {
         self.supersede();
         self.retire_query();
@@ -156,13 +172,22 @@ impl State {
             self.clear_marks();
         }
         self.subject.take();
-        self.index.take();
+        self.set_index(None);
         self.current.take();
         self.scope.take();
+        self.capture.reset();
+        self.has_scope.set(false);
         self.version.set(None);
         self.viewport.replace(0..0);
         self.composing_query.set(false);
         self.composing_replacement.set(false);
+    }
+    fn observe_selection(&self, doc: &Document) -> Result<(), String> {
+        let available = self.capture.observe(&doc.gate)?;
+        if self.has_scope.get() != available {
+            self.has_scope.set(available);
+        }
+        Ok(())
     }
     fn editing(&self) -> bool {
         self.composing_query.get() || self.composing_replacement.get()
@@ -226,7 +251,12 @@ fn source_mode(s: &Rc<Shell>, doc: &Rc<Document>) -> bool {
     } else {
         None
     };
-    doc.gate.to_source();
+    let st = &s.find_panel;
+    if let Err(error) = st.observe_selection(doc) {
+        st.status.set(error);
+        return false;
+    }
+    st.capture.apply(&doc.gate, || doc.gate.to_source());
     if doc.displayed_rich() {
         s.find_panel.status.set(doc.gate.status.get());
         return false;
@@ -276,23 +306,10 @@ pub(super) fn open(s: &Rc<Shell>, replace: bool) {
     let already = active(s, &doc);
     if !already {
         st.close();
-        // Capture the actual selections before focusing the panel or switching mode.
-        let selection = doc
-            .gate
-            .recovery_selection()
-            .map(|selection| selection.ranges)
-            .unwrap_or_default();
-        let has_scope = selection.iter().any(|&(a, b)| a != b);
-        match doc.source.freeze_search_scope(&selection) {
-            Ok(scope) => {
-                st.scope.replace(Some(scope));
-            }
-            Err(error) => {
-                s.notice.set(error);
-                return;
-            }
+        if let Err(error) = st.observe_selection(&doc) {
+            s.notice.set(error);
+            return;
         }
-        st.has_scope.set(has_scope);
         st.scoped.set(false);
         st.regex.set(false);
         st.word.set(false);
@@ -334,6 +351,14 @@ pub(super) fn install(s: &Rc<Shell>) {
             return;
         }
         bound.source.track();
+        if is_open(&panel) {
+            bound.gate.selection_view().track_selection();
+            untracked(|| {
+                if let Err(error) = s.find_panel.observe_selection(&bound) {
+                    s.find_panel.status.set(error);
+                }
+            });
+        }
         let rich = bound.displayed_rich();
         let Ok((snapshot, _)) = bound.source.search_snapshot() else {
             return;
@@ -390,9 +415,16 @@ pub(super) fn change(s: &Rc<Shell>, which: Toggle) {
         Toggle::Regex => st.regex,
         Toggle::Selection => st.scoped,
     };
-    if which == Toggle::Selection && !st.has_scope.get() {
-        st.status.set("请先在正文中选择文字，再打开查找".into());
-        return;
+    if which == Toggle::Selection && !flag.get() {
+        if let Err(error) = st.observe_selection(&doc) {
+            st.status.set(error);
+            return;
+        }
+        let Some(scope) = st.capture.latest() else {
+            st.status.set("请先在此编辑组的正文中选择文字".into());
+            return;
+        };
+        st.scope.replace(Some(scope));
     }
     if which == Toggle::Regex && !flag.get() && !source_mode(s, &doc) {
         return;
@@ -410,7 +442,7 @@ fn query_changed(s: &Rc<Shell>, query: &str) {
     s.find_panel.query.set(query.to_owned());
     if s.find_panel.composing_query.get() {
         s.find_panel.supersede();
-        s.find_panel.index.take();
+        s.find_panel.set_index(None);
         s.find_panel.clear_marks();
     } else {
         refresh(s, Intent::Count, true);
@@ -422,7 +454,7 @@ fn refresh(s: &Rc<Shell>, intent: Intent, debounce: bool) {
     set_version(s, &doc);
     let st = &s.find_panel;
     let generation = st.supersede();
-    st.index.take();
+    st.set_index(None);
     st.current.take();
     st.clear_marks();
     st.started.set(st.trace.then(std::time::Instant::now));
@@ -437,7 +469,7 @@ fn refresh(s: &Rc<Shell>, intent: Intent, debounce: bool) {
             return;
         }
         let st = &s.find_panel;
-        let Ok((snapshot, epoch)) = doc.source.search_snapshot() else {
+        let Ok((snapshot, epoch)) = doc.gate.selection_view().search_snapshot() else {
             return;
         };
         let rich = doc.displayed_rich();
@@ -473,8 +505,8 @@ fn refresh(s: &Rc<Shell>, intent: Intent, debounce: bool) {
                 },
             )
         };
-        let anchor = if let Intent::AfterReplace(at) = intent {
-            at
+        let anchor = if let Intent::AfterReplace(at) = &intent {
+            *at
         } else {
             anchor
         };
@@ -533,7 +565,7 @@ fn refresh(s: &Rc<Shell>, intent: Intent, debounce: bool) {
         });
     };
     if debounce {
-        set_timeout(Duration::from_millis(45), run);
+        set_timeout(Duration::from_millis(16), run);
     } else {
         run();
     }
@@ -598,28 +630,32 @@ fn launch(
     s.owner.run(|| poll(shell, doc, generation, rx));
 }
 fn poll(weak: std::rc::Weak<Shell>, doc: Rc<Document>, generation: u64, rx: Receiver<Event>) {
-    set_timeout(Duration::from_millis(12), move || {
+    set_timeout(Duration::from_millis(8), move || {
         let Some(s) = weak.upgrade() else { return };
         if !valid(&s, &doc, generation) {
             return;
         }
-        match rx.try_recv() {
-            Ok(Event::First(hit)) => {
-                s.find_panel.metric("first_result", 1);
-                s.find_panel.status.set("已找到匹配，正在计数…".into());
-                s.find_panel.current_mark.replace(Some(hit));
-                s.find_panel.marks_rev.update(|n| *n += 1);
-                view::note_present(&s, &doc);
+        // A worker posts at most one early hit followed by its final result.
+        // Coalesce ready events without delaying a completed scan another frame.
+        loop {
+            match rx.try_recv() {
+                Ok(Event::First(hit)) => {
+                    s.find_panel.metric("first_result", 1);
+                    s.find_panel.status.set("已找到匹配，正在计数…".into());
+                    s.find_panel.current_mark.replace(Some(hit));
+                    s.find_panel.marks_rev.update(|n| *n += 1);
+                    view::note_present(&s, &doc);
+                }
+                Ok(event) => {
+                    finish(&s, &doc, event);
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    s.find_panel.status.set("查找任务提前结束".into());
+                    return;
+                }
+                Err(TryRecvError::Empty) => break,
             }
-            Ok(event) => {
-                finish(&s, &doc, event);
-                return;
-            }
-            Err(TryRecvError::Disconnected) => {
-                s.find_panel.status.set("查找任务提前结束".into());
-                return;
-            }
-            Err(TryRecvError::Empty) => {}
         }
         poll(weak, doc, generation, rx);
     });
@@ -633,9 +669,13 @@ fn finish(s: &Rc<Shell>, doc: &Rc<Document>, event: Event) {
         }
         Event::Found(index, band, intent, epoch) => {
             st.metric("count_complete", index.results.total);
-            let may_select = doc.source.search_snapshot().is_ok_and(|(_, e)| e == epoch);
+            let may_select = doc
+                .gate
+                .selection_view()
+                .search_snapshot()
+                .is_ok_and(|(_, e)| e == epoch);
             st.subject.replace(Some(index.subject.clone()));
-            st.index.replace(Some(index.clone()));
+            st.set_index(Some(index.clone()));
             let current = index.results.current.clone();
             st.visible
                 .replace(to_view(&index, index.results.visible.iter()));
@@ -644,8 +684,18 @@ fn finish(s: &Rc<Shell>, doc: &Rc<Document>, event: Event) {
                 doc,
                 current,
                 index.results.wrapped,
-                may_select && intent != Intent::SelectAll,
+                may_select && !matches!(&intent, Intent::SelectAll | Intent::Replace { .. }),
             );
+            if let Intent::Replace { all, template } = &intent {
+                // The rendered projection and the Markdown source have different
+                // matches. Only this source scan can authorize the requested edit.
+                if !may_select || st.replacement.with(|value| value != template) {
+                    st.status.set("选区或替换内容已变化，替换已取消".into());
+                } else if !doc.displayed_rich() && index.results.total != 0 {
+                    replace(s, *all);
+                }
+                return;
+            }
             if intent == Intent::SelectAll && may_select {
                 match &index.results.selected {
                     Some(Ok(ranges)) if !ranges.is_empty() => {
@@ -667,7 +717,12 @@ fn finish(s: &Rc<Shell>, doc: &Rc<Document>, event: Event) {
             }
         }
         Event::Moved(hit, wrap, epoch) => {
-            if doc.source.search_snapshot().is_ok_and(|(_, e)| e == epoch) {
+            if doc
+                .gate
+                .selection_view()
+                .search_snapshot()
+                .is_ok_and(|(_, e)| e == epoch)
+            {
                 present(s, doc, hit, wrap, true);
             }
         }
@@ -736,10 +791,21 @@ fn select(s: &Rc<Shell>, doc: &Rc<Document>, ranges: &[Range<usize>]) -> Result<
         return Err("请先完成或取消当前操作".into());
     }
     let rev = s.find_panel.version.get().ok_or("正文尚未就绪")?.0;
-    if doc.displayed_rich() {
-        return doc.gate.find_rich_select(rev, ranges[0].clone());
+    let st = &s.find_panel;
+    if !st.outside_panel.get() {
+        st.observe_selection(doc)?;
     }
-    doc.source.find_select(rev, ranges)?;
+    let rich = doc.displayed_rich();
+    st.capture.apply(&doc.gate, || {
+        if rich {
+            doc.gate.find_rich_select(rev, ranges[0].clone())
+        } else {
+            doc.source.find_select(rev, ranges)
+        }
+    })?;
+    if rich {
+        return Ok(());
+    }
     let shell = Rc::downgrade(s);
     let doc = doc.clone();
     s.owner.run(|| {
@@ -799,7 +865,7 @@ pub(super) fn navigate(s: &Rc<Shell>, previous: bool) {
         } else {
             Navigation::NextAfter(hit.ordinal)
         };
-        let Ok((_, epoch)) = doc.source.search_snapshot() else {
+        let Ok((_, epoch)) = doc.gate.selection_view().search_snapshot() else {
             return;
         };
         let generation = st.supersede();
@@ -820,7 +886,20 @@ pub(super) fn select_all(s: &Rc<Shell>) {
 pub(super) fn replace(s: &Rc<Shell>, all: bool) {
     let Some(doc) = target(s) else { return };
     let st = &s.find_panel;
-    if st.editing() || doc.displayed_rich() || doc.gate.busy() {
+    if st.is_replace_blocked() || st.editing() || doc.gate.busy() || s.modal.get() {
+        return;
+    }
+    if doc.displayed_rich() {
+        if source_mode(s, &doc) {
+            refresh(
+                s,
+                Intent::Replace {
+                    all,
+                    template: st.replacement.get(),
+                },
+                false,
+            );
+        }
         return;
     }
     let Some(index) = st.index.borrow().clone() else {

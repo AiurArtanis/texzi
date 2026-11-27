@@ -6,6 +6,9 @@ use nsh_base::{
 use texzi_document::Snapshot;
 use texzi_search::Rope;
 
+#[cfg(test)]
+mod layout_tests;
+
 pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl IntoElement {
     let show = s.clone();
     let bound = doc.clone();
@@ -95,10 +98,13 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                     "›"
                 }
             };
-            let input_row = view()
+            let field = view()
                 .flex_row()
                 .items_center()
                 .gap(px(2.0))
+                .basis(px(52.0))
+                .flex_grow(1.0)
+                .min_w(px(52.0))
                 .child(
                     action("显示或收起替换")
                         .child(text(glyph))
@@ -132,28 +138,34 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                         })
                         .on_change(move |v: &str| query_changed(&edit, v))
                         .on_submit(move |_: &str| navigate(&submit, false)),
-                )
-                .child(
-                    text(move || {
-                        let scope = if scoped.get() {
-                            "选区"
-                        } else if doc.displayed_rich() {
-                            "正文"
-                        } else {
-                            "源码"
-                        };
-                        short_status(&status.get(), scope)
-                    })
-                    .text_size(px(11.0))
-                    .text_color(foreground)
-                    .max_w(px(151.0))
-                    .number_of_lines(1)
-                    .text_overflow(EllipsizeMode::Tail),
-                )
+                );
+            let count = text(move || {
+                let scope = if scoped.get() {
+                    "选区"
+                } else if doc.displayed_rich() {
+                    "正文"
+                } else {
+                    "源码"
+                };
+                short_status(&status.get(), scope)
+            })
+            .text_size(px(11.0))
+            .text_color(foreground)
+            .min_w(px(0.0))
+            .max_w(px(150.0));
+            let button_group = || {
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(1.0))
+                    .flex_shrink_0()
+            };
+            let options = button_group()
                 .child(toggle(&s, Toggle::Case, "Aa", "区分大小写"))
                 .child(toggle(&s, Toggle::Word, "ab", "整词匹配"))
                 .child(toggle(&s, Toggle::Regex, ".*", "正则表达式"))
-                .child(toggle(&s, Toggle::Selection, "▧", "仅在选区内查找"))
+                .child(toggle(&s, Toggle::Selection, "▧", "仅在选区内查找"));
+            let navigation = button_group()
                 .child(
                     action("选中全部匹配")
                         .child(text("≣"))
@@ -174,6 +186,16 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                         .child(text("×"))
                         .on_press(move |_: &()| close.close_panel()),
                 );
+            // Wrap the same mounted inputs and actions when their editor group narrows.
+            let input_row = view()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(2.0))
+                .child(field)
+                .child(count)
+                .child(options)
+                .child(navigation);
             let controls = view()
                 .w(px(396.0))
                 .max_w(relative(1.0))
@@ -192,6 +214,7 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                         let submit_replacement = s.clone();
                         view()
                             .flex_row()
+                            .flex_wrap()
                             .items_center()
                             .gap(px(4.0))
                             .pl(px(24.0))
@@ -199,8 +222,9 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                                 input()
                                     .label("替换为")
                                     .placeholder("替换为")
-                                    .flex_1()
-                                    .min_w(px(0.0))
+                                    .basis(px(80.0))
+                                    .flex_grow(1.0)
+                                    .min_w(px(80.0))
                                     .h(px(28.0))
                                     .value(move || value.get())
                                     .on_composition_change(move |e: &Composition| {
@@ -219,8 +243,16 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                                         }
                                     }),
                             )
-                            .child(button("替换当前", s.clone(), "texzi.find.replaceOne"))
-                            .child(button("全部替换", s.clone(), "texzi.find.replaceAll"))
+                            .child(replace_button(
+                                "替换当前",
+                                s.clone(),
+                                "texzi.find.replaceOne",
+                            ))
+                            .child(replace_button(
+                                "全部替换",
+                                s.clone(),
+                                "texzi.find.replaceAll",
+                            ))
                     },
                 ))
                 .child(when(
@@ -262,6 +294,21 @@ fn short_status(status: &str, active_scope: &str) -> String {
         }
     }
 }
+fn replace_button(label: &'static str, s: Rc<Shell>, id: &'static str) -> impl IntoElement {
+    let shell = s.clone();
+    let disabled = computed(move || shell.find_panel.is_replace_blocked());
+    nsh_base::button()
+        .accessibility_label(label)
+        .disabled(move || disabled.get())
+        .child(text(label).text_color(move || {
+            if disabled.get() {
+                secondary_foreground()
+            } else {
+                foreground()
+            }
+        }))
+        .on_press(move |_: &()| s.run(id))
+}
 fn action(label: &'static str) -> nsh_base::ButtonElement {
     nsh_base::button()
         .accessibility_label(label)
@@ -288,9 +335,9 @@ fn toggle(
     let available = s.find_panel.has_scope;
     action(name)
         .selected(move || flag.get())
-        .disabled(move || which == Toggle::Selection && !available.get())
+        .disabled(move || which == Toggle::Selection && !flag.get() && !available.get())
         .accessibility_hint(if which == Toggle::Selection {
-            "打开查找前先在正文选择文字"
+            "选择正文后可限定查找范围"
         } else {
             name
         })

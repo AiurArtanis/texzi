@@ -1,4 +1,6 @@
-use crate::{Options, Rope, Scope, is_word, scope::ScopeCursor, unicode::QueryFold};
+mod preview;
+
+use crate::{Options, Rope, Scope, scope::ScopeCursor, unicode::QueryFold, word::WordFilter};
 use std::{
     fmt,
     ops::{ControlFlow, Range},
@@ -285,42 +287,32 @@ fn scan_scalars<B, C: FnMut() -> bool, V: FnMut(ScanEvent) -> ControlFlow<B>>(
     scan: &mut Scan<'_, C, V>,
 ) -> Result<ControlFlow<B>, Cancelled> {
     let len = pattern.keys.len();
-    let mut starts = vec![(0usize, false); len];
+    let mut starts = vec![0usize; len];
     let mut slot = 0;
     let mut matched = 0;
-    let mut previous_word =
-        whole_word && offset > 0 && is_word(rope.char(rope.byte_to_char(offset) - 1));
+    let mut words = whole_word.then(|| WordFilter::rope(rope));
     let slice = rope.byte_slice(offset..);
-    let mut chunks = slice.chunks().peekable();
-    while let Some(chunk) = chunks.next() {
+    for chunk in slice.chunks() {
         for (within, ch) in chunk.char_indices() {
             let at = offset + within;
-            starts[slot] = (at, previous_word);
+            starts[slot] = at;
             slot += 1;
             if slot == len {
                 slot = 0;
             }
-            previous_word = whole_word && is_word(ch);
             let key = fold.map_or(ch, |table| table.key(ch));
             if !pattern.advance(&mut matched, key, &mut scan.cancelled)? {
                 continue;
             }
-            let (start, left_word) = starts[slot];
-            let end_in_chunk = within + ch.len_utf8();
-            if whole_word
-                && (left_word || {
-                    let right = chunk[end_in_chunk..]
-                        .chars()
-                        .next()
-                        .or_else(|| chunks.peek().and_then(|s| s.chars().next()));
-                    right.is_some_and(is_word)
-                })
+            let range = starts[slot]..at + ch.len_utf8();
+            if let Some(words) = &mut words
+                && !words.accepts(&range, &mut scan.cancelled)?
             {
                 matched = pattern.prefix[len - 1];
                 continue;
             }
             matched = 0;
-            if let ControlFlow::Break(value) = scan.found(start..offset + end_in_chunk) {
+            if let ControlFlow::Break(value) = scan.found(range) {
                 return Ok(ControlFlow::Break(value));
             }
         }
@@ -333,7 +325,7 @@ fn scan_scalars<B, C: FnMut() -> bool, V: FnMut(ScanEvent) -> ControlFlow<B>>(
             } else {
                 len - (matched - slot)
             };
-            starts[first].0
+            starts[first]
         };
         if let ControlFlow::Break(value) = scan.progress(offset, resume)? {
             return Ok(ControlFlow::Break(value));

@@ -118,9 +118,13 @@ fn whole_word_uses_original_neighbors_and_unicode_categories() {
         words.iter().map(|r| &text[r.clone()]).collect::<Vec<_>>(),
         ["Alpha", "alpha"]
     );
+    let cat_before_digit = text.find("猫1").unwrap();
     assert_eq!(
         hits(text, "猫", word, &Scope::Document),
-        [text.len() - 3..text.len()]
+        [
+            cat_before_digit..cat_before_digit + 3,
+            text.len() - 3..text.len()
+        ]
     );
     let in_word = text.find("alphabet").unwrap();
     assert!(
@@ -145,6 +149,62 @@ fn whole_word_uses_original_neighbors_and_unicode_categories() {
     let first_chunk = rope.chunks().next().unwrap();
     assert!(first_chunk.len() < rope.len_bytes());
     assert!(hits(&long_word, first_chunk, word, &Scope::Document).is_empty());
+}
+
+#[test]
+fn whole_word_uses_the_editors_grapheme_and_script_runs_across_rope_leaves() {
+    let whole = Options {
+        case_sensitive: true,
+        whole_word: true,
+    };
+    let text = "猫alpha猫咪カ한a‿b1e\u{301}";
+    for (word, bytes) in [
+        ("猫", 0..3),
+        ("alpha", 3..8),
+        ("猫咪カ한", 8..20),
+        ("a‿b1e\u{301}", 20..29),
+    ] {
+        assert_eq!(hits(text, word, whole, &Scope::Document), [bytes], "{word}");
+    }
+    for part in ["猫咪", "カ", "한", "b1", "e", "\u{301}"] {
+        assert!(
+            hits(text, part, whole, &Scope::Document).is_empty(),
+            "{part}"
+        );
+    }
+    // The mark belongs to the Han grapheme on its left, including at a
+    // replay checkpoint after a cluster larger than one Rope leaf.
+    let cluster = format!("猫{}", "\u{301}".repeat(3000));
+    let subject = format!("{cluster}alpha猫");
+    let rope = Rope::from_str(&subject);
+    let word = Literal::new("alpha", whole).unwrap();
+    let mut found = Vec::new();
+    let _ = word
+        .scan(
+            &rope,
+            cluster.len(),
+            &Scope::Document,
+            || false,
+            |r| {
+                found.push(r);
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .unwrap();
+    assert_eq!(found, [cluster.len()..cluster.len() + 5]);
+    assert!(hits(&subject, "猫\u{301}", whole, &Scope::Document).is_empty());
+    let mut polls = 0;
+    let stopped = word.scan(
+        &rope,
+        cluster.len(),
+        &Scope::Document,
+        || {
+            polls += 1;
+            polls == 4
+        },
+        |_| ControlFlow::<()>::Continue(()),
+    );
+    assert_eq!(stopped, Err(Cancelled));
 }
 
 #[test]

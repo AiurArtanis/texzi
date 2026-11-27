@@ -10,7 +10,7 @@ use super::{
     template::Parsed,
     wire::{self, Operation, Request},
 };
-use crate::{Checkpoints, Collector, Options, Scope, is_word};
+use crate::{Checkpoints, Collector, Options, Scope, word::WordFilter};
 
 static SUBJECT_BYTES_READ: AtomicU64 = AtomicU64::new(0);
 
@@ -34,6 +34,14 @@ fn enumerate(
         return Err(RegexError::Worker);
     }
     let mut scope = scope.cursor(start);
+    let mut words = options.whole_word.then(|| WordFilter::text(text));
+    let mut whole = |range: &Range<usize>| {
+        words.as_mut().is_none_or(|filter| {
+            filter
+                .accepts(range, &mut || false)
+                .expect("worker cancellation is enforced by its parent")
+        })
+    };
     if let Some(members) = pattern.ascii_table() {
         let bytes = text.as_bytes();
         for (offset, &byte) in bytes[start..].iter().enumerate() {
@@ -43,10 +51,7 @@ fn enumerate(
             let at = start + offset;
             let end = at + 1;
             let range = at..end;
-            let whole = !options.whole_word
-                || ((at == 0 || !is_word(bytes[at - 1] as char))
-                    && !bytes.get(end).is_some_and(|b| is_word(*b as char)));
-            if whole
+            if whole(&range)
                 && scope.contains(&range)
                 && hit(range, Some(end), &Match::single(&[at, end]))?.is_break()
             {
@@ -60,9 +65,7 @@ fn enumerate(
         if range.start < start || text.get(range.clone()).is_none() {
             return Err(RegexError::Worker);
         }
-        let whole = !options.whole_word
-            || (!text[..range.start].chars().next_back().is_some_and(is_word)
-                && !text[range.end..].chars().next().is_some_and(is_word));
+        let whole = whole(&range);
         // A rejected word boundary must not hide a valid overlapping whole word.
         // A rejected scope, in contrast, must not change the global match sequence.
         let resume = if !whole {

@@ -1,6 +1,84 @@
 //! Exercise the same frozen snapshot, matches, projection, and publication used by the panel.
 use super::*;
 
+mod rich_shortcuts;
+
+#[component]
+fn InvalidRegexFixture() -> impl IntoElement {
+    let shell = Shell::new();
+    let source = NativeView::fixture("target");
+    shell.add(source.clone(), None);
+    open(&shell, true);
+    let doc = shell.current().unwrap();
+    let st = &shell.find_panel;
+    st.regex.set(true);
+    st.set_index(Some(Arc::new(scan(&source, None, "target", None).unwrap())));
+    assert!(!st.is_replace_blocked());
+
+    // Inject the worker's error at its normal completion boundary. Holding
+    // composition during refresh keeps this Core fixture free of child processes.
+    st.query.set("(".into());
+    st.composing_query.set(true);
+    refresh(&shell, Intent::Count, false);
+    st.composing_query.set(false);
+    let diagnostic = "正则表达式在字节 1 处有误（missing closing parenthesis）";
+    finish(&shell, &doc, Event::Failed(diagnostic.into()));
+    let before = source.search_snapshot().unwrap().0;
+    assert!(active(&shell, &doc) && st.is_replace_blocked());
+    for command in ["texzi.find.replaceOne", "texzi.find.replaceAll"] {
+        shell.run(command);
+        assert_eq!(st.status.get(), diagnostic);
+    }
+    let after = source.search_snapshot().unwrap().0;
+    assert_eq!(
+        (after.revision, after.token),
+        (before.revision, before.token)
+    );
+    assert_eq!(after.body.to_utf8(), b"target");
+    overlay(shell, doc)
+}
+
+#[test]
+fn invalid_regex_disables_both_replace_buttons_and_preserves_the_command_diagnostic() {
+    use nsh_core::{
+        ApproxTextEngine, Core, MountItem, Size,
+        element::{Environment, Root},
+        platform::Os,
+    };
+    let mut core = Core::new(
+        ApproxTextEngine,
+        Size {
+            width: px(800.0),
+            height: px(600.0),
+        },
+    );
+    core.set_environment(Environment {
+        os: Os::Windows,
+        ..Default::default()
+    });
+    core.mount_root(&Root::new::<InvalidRegexFixture>(|| ()));
+    let mut disabled = [None, None];
+    for _ in 0..4 {
+        core.run_component_tasks();
+        if let Some(batch) = core.commit() {
+            for item in batch.items {
+                if let MountItem::ViewProps { props, .. } = item {
+                    match props.accessibility.label.as_deref() {
+                        Some("替换当前") => {
+                            disabled[0] = Some(props.accessibility.state.disabled)
+                        }
+                        Some("全部替换") => {
+                            disabled[1] = Some(props.accessibility.state.disabled)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(disabled, [Some(true), Some(true)]);
+}
+
 fn scan(
     view: &NativeView,
     gate: Option<&ModeGate>,

@@ -292,6 +292,15 @@ impl Scan {
             })
             .map_err(message)?
             .ok_or("请输入查找文字")?;
+            let visible = literal
+                .first_visible(rope, viewport.clone(), &scope, || {
+                    cancel.load(Ordering::Relaxed)
+                })
+                .map_err(message)?;
+            let previewed = visible.is_some();
+            if let Some(hit) = visible {
+                on_first(&subject, hit);
+            }
             let mut collector = Collector::new(rope.len_bytes(), nav, viewport, select_cap);
             let _ = literal
                 .scan_events(
@@ -303,7 +312,7 @@ impl Scan {
                         match event {
                             ScanEvent::Match(r) => {
                                 let end = r.end;
-                                if collector.record(r, Some(end)) {
+                                if collector.record(r, Some(end)) && !previewed {
                                     on_first(&subject, collector.first().unwrap().range.clone());
                                 }
                             }

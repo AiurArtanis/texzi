@@ -198,7 +198,14 @@ fn semantics() {
     assert_eq!(search(&subject, req).visible, [3..6]);
     let mut req = q("猫", &any);
     req.options.whole_word = true;
-    assert_eq!(search(&stage("猫咪 猫 e\u{301} e‿猫"), req).total, 1);
+    assert_eq!(search(&stage("猫咪 猫 e\u{301} e‿猫"), req).total, 2);
+    let scripts = stage("猫\u{301}alpha猫");
+    let mut word = q(r"(?<=\p{M})alpha", &any);
+    word.options.whole_word = true;
+    assert_eq!(search(&scripts, word).visible, [5..10]);
+    let mut own_boundaries = q(r"\balpha\b", &any);
+    own_boundaries.options.whole_word = true;
+    assert_eq!(search(&scripts, own_boundaries).total, 0);
 }
 
 fn replacement() {

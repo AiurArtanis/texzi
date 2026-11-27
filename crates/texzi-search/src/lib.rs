@@ -6,6 +6,7 @@ pub mod pcre;
 mod scope;
 mod summary;
 mod unicode;
+mod word;
 
 pub use literal::{Cancelled, Literal, ScanEvent};
 pub use ropey::{Rope, RopeBuilder};
@@ -14,7 +15,7 @@ pub use summary::{
     Checkpoint, Checkpoints, Collector, Hit, MAX_CHECKPOINTS, MAX_SELECTIONS, MAX_VISIBLE,
     Navigation, NavigationReplay, SearchResults, SelectionLimit, VisibleReplay,
 };
-pub use unicode::is_word;
+pub use texzi_word::is_word;
 
 use serde::{Deserialize, Serialize};
 

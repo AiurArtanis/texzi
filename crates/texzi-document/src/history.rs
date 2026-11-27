@@ -626,17 +626,22 @@ impl Store {
         cancelled: impl Fn() -> bool,
     ) -> Result<Snapshot, Error> {
         let format = loaded.format();
-        let empty = loaded.text().is_empty();
-        let aliases = crate::files::legacy_aliases::Aliases::capture(&loaded, &cancelled)?;
+        let legacy = crate::files::legacy_aliases::LegacyBytes::from_loaded(&loaded);
+        let text = loaded.into_shared_text();
         let mut body = Self::decoded_body(
-            loaded.into_shared_text(),
+            text.clone(),
             format,
             Profile::default().default_eol,
             max_lines,
             &cancelled,
         )?;
-        body.legacy = aliases;
-        self.open_import(body, empty, false, None)
+        if let Some(original) = legacy {
+            body.legacy = original.capture(&text, &cancelled)?;
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+        }
+        self.open_import(body, text.is_empty(), false, None)
     }
     fn decoded_body(
         text: Arc<str>,
