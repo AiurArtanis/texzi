@@ -211,7 +211,19 @@ impl Shell {
         const CHANGED: &str = "草稿内容或活动编辑组已变化。请重新发起另存为。";
         while pending.can_close_written_revision(self, revision) {
             let picker = save_path_dialog(pending.original.as_deref(), true);
-            let Some(path) = self.owner.run(|| pick_save_path(picker)).await? else {
+            #[cfg(not(test))]
+            let chosen = self
+                .owner
+                .run(|| {
+                    nsh_platform_windows::pick_recovered_draft_save_path(
+                        &self.draft_dialog_host,
+                        picker,
+                    )
+                })
+                .await?;
+            #[cfg(test)]
+            let chosen = self.owner.run(|| pick_save_path(picker)).await?;
+            let Some(path) = chosen else {
                 self.notice.set("已取消另存，草稿保持打开".into());
                 return Ok(None);
             };
