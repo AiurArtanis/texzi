@@ -935,6 +935,8 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
         move || {
             let range = move || page.with(|page| page.as_ref().map(|p| (p.data.start, p.data.end)));
             view()
+                .min_w(px(0.0))
+                .max_w(relative(1.0))
                 .flex_row()
                 .flex_wrap()
                 .gap(px(8.0))
@@ -949,6 +951,8 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                             format!("从 {start} 字节到 {end} 字节之前，源文件共 {bytes} 字节")
                         })
                     })
+                    .min_w(px(0.0))
+                    .max_w(relative(1.0))
                     .tabular_nums()
                     .text_size(px(font_size("meta")))
                     .text_color(|| color("muted-readable")),
@@ -961,6 +965,8 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                             })
                         })
                     })
+                    .min_w(px(0.0))
+                    .max_w(relative(1.0))
                     .text_size(px(font_size("meta")))
                     .text_color(|| color("muted-readable")),
                 )
@@ -1068,7 +1074,6 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 .flex_row()
                 .flex_wrap()
                 .gap(px(8.0))
-                .accessible(true)
                 .role(AccessibilityRole::Group)
                 .label("分页编码")
                 .child(codec("UTF-8", Encoding::Utf8))
@@ -1111,9 +1116,10 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 .max_h(relative(0.60))
                 .min_h(px(0.0))
                 .child(
-                    view().px(px(12.0)).py(px(8.0)).child(
+                    view().min_w(px(0.0)).px(px(12.0)).py(px(8.0)).child(
+                        // An explicit group keeps the inspector text and its controls separately readable.
                         view()
-                            .accessible(true)
+                            .min_w(px(0.0))
                             .role(AccessibilityRole::Group)
                             .label(inspector_label)
                             .rounded(px(metric("paperRadius")))
