@@ -1311,6 +1311,9 @@ pub(crate) fn wheel(surface: &Rc<Surface>, event: WheelEvent) {
     if event.dx != 0.0 || event.dy != 0.0 {
         crate::scroll::rich_thumb::supersede_input(surface);
     }
+    if crate::system::recovery_wheel(surface, &event) {
+        return;
+    }
     if raw_wheel(surface, &event) {
         return;
     }

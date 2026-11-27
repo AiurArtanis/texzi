@@ -21,6 +21,7 @@
 //! the children. Android's `elevation` is Android only.
 
 mod cache;
+pub(crate) mod frozen_modal;
 mod gradient;
 pub(crate) mod layer;
 

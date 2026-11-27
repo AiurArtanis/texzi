@@ -1771,6 +1771,9 @@ fn handle(
         {
             crate::system::woke(surface);
         }
+        WM_POWERBROADCAST if wparam.0 == PBT_APMPOWERSTATUSCHANGE as usize => {
+            crate::system::recovered_draft_preferences_changed(surface);
+        }
         // The display turned off or on (the surface's window registered
         // for it: [`crate::presence`]).
         WM_POWERBROADCAST

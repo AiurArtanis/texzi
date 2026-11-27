@@ -695,11 +695,14 @@ impl Host {
 /// views: a page that had the focus gives it back to the window, as a web
 /// view resigns first responder when something is presented over it.
 pub(crate) fn take_keyboard(surface: &Surface) {
+    take_keyboard_in(surface.hwnd());
+}
+
+pub(crate) fn take_keyboard_in(hwnd: windows::Win32::Foundation::HWND) {
     use windows::Win32::UI::{
         Input::KeyboardAndMouse::{GetFocus, SetFocus},
         WindowsAndMessaging::IsChild,
     };
-    let hwnd = surface.hwnd();
     if hwnd.is_invalid() {
         return;
     }

@@ -883,6 +883,7 @@ pub(crate) fn handle(
             Some(Some(LRESULT(0)))
         }
         WM_DPICHANGED => {
+            crate::system::release_recovered_draft_window_images(surface, id);
             crate::scroll::rich_thumb::cancel_window(surface, hwnd);
             // In full screen it keeps covering its monitor.
             if !crate::window::is_full_screen(hwnd) {

@@ -152,6 +152,11 @@ thread_local! {
     static TASK_SURFACE: RefCell<Weak<Surface>> = RefCell::new(Weak::new());
 }
 
+/// Platform surface of the current engine main-thread task.
+pub(crate) fn task_surface() -> Option<Rc<Surface>> {
+    TASK_SURFACE.with(|active| active.borrow().upgrade())
+}
+
 /// Checks whether a laid-out node in the calling engine's window has reached
 /// a successful swap-chain presentation. Call from a main-thread engine task.
 /// The first check asks the platform to draw the node and returns its baseline.
@@ -1028,13 +1033,15 @@ impl Surface {
                 }
             }
             Message::Resized(_) => self.resize_late.set(false),
-            Message::Run(task) => {
-                let previous = TASK_SURFACE.replace(Rc::downgrade(self));
-                task.run();
-                TASK_SURFACE.set(previous);
-            }
+            Message::Run(task) => self.run_engine_task(task),
         }
         false
+    }
+
+    pub(crate) fn run_engine_task(self: &Rc<Self>, task: MainThreadTask) {
+        let previous = TASK_SURFACE.replace(Rc::downgrade(self));
+        task.run();
+        TASK_SURFACE.set(previous);
     }
 
     fn apply(self: &Rc<Self>, batch: &MountBatch) {

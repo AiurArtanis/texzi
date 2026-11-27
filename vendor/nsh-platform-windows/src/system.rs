@@ -76,12 +76,15 @@
 
 use std::{
     cell::{Cell, RefCell},
+    future::Future,
     rc::Rc,
 };
 
+use nsh_base::{AlertDialogOptions, AlertDialogPresentation};
 use nsh_core::{
-    Bounds, Color, Command, Dialog, DialogButtonStyle, EventKind, EventPayload, NodeId,
-    PayloadValue, Points, ROOT_ID,
+    Bounds, Color, Command, Dialog, DialogButton, DialogButtonStyle, EventKind, EventPayload,
+    NodeId, PayloadValue, Points, ROOT_ID,
+    element::{ElementRef, run_on_main_thread},
     geometry::px,
     platform::{Appearance, clipboard},
 };
@@ -89,6 +92,7 @@ use nsh_engine::{
     ColorScheme, Edges, Environment, HourCycle, Languages, Lifecycle, Locale, LocaleSettings,
     MeasurementSystem, TimeZone, Weekday,
 };
+use tokio::sync::oneshot;
 use windows::{
     Win32::{
         Foundation::{LPARAM, WPARAM},
@@ -105,11 +109,16 @@ use windows::{
                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS,
                 DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteTextLayout,
             },
+            Gdi::{
+                COLOR_BTNFACE, COLOR_BTNTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW,
+                COLOR_WINDOWTEXT, GetSysColor, SYS_COLOR_INDEX,
+            },
         },
         System::{
             LibraryLoader::{
                 GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
             },
+            Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
             Registry::{
                 HKEY, HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
             },
@@ -120,12 +129,13 @@ use windows::{
             },
         },
         UI::{
+            Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
             Shell::{SetCurrentProcessExplicitAppUserModelID, ShellExecuteW},
             WindowsAndMessaging::{
                 GA_ROOT, GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, IsIconic,
-                IsWindowVisible, PostMessageW, SPI_GETCLIENTAREAANIMATION, SPI_GETSCREENREADER,
-                SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_ACTION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-                SystemParametersInfoW, WM_CLOSE,
+                IsWindowVisible, PostMessageW, SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST,
+                SPI_GETSCREENREADER, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_ACTION,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WM_CLOSE,
             },
         },
     },
@@ -133,8 +143,9 @@ use windows::{
 };
 
 use crate::{
+    decor::frozen_modal::FrozenModal,
     geom::{Mat4, rect},
-    input::{Cursor, KeyEvent, PointerKind},
+    input::{Cursor, KeyEvent, PointerKind, WheelEvent},
     render::{DrawCx, rect_f},
     surface::Surface,
     view::{Hosted, ItemPointer, NshView},
@@ -151,6 +162,8 @@ const VK_ESCAPE: u16 = 0x1B;
 const VK_SPACE: u16 = 0x20;
 const VK_LEFT: u16 = 0x25;
 const VK_UP: u16 = 0x26;
+const VK_PAGE_UP: u16 = 0x21;
+const VK_PAGE_DOWN: u16 = 0x22;
 const VK_RIGHT: u16 = 0x27;
 const VK_DOWN: u16 = 0x28;
 
@@ -245,6 +258,7 @@ pub(crate) fn settings_changed(surface: &Rc<Surface>) {
     crate::text::invalidate_rendering_params();
     refresh_accent();
     update(surface, settings());
+    recovered_draft_preferences_changed(surface);
     // The taskbar's colors may have changed: a template tray icon follows.
     crate::tray::refresh(surface.hwnd());
     // The accent may have changed without the environment.
@@ -891,6 +905,179 @@ fn dialog_answer(id: u32, index: i32) -> EventPayload {
     ])
 }
 
+/// Action chosen in texzi's window-bound recovery confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveredDraftChoice {
+    Continue,
+    Discard,
+    SaveAs,
+}
+
+struct RecoveredDraftRequest {
+    dialog: Dialog,
+    actions: Vec<RecoveredDraftChoice>,
+    keep: usize,
+    save_as: Option<usize>,
+    resume_save_as: bool,
+}
+
+impl RecoveredDraftRequest {
+    fn new(options: AlertDialogOptions, resume_save_as: bool) -> Option<Self> {
+        if options.presentation != AlertDialogPresentation::Alert || options.input.is_some() {
+            return None;
+        }
+        let buttons: Vec<DialogButton> = options
+            .actions
+            .iter()
+            .map(|action| DialogButton {
+                text: action.label.to_string(),
+                style: action.role.into(),
+            })
+            .collect();
+        let actions: Option<Vec<_>> = options
+            .actions
+            .iter()
+            .zip(&buttons)
+            .map(|(action, button)| match (&*action.id, button.style) {
+                ("continue", DialogButtonStyle::Cancel | DialogButtonStyle::Default) => {
+                    Some(RecoveredDraftChoice::Continue)
+                }
+                ("discard", DialogButtonStyle::Destructive) => Some(RecoveredDraftChoice::Discard),
+                ("save-as", DialogButtonStyle::Default) => Some(RecoveredDraftChoice::SaveAs),
+                _ => None,
+            })
+            .collect();
+        let actions = actions?;
+        actions
+            .iter()
+            .position(|a| *a == RecoveredDraftChoice::Continue)?;
+        actions
+            .iter()
+            .position(|a| *a == RecoveredDraftChoice::Discard)?;
+        let save_as = actions
+            .iter()
+            .position(|a| *a == RecoveredDraftChoice::SaveAs);
+        if actions.len() != 2 + usize::from(save_as.is_some()) {
+            return None;
+        }
+        // The stock caller may put Continue last to select it by default.
+        // Recovery has explicit keyboard focus, so it uses visual order.
+        let mut actions_and_buttons: Vec<_> = actions.into_iter().zip(buttons).collect();
+        actions_and_buttons.sort_by_key(|(action, _)| match action {
+            RecoveredDraftChoice::Continue => 0,
+            RecoveredDraftChoice::Discard => 1,
+            RecoveredDraftChoice::SaveAs => 2,
+        });
+        let (actions, buttons) = actions_and_buttons.into_iter().unzip();
+        Some(Self {
+            // The reply below has a different type and lifetime from a Core
+            // Dialog ID; this stored layout input is not a Core request.
+            dialog: Dialog {
+                id: 0,
+                title: options.title.map(|text| text.to_string()),
+                message: options.description.map(|text| text.to_string()),
+                buttons,
+                cancelable: false,
+                sheet: false,
+                input: None,
+            },
+            actions,
+            keep: 0,
+            save_as: save_as.map(|_| 2),
+            resume_save_as,
+        })
+    }
+}
+
+/// Opens texzi's recovery confirmation over the declared AppWindow which
+/// contains `host`, after the requesting engine's current mount batch.
+/// Use the `continue`, `discard` and (when available) `save-as` actions.
+/// If the host vanished or cannot show a window, the confirmation is dismissed.
+pub fn show_recovered_draft_dialog(
+    host: &ElementRef,
+    options: AlertDialogOptions,
+    resume_save_as: bool,
+) -> impl Future<Output = Result<Option<RecoveredDraftChoice>, String>> + use<> {
+    let request = RecoveredDraftRequest::new(options, resume_save_as);
+    let (send, receive) = oneshot::channel();
+    let shown = host.node().zip(request).map(|(host, request)| {
+        run_on_main_thread(move || {
+            if send.is_closed() {
+                return None;
+            }
+            let surface = crate::surface::task_surface()?;
+            open_recovered_draft(&surface, host, request, send)
+        })
+    });
+    async move {
+        let Some(shown) = shown else { return Ok(None) };
+        let Some(mut guard) = shown.await.map_err(|error| error.to_string())? else {
+            return Ok(None);
+        };
+        let choice = receive.await.ok();
+        guard.armed = false;
+        Ok(choice)
+    }
+}
+
+/// Lives in the main-thread result slot even if the engine future is dropped
+/// before it can take the result. Closing is idempotent and checks the route.
+struct RecoveredOverlayGuard {
+    key: u64,
+    serial: u64,
+    ui: crate::window::UiThread,
+    armed: bool,
+}
+
+impl Drop for RecoveredOverlayGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let (key, serial) = (self.key, self.serial);
+            self.ui.invoke(move || {
+                if let Some(surface) = Surface::by_key(key)
+                    && let Some(dialog) = find_dialog(&surface, serial)
+                {
+                    dismiss_recovered(&surface, &dialog);
+                }
+            });
+        }
+    }
+}
+
+fn recovery_window(surface: &Surface, host: NodeId) -> Option<(NodeId, u64)> {
+    let view = surface.view(host).filter(|view| view.attached())?;
+    let window = crate::app_window::window_of(surface, &view);
+    let frame = crate::app_window::presentation(surface, window, false)?;
+    Some((window, frame))
+}
+
+fn open_recovered_draft(
+    surface: &Rc<Surface>,
+    host: NodeId,
+    request: RecoveredDraftRequest,
+    reply: oneshot::Sender<RecoveredDraftChoice>,
+) -> Option<RecoveredOverlayGuard> {
+    let (window, frame) = recovery_window(surface, host)?;
+    if dialog_in_window(surface, window, DialogItem::takes_input).is_some() {
+        return None;
+    }
+    // A stock prompt may already have answered and still be fading out.
+    // Opening another recovery choice must not freeze that previous card.
+    let ready = frame != 0 && dialog_in_window(surface, window, |_| true).is_none();
+    let serial = show_dialog_item(
+        surface,
+        window,
+        &request.dialog,
+        Some((&request, reply, ready)),
+    )?;
+    Some(RecoveredOverlayGuard {
+        key: surface.key(),
+        serial,
+        ui: surface.ui_thread(),
+        armed: true,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Overlays
 
@@ -933,6 +1120,52 @@ fn find(serial: u64) -> Option<(u64, OverlayKind)> {
             .find(|o| o.serial == serial)
             .map(|o| (o.key, o.kind.clone()))
     })
+}
+
+fn recovered_drafts(mut matches_surface: impl FnMut(u64) -> bool) -> Vec<Rc<DialogItem>> {
+    OVERLAYS.with(|overlays| {
+        overlays
+            .borrow()
+            .iter()
+            .filter_map(|overlay| {
+                let OverlayKind::Dialog(dialog) = &overlay.kind;
+                (matches_surface(overlay.key) && dialog.recovered.is_some()).then(|| dialog.clone())
+            })
+            .collect()
+    })
+}
+
+pub(crate) fn recovered_draft_preferences_changed(surface: &Surface) {
+    let dialogs = recovered_drafts(|key| key == surface.key());
+    if dialogs.is_empty() {
+        return;
+    }
+    let appearance = RecoveredAppearance::read();
+    for dialog in dialogs {
+        if let Some(recovered) = &dialog.recovered
+            && recovered.appearance.replace(appearance) != appearance
+        {
+            recovered.frozen.release();
+            if let Some(root) = crate::app_window::root_view(surface, dialog.window) {
+                root.changed();
+            }
+        }
+    }
+}
+
+/// All surfaces on the UI thread use this device generation.
+pub(crate) fn release_recovered_draft_device_images() {
+    for dialog in recovered_drafts(|_| true) {
+        dialog.release_frozen_backdrop();
+    }
+}
+
+pub(crate) fn release_recovered_draft_window_images(surface: &Surface, window: NodeId) {
+    for dialog in recovered_drafts(|key| key == surface.key()) {
+        if dialog.window == window {
+            dialog.release_frozen_backdrop();
+        }
+    }
 }
 
 /// The batch is applied: overlays stay over items hosted on the root
@@ -997,6 +1230,9 @@ pub(crate) fn clear(surface: &Surface) {
         removed
     });
     for overlay in removed {
+        let OverlayKind::Dialog(dialog) = &overlay.kind;
+        dialog.release_frozen_backdrop();
+        dialog.close_reply();
         if let Some(root) = overlay_root(surface, &overlay.kind) {
             root.remove_native(&overlay.kind.item());
         }
@@ -1049,6 +1285,9 @@ pub(crate) fn window_resized(surface: &Surface, id: NodeId, width: f32, height: 
             .collect()
     });
     for d in ours {
+        if let Some(recovered) = &d.recovered {
+            recovered.frozen.resize((width, height));
+        }
         let kind = OverlayKind::Dialog(d);
         if let Some(root) = overlay_root(surface, &kind) {
             root.set_native(&kind.item(), rect(0.0, 0.0, width, height));
@@ -1058,8 +1297,13 @@ pub(crate) fn window_resized(surface: &Surface, id: NodeId, width: f32, height: 
 
 /// Hosts a new overlay over `surface`'s views and fades it in.
 fn add_overlay(surface: &Rc<Surface>, serial: u64, kind: OverlayKind) {
-    if matches!(kind, OverlayKind::Dialog(_)) {
-        // Its keys (Return, Escape) are the window's, not a page's.
+    let OverlayKind::Dialog(dialog) = &kind;
+    // Its keys (Return, Escape) are the window's, not a page's.
+    if dialog.recovered.is_some() {
+        if let Some(hwnd) = crate::app_window::hwnd_of(surface, dialog.window) {
+            crate::native::take_keyboard_in(hwnd);
+        }
+    } else {
         crate::native::take_keyboard(surface);
     }
     let env = surface.environment.get();
@@ -1095,8 +1339,27 @@ pub(crate) fn window_closing(surface: &Surface, id: NodeId) {
             .collect()
     });
     for dialog in ours {
-        dialog.answer(-1);
+        if !dismiss_recovered(surface, &dialog) {
+            dialog.answer(-1);
+        }
     }
+}
+
+fn find_dialog(surface: &Surface, serial: u64) -> Option<Rc<DialogItem>> {
+    let (key, OverlayKind::Dialog(dialog)) = find(serial)?;
+    (surface.key() == key).then_some(dialog)
+}
+
+/// Stops a recovery overlay before allowing its request to settle.
+fn dismiss_recovered(surface: &Surface, dialog: &DialogItem) -> bool {
+    if dialog.recovered.is_none() {
+        return false;
+    }
+    dialog.closing.set(true);
+    dialog.release_frozen_backdrop();
+    drop_overlay(surface, dialog.serial);
+    dialog.close_reply();
+    true
 }
 
 /// Takes back the dialog [`show_dialog`] showed as `id`
@@ -1105,7 +1368,11 @@ pub(crate) fn window_closing(surface: &Surface, id: NodeId) {
 fn close_dialog(surface: &Rc<Surface>, id: u32) {
     let serial = OVERLAYS.with(|o| {
         o.borrow().iter().find_map(|o| match &o.kind {
-            OverlayKind::Dialog(d) if o.key == surface.key() && d.id == id && !d.closing.get() => {
+            OverlayKind::Dialog(d)
+                if o.key == surface.key()
+                    && matches!(d.reply, DialogReply::Core(core_id) if core_id == id)
+                    && !d.closing.get() =>
+            {
                 Some(o.serial)
             }
             _ => None,
@@ -1123,7 +1390,8 @@ fn remove_overlay(surface: &Rc<Surface>, serial: u64) {
     };
     let OverlayKind::Dialog(d) = &kind;
     d.closing.set(true);
-    if surface.environment.get().reduce_motion {
+    if d.recovered.is_some() || surface.environment.get().reduce_motion {
+        d.release_frozen_backdrop();
         drop_overlay(surface, serial);
     } else {
         fade(surface, serial, 0.0, FADE_OUT, true);
@@ -1383,6 +1651,133 @@ impl Palette {
             }
         }
     }
+
+    fn recovered(&mut self, dark: bool, contrast: Option<DialogContrast>, glass: bool) {
+        if let Some(contrast) = contrast {
+            self.card = contrast.window;
+            self.footer = contrast.window;
+            self.text = contrast.text;
+            self.secondary = contrast.text;
+            self.stroke = contrast.text;
+            self.focus = contrast.text;
+            return;
+        }
+        // Origami iris/on-primary, as used by the workbench.
+        (self.accent, self.accent_text) = if dark {
+            (Color(0x9b92_ffff), Color(0x1719_27ff))
+        } else {
+            (Color(0x5b50_e6ff), Color(0xffff_ffff))
+        };
+        self.focus = self.accent;
+        self.stroke = self.secondary;
+        if glass {
+            self.card = if dark {
+                Color(0x1a1f_2dc2)
+            } else {
+                Color(0xffff_ffc2)
+            };
+            // Keep the prepared local backdrop visible under the footer.
+            self.footer = if dark {
+                Color(0x1a1f_2d26)
+            } else {
+                Color(0xffff_ff26)
+            };
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DialogContrast {
+    window: Color,
+    text: Color,
+    button: Color,
+    button_text: Color,
+    highlight: Color,
+    highlight_text: Color,
+}
+
+impl DialogContrast {
+    fn read() -> Self {
+        let color = |index: SYS_COLOR_INDEX| {
+            // SAFETY: asks for a known system color, in COLORREF order.
+            let value = unsafe { GetSysColor(index) };
+            Color::rgba(value as u8, (value >> 8) as u8, (value >> 16) as u8, 255)
+        };
+        Self {
+            window: color(COLOR_WINDOW),
+            text: color(COLOR_WINDOWTEXT),
+            button: color(COLOR_BTNFACE),
+            button_text: color(COLOR_BTNTEXT),
+            highlight: color(COLOR_HIGHLIGHT),
+            highlight_text: color(COLOR_HIGHLIGHTTEXT),
+        }
+    }
+
+    fn button(self, selected: bool) -> (Color, Color) {
+        if selected {
+            (self.highlight, self.highlight_text)
+        } else {
+            (self.button, self.button_text)
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RecoveredAppearance {
+    capture: bool,
+    contrast: Option<DialogContrast>,
+}
+
+impl RecoveredAppearance {
+    fn read() -> Self {
+        let mut contrast = HIGHCONTRASTW {
+            cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: the output is writable and valid for its declared size.
+        let known_contrast = unsafe {
+            SystemParametersInfoW(
+                SPI_GETHIGHCONTRAST,
+                contrast.cbSize,
+                Some((&mut contrast as *mut HIGHCONTRASTW).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        }
+        .is_ok();
+        let contrast = (known_contrast && contrast.dwFlags.contains(HCF_HIGHCONTRASTON))
+            .then(DialogContrast::read);
+        let transparent = reg_dword(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            w!("EnableTransparency"),
+        )
+        .is_some_and(|enabled| enabled != 0);
+        let mut power = SYSTEM_POWER_STATUS::default();
+        // SAFETY: the output structure is writable for the call.
+        let normal_power =
+            unsafe { GetSystemPowerStatus(&mut power) }.is_ok() && power.SystemStatusFlag == 0;
+        Self {
+            capture: known_contrast && contrast.is_none() && transparent && normal_power,
+            contrast,
+        }
+    }
+}
+
+struct RecoveredDraftStyle {
+    frozen: FrozenModal,
+    appearance: Cell<RecoveredAppearance>,
+    body_offset: Cell<f32>,
+}
+
+impl RecoveredDraftStyle {
+    fn new(serial: u64, ready_to_capture: bool) -> Self {
+        let appearance = RecoveredAppearance::read();
+        Self {
+            frozen: FrozenModal::new(serial, appearance.capture && ready_to_capture),
+            appearance: Cell::new(appearance),
+            body_offset: Cell::new(0.0),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1399,6 +1794,8 @@ mod metrics {
     pub(super) const BUTTON_PAD: f32 = 12.0;
     pub(super) const BUTTON_GAP: f32 = 8.0;
     pub(super) const RADIUS: f32 = 8.0;
+    pub(super) const RECOVERED_WIDTH: f32 = 420.0;
+    pub(super) const RECOVERED_RADIUS: f32 = 18.0;
     pub(super) const BUTTON_RADIUS: f32 = 4.0;
     pub(super) const SHEET_MAX_WIDTH: f32 = 420.0;
     pub(super) const SHEET_ROW: f32 = 40.0;
@@ -1425,10 +1822,24 @@ struct Geometry {
     separator: Option<Bounds<Points>>,
     title: Option<Bounds<Points>>,
     message: Option<Bounds<Points>>,
+    /// A capped title and description viewport, when the recovery card needs one.
+    body_viewport: Option<Bounds<Points>>,
     /// The buttons, by index.
     buttons: Vec<Bounds<Points>>,
     /// An alert's buttons are in one row (else a column).
     row: bool,
+}
+
+impl Geometry {
+    fn body_travel(&self) -> f32 {
+        let Some(viewport) = self.body_viewport else {
+            return 0.0;
+        };
+        self.message.or(self.title).map_or(0.0, |last| {
+            (last.origin.y.0 + last.size.height.0 - viewport.origin.y.0 - viewport.size.height.0)
+                .max(0.0)
+        })
+    }
 }
 
 /// Lays out an alert in a surface of `view` size. `measure(part, width)`
@@ -1439,6 +1850,7 @@ fn layout_alert(
     title: bool,
     message: bool,
     buttons: usize,
+    preferred_width: Option<f32>,
     measure: &dyn Fn(Part, f32) -> (f32, f32),
 ) -> Geometry {
     use metrics::*;
@@ -1457,7 +1869,9 @@ fn layout_alert(
     .flatten()
     .fold(0.0, f32::max)
         + 2.0 * PAD;
-    let width = natural.clamp(MIN_WIDTH, MAX_WIDTH).min(available);
+    let width = preferred_width
+        .unwrap_or_else(|| natural.clamp(MIN_WIDTH, MAX_WIDTH))
+        .min(available);
     let inner = (width - 2.0 * PAD).max(0.0);
     // Buttons share the footer in equal columns (as Windows' do) while
     // there are at most three and every label fits its column.
@@ -1475,13 +1889,27 @@ fn layout_alert(
         0.0
     };
     let gap = if title && message { TITLE_GAP } else { 0.0 };
-    let body = PAD + title_h + gap + message_h + PAD;
+    let text_h = title_h + gap + message_h;
     let buttons_h = if row {
         BUTTON_HEIGHT
     } else {
         n * BUTTON_HEIGHT + (n - 1.0) * BUTTON_GAP
     };
-    let footer_h = PAD + buttons_h + PAD;
+    let recovery = preferred_width.is_some();
+    let window_height = (view.1 - 2.0 * GUTTER).max(0.0);
+    let footer_pad = if recovery {
+        PAD.min(((window_height - buttons_h) / 4.0).max(0.0))
+    } else {
+        PAD
+    };
+    let footer_h = 2.0 * footer_pad + buttons_h;
+    let body = if recovery {
+        (text_h + 2.0 * PAD).min((window_height - footer_h).max(0.0))
+    } else {
+        text_h + 2.0 * PAD
+    };
+    let body_pad = if recovery { PAD.min(body / 4.0) } else { PAD };
+    let body_view_height = (body - 2.0 * body_pad).max(0.0);
     let height = body + footer_h;
     let x = ((view.0 - width) / 2.0).round();
     let y = ((view.1 - height) / 2.0).round().max(0.0);
@@ -1493,14 +1921,14 @@ fn layout_alert(
             if row {
                 rect(
                     x + PAD + i * (column + BUTTON_GAP),
-                    footer.origin.y.0 + PAD,
+                    footer.origin.y.0 + footer_pad,
                     column,
                     BUTTON_HEIGHT,
                 )
             } else {
                 rect(
                     x + PAD,
-                    footer.origin.y.0 + PAD + i * (BUTTON_HEIGHT + BUTTON_GAP),
+                    footer.origin.y.0 + footer_pad + i * (BUTTON_HEIGHT + BUTTON_GAP),
                     inner,
                     BUTTON_HEIGHT,
                 )
@@ -1511,8 +1939,10 @@ fn layout_alert(
         cards: vec![card],
         footer: Some(footer),
         separator: None,
-        title: title.then(|| rect(x + PAD, y + PAD, inner, title_h)),
-        message: message.then(|| rect(x + PAD, y + PAD + title_h + gap, inner, message_h)),
+        title: title.then(|| rect(x + PAD, y + body_pad, inner, title_h)),
+        message: message.then(|| rect(x + PAD, y + body_pad + title_h + gap, inner, message_h)),
+        body_viewport: (recovery && body_view_height < text_h)
+            .then(|| rect(x + PAD, y + body_pad, inner, body_view_height)),
         buttons,
         row,
     }
@@ -1615,6 +2045,7 @@ fn layout_sheet(
                 message_h,
             )
         }),
+        body_viewport: None,
         buttons,
         row: false,
     }
@@ -1689,16 +2120,25 @@ struct DialogLayout {
     geometry: Geometry,
 }
 
+enum DialogReply {
+    Core(u32),
+    Recovered {
+        actions: Vec<RecoveredDraftChoice>,
+        sender: RefCell<Option<oneshot::Sender<RecoveredDraftChoice>>>,
+    },
+}
+
 /// An alert or action sheet, hosted by the root over the whole surface
 /// (it takes every pointer event: the dialog is modal).
 struct DialogItem {
+    recovered: Option<RecoveredDraftStyle>,
     /// The window of the app's own showing it (`ROOT_ID`: the main one).
     window: NodeId,
     key: u64,
     /// The UI thread of the surface: the answer is posted back to it.
     ui: crate::window::UiThread,
     serial: u64,
-    id: u32,
+    reply: DialogReply,
     sheet: bool,
     cancelable: bool,
     cancel: Option<usize>,
@@ -1721,6 +2161,10 @@ struct DialogItem {
 }
 
 impl DialogItem {
+    fn takes_input(&self) -> bool {
+        self.recovered.is_some() || !self.closing.get()
+    }
+
     fn geometry(&self, size: (f32, f32)) -> Geometry {
         let mut layout = self.layout.borrow_mut();
         if let Some(l) = &*layout
@@ -1752,6 +2196,7 @@ impl DialogItem {
                 t.title.is_some(),
                 t.message.is_some(),
                 t.buttons.len(),
+                self.recovered.as_ref().map(|_| metrics::RECOVERED_WIDTH),
                 &measure,
             )
         };
@@ -1797,7 +2242,25 @@ impl DialogItem {
 
     fn invalidate(&self) {
         if let Some(surface) = Surface::by_key(self.key) {
-            surface.root.changed();
+            if self.recovered.is_some()
+                && let Some(root) = crate::app_window::root_view(&surface, self.window)
+            {
+                root.changed();
+            } else {
+                surface.root.changed();
+            }
+        }
+    }
+
+    fn release_frozen_backdrop(&self) {
+        if let Some(recovered) = &self.recovered {
+            recovered.frozen.release();
+        }
+    }
+
+    fn close_reply(&self) {
+        if let DialogReply::Recovered { sender, .. } = &self.reply {
+            drop(sender.take());
         }
     }
 
@@ -1807,13 +2270,28 @@ impl DialogItem {
         if self.closing.replace(true) {
             return;
         }
-        let (key, serial, id) = (self.key, self.serial, self.id);
+        let (key, serial) = (self.key, self.serial);
+        let core_id = match self.reply {
+            DialogReply::Core(id) => Some(id),
+            DialogReply::Recovered { .. } => None,
+        };
         self.ui.invoke(move || {
             let Some(surface) = Surface::by_key(key) else {
                 return;
             };
-            remove_overlay(&surface, serial);
-            surface.event(ROOT_ID, EventKind::Dialog, dialog_answer(id, index));
+            if let Some(id) = core_id {
+                remove_overlay(&surface, serial);
+                surface.event(ROOT_ID, EventKind::Dialog, dialog_answer(id, index));
+            } else if let Some(dialog) = find_dialog(&surface, serial) {
+                remove_overlay(&surface, serial);
+                if let DialogReply::Recovered { actions, sender } = &dialog.reply
+                    && let Some(sender) = sender.take()
+                    && let Ok(index) = usize::try_from(index)
+                    && let Some(choice) = actions.get(index)
+                {
+                    let _ = sender.send(*choice);
+                }
+            }
         });
     }
 
@@ -1826,12 +2304,46 @@ impl DialogItem {
         }
     }
 
+    fn scroll_body(&self, change: f32) {
+        if self.closing.get() {
+            return;
+        }
+        let Some(recovered) = &self.recovered else {
+            return;
+        };
+        let max = self
+            .layout
+            .borrow()
+            .as_ref()
+            .map_or(0.0, |l| l.geometry.body_travel());
+        let old = recovered.body_offset.get();
+        let new = (old + change).clamp(0.0, max);
+        if old != new {
+            recovered.body_offset.set(new);
+            self.invalidate();
+        }
+    }
+
     fn key(&self, event: &KeyEvent) {
         if !event.down || self.closing.get() {
             return;
         }
         let order = focus_order(self.styles.len(), self.cancel, self.sheet);
         let step = match event.vk {
+            VK_PAGE_UP | VK_PAGE_DOWN if self.recovered.is_some() => {
+                let height = self
+                    .layout
+                    .borrow()
+                    .as_ref()
+                    .and_then(|layout| layout.geometry.body_viewport)
+                    .map_or(0.0, |r| r.size.height.0);
+                self.scroll_body(if event.vk == VK_PAGE_UP {
+                    -height
+                } else {
+                    height
+                });
+                return;
+            }
             VK_TAB if event.modifiers.shift => -1,
             VK_TAB | VK_RIGHT | VK_DOWN => 1,
             VK_LEFT | VK_UP => -1,
@@ -1858,7 +2370,31 @@ impl Hosted for DialogItem {
             return;
         }
         let g = self.geometry(size);
-        let p = Palette::new(cx.dark);
+        let contrast = self
+            .recovered
+            .as_ref()
+            .and_then(|draft| draft.appearance.get().contrast);
+        let mut p = Palette::new(cx.dark);
+        let mut glass = false;
+        let radius = if let Some(recovered) = &self.recovered {
+            if let [card] = g.cards.as_slice() {
+                glass = recovered.frozen.backdrop(cx, size, *card);
+            }
+            p.recovered(cx.dark, contrast, glass);
+            RECOVERED_RADIUS
+        } else {
+            RADIUS
+        };
+        let offset = self.recovered.as_ref().map_or(0.0, |recovered| {
+            let offset = recovered.body_offset.get().min(g.body_travel());
+            recovered.body_offset.set(offset);
+            offset
+        });
+        let border_width = if self.recovered.is_some() && !glass {
+            1.5
+        } else {
+            1.0
+        };
         if opacity < 1.0 {
             cx.push_opacity(opacity);
         }
@@ -1887,12 +2423,17 @@ impl Hosted for DialogItem {
             );
         }
         for card in &g.cards {
-            draw_shadow(cx, *card, RADIUS, 8.0, if cx.dark { 0.6 } else { 0.25 });
-            fill_rounded(cx, *card, RADIUS, p.card);
+            if contrast.is_none() {
+                draw_shadow(cx, *card, radius, 8.0, if cx.dark { 0.6 } else { 0.25 });
+            }
+            if glass && let Some(recovered) = &self.recovered {
+                recovered.frozen.card(cx, *card, radius);
+            }
+            fill_rounded(cx, *card, radius, p.card);
         }
         if let (Some(footer), Some(card)) = (g.footer, g.cards.first()) {
             // The footer's band, its bottom corners the card's.
-            cx.push_clip_rounded_shapes(*card, [RADIUS; 4]);
+            cx.push_clip_rounded_shapes(*card, [radius; 4]);
             // SAFETY: a COM call between BeginDraw and EndDraw.
             unsafe {
                 cx.dc.FillRectangle(
@@ -1908,7 +2449,7 @@ impl Hosted for DialogItem {
             cx.pop();
         }
         for card in &g.cards {
-            stroke_rounded(cx, *card, RADIUS, p.stroke, 1.0);
+            stroke_rounded(cx, *card, radius, p.stroke, border_width);
         }
         if let Some(sep) = g.separator {
             // SAFETY: a COM call between BeginDraw and EndDraw.
@@ -1924,12 +2465,20 @@ impl Hosted for DialogItem {
                 )
             };
         }
+        if let Some(clip) = g.body_viewport {
+            cx.push_clip_rect(
+                clip.origin.x.0,
+                clip.origin.y.0,
+                clip.size.width.0,
+                clip.size.height.0,
+            );
+        }
         let t = &self.texts;
         if let (Some(l), Some(r)) = (&t.title, g.title) {
             l.draw(
                 cx,
                 r.origin.x.0,
-                r.origin.y.0,
+                r.origin.y.0 - offset,
                 if self.sheet { p.secondary } else { p.text },
             );
         }
@@ -1937,9 +2486,24 @@ impl Hosted for DialogItem {
             l.draw(
                 cx,
                 r.origin.x.0,
-                r.origin.y.0,
+                r.origin.y.0 - offset,
                 if self.sheet { p.secondary } else { p.text },
             );
+        }
+        if let Some(clip) = g.body_viewport {
+            cx.pop();
+            let viewport = clip.size.height.0;
+            let travel = g.body_travel();
+            if viewport > 0.0 && travel > 0.0 {
+                let thumb = (viewport * viewport / (viewport + travel)).clamp(0.0, viewport);
+                let y = clip.origin.y.0 + (viewport - thumb) * offset / travel;
+                fill_rounded(
+                    cx,
+                    rect(clip.origin.x.0 + clip.size.width.0 + 6.0, y, 3.0, thumb),
+                    1.5,
+                    p.secondary,
+                );
+            }
         }
         let hover = self.hover.get();
         let pressed = match self.pressed.get() {
@@ -1964,9 +2528,23 @@ impl Hosted for DialogItem {
                     DialogButtonStyle::Destructive => p.critical,
                     _ => p.text,
                 }
+            } else if let Some(contrast) = contrast {
+                let (fill, text) =
+                    contrast.button(Some(i) == self.default || is_hover || is_pressed);
+                fill_rounded(cx, *r, BUTTON_RADIUS, fill);
+                stroke_rounded(cx, *r, BUTTON_RADIUS, p.stroke, 1.5);
+                text
             } else {
                 let accent = Some(i) == self.default;
                 let (fill, text) = match style {
+                    // Origami danger-soft/error-fg, respecting the window's scheme.
+                    DialogButtonStyle::Destructive if self.recovered.is_some() => {
+                        if cx.dark {
+                            (Color(0xf26d_7829), Color(0xff9c_a6ff))
+                        } else {
+                            (Color(0xd645_501c), Color(0xa32c_3aff))
+                        }
+                    }
                     DialogButtonStyle::Destructive => (p.critical, Color(0xffff_ffff)),
                     _ if accent => (p.accent, p.accent_text),
                     _ => (p.button, p.text),
@@ -2012,8 +2590,8 @@ impl Hosted for DialogItem {
     }
 
     fn hit(&self, _x: f32, _y: f32, _size: (f32, f32)) -> bool {
-        // Modal: nothing behind it takes the pointer, until it is answered.
-        !self.closing.get()
+        // Keep recovery input within this dialog until its overlay is removed.
+        self.takes_input()
     }
 
     fn pointer(&self, event: &ItemPointer) -> bool {
@@ -2043,7 +2621,12 @@ impl Hosted for DialogItem {
                 let pressed = self.pressed.take();
                 match (pressed, target) {
                     (Some(Target::Button(a)), Target::Button(b)) if a == b => self.answer(a as i32),
-                    (Some(Target::Outside), Target::Outside) if self.cancelable => self.answer(-1),
+                    // An outside press never closes a recovery choice.
+                    (Some(Target::Outside), Target::Outside)
+                        if self.cancelable && self.recovered.is_none() =>
+                    {
+                        self.answer(-1)
+                    }
                     _ => {}
                 }
                 self.invalidate();
@@ -2068,6 +2651,19 @@ impl Hosted for DialogItem {
 /// button's index; -1 when dismissed (a click outside or Escape, when
 /// cancelable); Escape presses the cancel button when there is one.
 pub(crate) fn show_dialog(surface: &Rc<Surface>, window: NodeId, dialog: &Dialog) {
+    show_dialog_item(surface, window, dialog, None);
+}
+
+fn show_dialog_item(
+    surface: &Rc<Surface>,
+    window: NodeId,
+    dialog: &Dialog,
+    recovery: Option<(
+        &RecoveredDraftRequest,
+        oneshot::Sender<RecoveredDraftChoice>,
+        bool,
+    )>,
+) -> Option<u64> {
     // `AlertDialog` always brings the app's actions (it rejects none): no
     // label of NSH's own.
     let buttons = &dialog.buttons[..];
@@ -2114,16 +2710,44 @@ pub(crate) fn show_dialog(surface: &Rc<Surface>, window: NodeId, dialog: &Dialog
     };
     if texts.buttons.len() != buttons.len() {
         log::error!("windows: cannot lay out the dialog's text");
-        return surface.event(ROOT_ID, EventKind::Dialog, dialog_answer(dialog.id, -1));
+        if recovery.is_none() {
+            surface.event(ROOT_ID, EventKind::Dialog, dialog_answer(dialog.id, -1));
+        }
+        return None;
     }
     let default = default_button(&styles, sheet);
+    let (default, focus, cancel) = if let Some((recovery, _, _)) = &recovery {
+        (
+            recovery.save_as,
+            if recovery.resume_save_as {
+                recovery.save_as.or(Some(recovery.keep))
+            } else {
+                Some(recovery.keep)
+            },
+            Some(recovery.keep),
+        )
+    } else {
+        (default, default, cancel)
+    };
     let serial = next_serial();
+    let keyboard = recovery.is_some();
+    let (recovered, reply) = match recovery {
+        Some((request, sender, capture)) => (
+            Some(RecoveredDraftStyle::new(serial, capture)),
+            DialogReply::Recovered {
+                actions: request.actions.clone(),
+                sender: RefCell::new(Some(sender)),
+            },
+        ),
+        None => (None, DialogReply::Core(dialog.id)),
+    };
     let item = Rc::new(DialogItem {
+        recovered,
         window,
         key: surface.key(),
         ui: surface.ui_thread(),
         serial,
-        id: dialog.id,
+        reply,
         sheet,
         cancelable: dialog.cancelable,
         cancel,
@@ -2133,13 +2757,14 @@ pub(crate) fn show_dialog(surface: &Rc<Surface>, window: NodeId, dialog: &Dialog
         layout: RefCell::new(None),
         hover: Cell::new(None),
         pressed: Cell::new(None),
-        focus: Cell::new(default),
-        keyboard: Cell::new(false),
+        focus: Cell::new(focus),
+        keyboard: Cell::new(keyboard),
         opacity: Cell::new(0.0),
         closing: Cell::new(false),
         labels: buttons.iter().map(|b| b.text.clone()).collect(),
     });
     add_overlay(surface, serial, OverlayKind::Dialog(item));
+    Some(serial)
 }
 
 /// Where a user presses to answer the newest dialog on `surface` (root
@@ -2194,7 +2819,7 @@ pub(crate) fn dialog_shown(surface: &Surface) -> bool {
         overlays.borrow().iter().any(|overlay| {
             overlay.key == surface.key()
                 && matches!(&overlay.kind, OverlayKind::Dialog(d)
-                    if d.window == window && !d.closing.get())
+                    if d.window == window && d.takes_input())
         })
     })
 }
@@ -2206,24 +2831,45 @@ pub(crate) fn dialog_shown(surface: &Surface) -> bool {
 pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     // The key belongs to the window that received it: a dialog in another
     // window does not hear it.
-    let window = surface.input_root().id();
-    let top = OVERLAYS.with(|o| {
-        o.borrow().iter().rev().find_map(|o| match &o.kind {
-            OverlayKind::Dialog(d)
-                if o.key == surface.key() && d.window == window && !d.closing.get() =>
-            {
-                Some(d.clone())
-            }
-            _ => None,
-        })
-    });
-    match top {
+    match dialog_in_window(surface, surface.input_root().id(), DialogItem::takes_input) {
         Some(dialog) => {
             dialog.key(event);
             true
         }
         None => false,
     }
+}
+
+pub(crate) fn recovery_wheel(surface: &Surface, event: &WheelEvent) -> bool {
+    let Some(dialog) =
+        dialog_in_window(surface, surface.input_root().id(), DialogItem::takes_input)
+            .filter(|dialog| dialog.recovered.is_some())
+    else {
+        return false;
+    };
+    dialog.scroll_body(event.dy);
+    true
+}
+
+fn dialog_in_window(
+    surface: &Surface,
+    window: NodeId,
+    accept: impl Fn(&DialogItem) -> bool,
+) -> Option<Rc<DialogItem>> {
+    OVERLAYS.with(|overlays| {
+        overlays
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|overlay| match &overlay.kind {
+                OverlayKind::Dialog(d)
+                    if overlay.key == surface.key() && d.window == window && accept(d) =>
+                {
+                    Some(d.clone())
+                }
+                _ => None,
+            })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2613,7 +3259,14 @@ mod tests {
 
     #[test]
     fn alert_layout() {
-        let g = layout_alert((1000.0, 800.0), true, true, 2, &measure(&["Cancel", "OK"]));
+        let g = layout_alert(
+            (1000.0, 800.0),
+            true,
+            true,
+            2,
+            None,
+            &measure(&["Cancel", "OK"]),
+        );
         let card = g.cards[0];
         // As wide as the message, up to the maximum, centered.
         assert_eq!(card.size.width.0, metrics::MAX_WIDTH);
@@ -2652,6 +3305,7 @@ mod tests {
             true,
             false,
             4,
+            None,
             &measure(&["A", "B", "C", "D"]),
         );
         assert!(!g.row);
@@ -2666,11 +3320,237 @@ mod tests {
             true,
             false,
             2,
+            None,
             &measure(&["A rather long button label", "OK"]),
         );
         assert!(!g.row);
         // A narrow window: the card fits it, less the gutters.
         assert_eq!(g.cards[0].size.width.0, 360.0 - 2.0 * metrics::GUTTER);
+    }
+
+    fn recovery_options() -> AlertDialogOptions {
+        nsh_base::alert_dialog()
+            .title("Recovered draft")
+            .action("save-as", "Save As")
+            .destructive("discard", "Discard")
+            .cancel("continue", "Keep editing")
+            .close_on_escape(true)
+    }
+
+    thread_local! {
+        static RECOVERY_RESULT: Cell<Option<Option<RecoveredDraftChoice>>> = const { Cell::new(None) };
+    }
+
+    #[nsh_core::element::component]
+    fn RecoveryBindingFixture() -> impl nsh_core::element::IntoElement {
+        use nsh_core::prelude::*;
+        let host = element_ref();
+        view()
+            .child(
+                view()
+                    .h(px(24.0))
+                    .element_ref(&host)
+                    .label("recovery trigger")
+                    .on_press(move || {
+                        let answer = show_recovered_draft_dialog(&host, recovery_options(), true);
+                        spawn(async move {
+                            RECOVERY_RESULT.set(Some(answer.await.unwrap()));
+                        });
+                    }),
+            )
+            .child(
+                view()
+                    .h(px(24.0))
+                    .label("ordinary trigger")
+                    .on_press(move || {
+                        let _ = recovery_options().show();
+                    }),
+            )
+    }
+
+    #[test]
+    fn recovery_without_a_declared_window_settles_without_a_core_dialog() {
+        use nsh_core::{
+            ApproxTextEngine, Core, MountItem,
+            element::{Environment as CoreEnvironment, Root},
+            geometry::size,
+            platform::Os,
+        };
+        RECOVERY_RESULT.set(None);
+        let viewport = size(px(800.0), px(600.0));
+        let mut core = Core::new(ApproxTextEngine, viewport);
+        let mut environment = CoreEnvironment::default();
+        environment.os = Os::Windows;
+        core.set_environment(environment);
+        core.mount_root(&Root::new::<RecoveryBindingFixture>(|| ()));
+        let mut controls = [ROOT_ID; 2];
+        for _ in 0..3 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    if let MountItem::ViewProps { id, props } = item {
+                        match props.accessibility.label.as_deref() {
+                            Some("recovery trigger") => controls[0] = id,
+                            Some("ordinary trigger") => controls[1] = id,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        assert!(controls.into_iter().all(|id| id != ROOT_ID));
+        let core_dialog = |item: &MountItem| {
+            matches!(
+                item,
+                MountItem::Command {
+                    command: Command::Dialog(_),
+                    ..
+                }
+            )
+        };
+        assert!(core.component_event(controls[0], EventKind::Press, &EventPayload::None));
+        core.run_component_tasks();
+        assert!(
+            core.commit()
+                .is_none_or(|batch| !batch.items.iter().any(core_dialog))
+        );
+        let tasks = core.take_main_thread_tasks();
+        assert_eq!(
+            tasks.len(),
+            1,
+            "the window-bound request uses the platform channel"
+        );
+
+        let surface = Surface::new(Environment::default());
+        let host = controls[0];
+        assert!(recovery_window(&surface, host).is_none());
+        for item in [
+            MountItem::Create {
+                id: host,
+                kind: nsh_core::ViewKind::View,
+            },
+            MountItem::Insert {
+                parent: ROOT_ID,
+                child: host,
+                before: None,
+            },
+        ] {
+            surface.mounter.borrow_mut().apply(&surface, &item);
+        }
+        let hidden = surface.view(host).expect("mounted test host");
+        assert_eq!(crate::app_window::window_of(&surface, &hidden), ROOT_ID);
+        assert!(recovery_window(&surface, host).is_none());
+        surface.run_engine_task(tasks.into_iter().next().unwrap());
+        core.run_component_tasks();
+        assert_eq!(RECOVERY_RESULT.get(), Some(None));
+
+        assert!(core.component_event(controls[1], EventKind::Press, &EventPayload::None));
+        core.run_component_tasks();
+        let ordinary = core.commit().expect("ordinary alert command");
+        assert!(ordinary.items.iter().any(core_dialog));
+        assert!(core.take_main_thread_tasks().is_empty());
+    }
+
+    #[test]
+    fn recovery_reply_is_not_closed_by_a_core_id_or_another_surface() {
+        // The test mounts only the overlay registry on an in-memory Surface.
+        // A real P3 request cannot open on ROOT_ID.
+        let env = Environment {
+            reduce_motion: true,
+            ..Environment::default()
+        };
+        let surface = Surface::new(env);
+        let other_surface = Surface::new(env);
+        let request = RecoveredDraftRequest::new(recovery_options(), true).unwrap();
+        let (sender, mut reply) = oneshot::channel();
+        let recovery = show_dialog_item(
+            &surface,
+            ROOT_ID,
+            &request.dialog,
+            Some((&request, sender, false)),
+        )
+        .expect("recovery overlay");
+        let ordinary = show_dialog_item(&surface, ROOT_ID, &request.dialog, None)
+            .expect("core overlay with id zero");
+        assert_ne!(recovery, ordinary);
+        assert!(find_dialog(&other_surface, recovery).is_none());
+
+        close_dialog(&surface, request.dialog.id);
+        assert!(find_dialog(&surface, ordinary).is_none());
+        let dialog = find_dialog(&surface, recovery).expect("recovery overlay survives");
+        assert_eq!(dialog.focus.get(), Some(2), "return from Save As");
+        assert_eq!(reply.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+
+        window_closing(&surface, ROOT_ID);
+        assert!(find_dialog(&surface, recovery).is_none());
+        assert!(dialog.closing.get());
+        assert_eq!(reply.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+    }
+
+    #[test]
+    fn recovery_request_validates_roles_and_picker_return_focus() {
+        let request = RecoveredDraftRequest::new(recovery_options(), true).unwrap();
+        assert_eq!(request.keep, 0);
+        assert_eq!(request.save_as, Some(2));
+        assert!(request.resume_save_as);
+        assert_eq!(
+            request.actions,
+            [
+                RecoveredDraftChoice::Continue,
+                RecoveredDraftChoice::Discard,
+                RecoveredDraftChoice::SaveAs
+            ]
+        );
+        let invalid = nsh_base::alert_dialog()
+            .cancel("continue", "Keep editing")
+            .action("discard", "Discard");
+        assert!(RecoveredDraftRequest::new(invalid, false).is_none());
+    }
+
+    #[test]
+    fn recovery_card_caps_the_text_and_preserves_all_actions() {
+        let g = layout_alert(
+            (321.0, 280.0),
+            true,
+            true,
+            3,
+            Some(metrics::RECOVERED_WIDTH),
+            &|part, width| match part {
+                Part::Title => (width, 56.0),
+                Part::Message => (width, 416.0),
+                Part::Button(_) => (130.0, 16.0),
+            },
+        );
+        let bounds = g.cards[0];
+        let text = g.body_viewport.expect("body scroll viewport");
+        assert_eq!(bounds.origin.y.0, metrics::GUTTER);
+        assert_eq!(bounds.size.height.0, 280.0 - 2.0 * metrics::GUTTER);
+        assert!(g.body_travel() > 300.0);
+        assert_eq!(g.buttons.len(), 3);
+        assert!(g.buttons.iter().all(|button| {
+            button.origin.y.0 >= text.origin.y.0 + text.size.height.0
+                && button.origin.y.0 + button.size.height.0 <= 280.0 - metrics::GUTTER
+        }));
+    }
+
+    #[test]
+    fn recovery_card_fits_the_available_width() {
+        let window = (321.0, 650.0);
+        let g = layout_alert(
+            window,
+            true,
+            true,
+            3,
+            Some(metrics::RECOVERED_WIDTH),
+            &measure(&["Keep editing", "Discard", "Save As"]),
+        );
+        assert_eq!(g.cards[0].size.width.0, 289.0);
+        assert!(!g.row);
+        assert!(g.buttons.iter().all(|button| {
+            button.origin.x.0 >= metrics::GUTTER
+                && button.origin.x.0 + button.size.width.0 <= window.0 - metrics::GUTTER
+                && button.origin.y.0 + button.size.height.0 < window.1
+        }));
     }
 
     #[test]
