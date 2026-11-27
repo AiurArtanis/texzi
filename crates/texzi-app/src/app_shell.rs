@@ -4,6 +4,7 @@ pub(crate) mod find_panel;
 mod large_file;
 mod splitter;
 mod table_hud;
+mod zen_count;
 use crate::editor_owner::SaveError;
 use crate::native_menu::{MenuGroup, SHELL_SHORTCUTS};
 use crate::settings;
@@ -3792,6 +3793,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let panels = s.clone();
     let quick = s.clone();
     let status_shell = s.clone();
+    let zen_footer = s.clone();
     let drop_shell = s.clone();
     let zen = s.zen;
     let exit_zen = s.clone();
@@ -3962,6 +3964,10 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
         .child(when(
             move || !zen.get(),
             move || status_bar(status_shell.clone()),
+        ))
+        .child(when(
+            move || zen.get(),
+            move || zen_count::footer(zen_footer.clone()),
         ))
         .child(when(
             move || zen.get() && zen_armed.get(),

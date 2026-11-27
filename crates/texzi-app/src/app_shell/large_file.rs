@@ -145,6 +145,13 @@ pub(super) struct LargeFile {
 }
 
 impl LargeFile {
+    pub(super) fn visible_byte_position(&self) -> Option<String> {
+        self.page.with(|page| {
+            let data = &page.as_ref()?.data;
+            Some(byte_range_label(data.start, data.end, self.len))
+        })
+    }
+
     pub(super) fn new(
         path: PathBuf,
         source: Arc<FileSource>,
@@ -726,6 +733,10 @@ impl Shell {
     }
 }
 
+fn byte_range_label(start: u64, end: u64, total: u64) -> String {
+    format!("字节 [{start}, {end}) / {total} B")
+}
+
 fn byte_limit_message() -> String {
     format!(
         "文件超过 {} MiB 完整编辑预算，可只读分页查看。",
@@ -1194,7 +1205,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 .child(
                     text(move || {
                         range().map_or_else(String::new, |(start, end)| {
-                            format!("字节 [{start}, {end}) / {bytes} B")
+                            byte_range_label(start, end, bytes)
                         })
                     })
                     .label(move || {

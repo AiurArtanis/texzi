@@ -31,7 +31,7 @@ pub struct RichOwner {
     id: u64,
     native: Rc<NativeView>,
     projection: RefCell<Projection>,
-    revision: Cell<u64>,
+    revision: Signal<u64>,
     epoch: Cell<u64>,
     session: EditorSession,
     pub status: Signal<String>,
@@ -127,7 +127,7 @@ impl RichOwner {
             id,
             native,
             projection: RefCell::new(p),
-            revision: Cell::new(s.revision),
+            revision: signal(s.revision),
             epoch: Cell::new(s.view_epoch),
             session: session.clone(),
             status,
@@ -172,7 +172,9 @@ impl RichOwner {
     /// tree only, keeping the one body/history and the mapped view selection.
     fn refresh_external(&self) -> Result<(), String> {
         let current = self.native.snapshot()?;
-        if current.revision == self.revision.get() && current.view_epoch == self.epoch.get() {
+        if current.revision == self.revision.get_untracked()
+            && current.view_epoch == self.epoch.get()
+        {
             return Ok(());
         }
         let previous = self.session.state();
@@ -199,7 +201,9 @@ impl RichOwner {
     }
     fn activate(&self) -> Result<(), String> {
         let current = self.native.snapshot()?;
-        if current.revision != self.revision.get() || current.view_epoch != self.epoch.get() {
+        if current.revision != self.revision.get_untracked()
+            || current.view_epoch != self.epoch.get()
+        {
             return Err("准备期间原文已变化，已保留当前模式".into());
         }
         let state = self.session.state();
@@ -223,7 +227,9 @@ impl RichOwner {
     }
     fn dispatch(&self, session: &EditorSession, mut tr: Transaction) -> Result<(), String> {
         let mut current = self.native.snapshot()?;
-        if current.revision != self.revision.get() || current.view_epoch != self.epoch.get() {
+        if current.revision != self.revision.get_untracked()
+            || current.view_epoch != self.epoch.get()
+        {
             return Err("富文本视图版本已过期，请切回源码后重新打开富文本".into());
         }
         let old = session.state();
@@ -364,10 +370,10 @@ impl RichOwner {
                 Ok(update) => update,
                 Err(error) => {
                     if let Some((typed_state, typed_applied, typed_projection)) = typed_fallback {
-                        self.revision.set(current.revision);
                         self.epoch.set(current.view_epoch);
                         drop(p);
                         *self.projection.borrow_mut() = typed_projection;
+                        self.revision.set(current.revision);
                         session.commit(typed_state, &typed_applied);
                         self.native.notify();
                         return Err(format!("已保留文字输入；自动格式未执行：{error}"));
@@ -375,10 +381,10 @@ impl RichOwner {
                     return Err(error);
                 }
             };
-            self.revision.set(update.snapshot.revision);
             self.epoch.set(update.snapshot.view_epoch);
             drop(p);
             *self.projection.borrow_mut() = projected;
+            self.revision.set(update.snapshot.revision);
             self.native.notify();
         } else if !selection_matches(&p, &next, &current.selections) {
             let a = p
@@ -417,11 +423,11 @@ impl RichOwner {
             return;
         }
         drop(p);
-        match self
-            .native
-            .clone()
-            .request_history(self.revision.get(), self.epoch.get(), undo)
-        {
+        match self.native.clone().request_history(
+            self.revision.get_untracked(),
+            self.epoch.get(),
+            undo,
+        ) {
             Ok(None) => {}
             Ok(Some(u)) => {
                 let state = self.session.state();
@@ -436,9 +442,9 @@ impl RichOwner {
                     Ok((p, new))
                 }) {
                     Ok((p, new)) => {
-                        self.revision.set(u.snapshot.revision);
                         self.epoch.set(u.snapshot.view_epoch);
                         *self.projection.borrow_mut() = p;
+                        self.revision.set(u.snapshot.revision);
                         self.session.update_state(new);
                         // Source history can restore a fence-syntax position.
                         // Also synchronize this logical view to the nearest
@@ -648,6 +654,14 @@ impl ModeGate {
     pub(crate) fn rich_cursor_status(&self) -> Option<String> {
         self.rich.cursor_status()
     }
+    pub(crate) fn visible_text_root(
+        &self,
+        revision: u64,
+    ) -> Option<nsh_base::rich_editor::model::Node> {
+        let active = self.active.borrow();
+        let owner = active.as_ref()?;
+        (owner.revision.get() == revision).then(|| owner.projection.borrow().doc.clone())
+    }
     pub(crate) fn selection_view(&self) -> &NativeView {
         if self.rich_mode.get() {
             &self.rich
@@ -675,7 +689,7 @@ impl ModeGate {
             .iter()
             .filter(|block| block.opaque)
             .map(|block| RawBlockAction {
-                revision: owner.revision.get(),
+                revision: owner.revision.get_untracked(),
                 source: block.source.clone(),
                 line: p.source[..block.source.start]
                     .bytes()
@@ -709,7 +723,7 @@ impl ModeGate {
             .ok_or("正文视图尚未准备完成")?;
         let rich = self.rich.snapshot()?;
         let source = self.source.snapshot()?;
-        if action.revision != owner.revision.get()
+        if action.revision != owner.revision.get_untracked()
             || action.revision != rich.revision
             || action.revision != source.revision
         {
@@ -752,7 +766,7 @@ impl ModeGate {
         let owner = active.as_ref().ok_or("正文视图尚未准备完成")?;
         let rich = self.rich.snapshot()?;
         let source = self.source.snapshot()?;
-        if action.revision != owner.revision.get()
+        if action.revision != owner.revision.get_untracked()
             || action.revision != rich.revision
             || action.revision != source.revision
             || !owner
