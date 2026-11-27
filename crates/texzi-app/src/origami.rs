@@ -124,6 +124,15 @@ pub(super) fn border_width() -> Points {
     px(tokens().number("workbench-border").unwrap_or(1.0))
 }
 
+pub(super) fn ribbon<S: Styled>(style: S) -> S {
+    style
+        .bg_linear(deg(120.0))
+        .gradient_from(|| color("ribbon-start"))
+        .gradient_via(|| color("ribbon-middle"))
+        .gradient_via_position(nsh_core::geometry::percentage(0.48))
+        .gradient_to(|| color("ribbon-end"))
+}
+
 pub(super) const CONTROL_STATES: &str = "hover:bg-accent hover:text-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:bg-(--control-face) disabled:text-(--control-disabled) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
 
 pub(super) fn initial_tokens() -> Tokens {

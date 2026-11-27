@@ -3222,19 +3222,16 @@ fn tab_close_button(
 }
 
 fn tab_ribbon() -> impl IntoElement {
-    view()
-        .absolute()
-        .bottom(px(0.0))
-        .left(px(6.0))
-        .right(px(6.0))
-        .h(px(metric("tabMark")))
-        .rounded_full()
-        .pointer_events(PointerEvents::None)
-        .bg_linear(deg(120.0))
-        .gradient_from(|| color("ribbon-start"))
-        .gradient_via(|| color("ribbon-middle"))
-        .gradient_via_position(nsh_core::geometry::percentage(0.48))
-        .gradient_to(|| color("ribbon-end"))
+    crate::origami::ribbon(
+        view()
+            .absolute()
+            .bottom(px(0.0))
+            .left(px(6.0))
+            .right(px(6.0))
+            .h(px(metric("tabMark")))
+            .rounded_full()
+            .pointer_events(PointerEvents::None),
+    )
 }
 
 fn tab_bar(s: Rc<Shell>) -> impl IntoElement {

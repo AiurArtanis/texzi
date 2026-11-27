@@ -8,6 +8,10 @@ use nsh_core::{
 use serde_json::Value;
 use std::{path::PathBuf, rc::Rc};
 
+const THEME_CARD_WIDTH: f32 = 108.0;
+const THEME_CARD_GAP: f32 = 10.0;
+const THEME_OPTIONS_WIDTH: f32 = 3.0 * THEME_CARD_WIDTH + 2.0 * THEME_CARD_GAP;
+
 const CATEGORIES: &[&str] = &[
     "常用",
     "编辑器",
@@ -140,7 +144,8 @@ fn theme_choice(
         sample.dark
     };
     choice_control(selected)
-        .w(px(104.0))
+        .w(px(THEME_CARD_WIDTH))
+        .max_w(relative(1.0))
         .h(px(78.0))
         .p(px(6.0))
         .gap(px(5.0))
@@ -313,7 +318,11 @@ fn control(
     view()
         .flex_row()
         .flex_wrap()
-        .gap(px(4.0))
+        .gap(px(if id == settings::THEME {
+            THEME_CARD_GAP
+        } else {
+            4.0
+        }))
         .children(
             spec["options"]
                 .as_array()
@@ -438,7 +447,11 @@ fn row(
                 let reset_scope = reset_scope.clone();
                 view()
                     .gap(px(6.0))
-                    .w(px(240.0))
+                    .w(px(if id == settings::THEME {
+                        THEME_OPTIONS_WIDTH
+                    } else {
+                        240.0
+                    }))
                     .max_w(relative(1.0))
                     .child(control(settings.clone(), id, state.clone(), root))
                     .child(
