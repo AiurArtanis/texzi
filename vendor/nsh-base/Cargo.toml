@@ -12,7 +12,7 @@ publish = false
 
 [features]
 default = ["editor", "highlight", "plot", "rich-editor", "term"]
-editor = ["dep:ropey", "dep:imara-diff"]
+editor = ["dep:ropey", "dep:imara-diff", "dep:texzi-word"]
 rich-editor = []
 term = ["dep:vte"]
 plot = []
@@ -22,6 +22,7 @@ web-gates = []
 math = ["dep:ratex-parser", "dep:ratex-layout", "dep:ratex-types", "dep:ratex-font", "dep:ttf-parser", "dep:zstd"]
 
 [dependencies]
+texzi-word = { path = "../../crates/texzi-word", optional = true }
 zstd = { version = "0.14", default-features = false, optional = true }
 nsh-core = { version = "0.7.1", git = "https://github.com/longbridge/nsh", rev = "f78eace7af23a9c1c72605c7ee46204f57f3e8e6" }
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }

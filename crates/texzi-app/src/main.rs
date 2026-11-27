@@ -157,6 +157,11 @@ mod app {
 }
 
 fn main() -> std::process::ExitCode {
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(texzi_search::pcre::WORKER_FLAG))
+    {
+        return std::process::ExitCode::from(texzi_search::pcre::worker_main() as u8);
+    }
     if let Err(error) = log::set_logger(&LOGGER) {
         eprintln!("texzi: cannot initialize diagnostics: {error}");
         return std::process::ExitCode::FAILURE;

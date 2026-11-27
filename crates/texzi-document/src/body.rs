@@ -1,6 +1,9 @@
 use crate::{Error, OriginSpan, provenance::Tree};
 use ropey::{Rope, RopeBuilder, RopeSlice};
 use std::{ops::Range, sync::Arc};
+pub(crate) mod compose;
+pub(crate) mod history_image;
+mod legacy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Eol {
@@ -16,7 +19,7 @@ impl Eol {
             Self::Cr => 'r',
         }
     }
-    fn from_code(c: char) -> Self {
+    pub(crate) fn from_code(c: char) -> Self {
         match c {
             'l' => Self::Lf,
             'c' => Self::CrLf,
@@ -80,6 +83,7 @@ pub struct Body {
     eols: Rope,
     counts: [usize; 3],
     origins: Tree,
+    pub(crate) legacy: Option<Arc<crate::files::legacy_aliases::Aliases>>,
     pub profile: Profile,
 }
 impl Body {
@@ -161,6 +165,7 @@ impl Body {
             eols: eols.finish(),
             counts,
             origins: Tree::imported(raw, cancelled)?,
+            legacy: None,
             profile,
         })
     }
@@ -202,8 +207,11 @@ impl Body {
     }
     /// Explicit materialization for export/test, never used by submit/undo.
     pub fn to_utf8(&self) -> Vec<u8> {
+        self.serialized_utf8(self.profile.utf8_bom)
+    }
+    pub(crate) fn serialized_utf8(&self, bom: bool) -> Vec<u8> {
         let mut out = Vec::new();
-        if self.profile.utf8_bom {
+        if bom {
             out.extend_from_slice(b"\xef\xbb\xbf");
         }
         let mut eols = self.eols.chars();
@@ -284,13 +292,37 @@ impl Body {
             .char_to_line(self.text.byte_to_line(range.end));
         self.eols.slice(a..b).chars().map(Eol::from_code).collect()
     }
-    pub(crate) fn change_eols(&mut self, eol: Eol) {
+    pub(crate) fn eol_codes(&self, range: Range<usize>) -> RopeSlice<'_> {
+        let first = self
+            .line_breaks
+            .char_to_line(self.text.byte_to_line(range.start));
+        let last = self
+            .line_breaks
+            .char_to_line(self.text.byte_to_line(range.end));
+        self.eols.slice(first..last)
+    }
+    pub(crate) fn same_serialization(
+        &self,
+        other: &Self,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<bool, Error> {
+        Ok(self.counts == other.counts
+            && compose::equal_ropes(&self.text, &other.text, cancelled)?
+            && compose::equal_ropes(&self.eols, &other.eols, cancelled)?
+            && self.same_alias_ranges(
+                0..self.len_bytes(),
+                other,
+                0..other.len_bytes(),
+                cancelled,
+            )?)
+    }
+    pub(crate) fn change_eols(&mut self, eol: Eol) -> Result<(), Error> {
         let n = self.eols.len_chars();
         self.eols = Rope::from_str(&eol.code().to_string().repeat(n));
         self.counts = [0; 3];
         self.counts[index(eol)] = n;
-        // A changed serialization policy invalidates raw passthrough. Undo holds the old tree.
-        self.origins = Tree::default().replace(0..0, self.len_bytes());
+        self.origins = self.origins_after_eol_change()?;
+        Ok(())
     }
 }
 fn break_markers(text: RopeSlice<'_>) -> String {

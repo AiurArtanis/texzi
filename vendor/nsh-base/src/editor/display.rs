@@ -312,8 +312,14 @@ impl DisplayMap {
     /// The row's text as shown: tabs as spaces, plus each tab's display
     /// range → buffer byte offset, so the view turns buffer ranges (tokens,
     /// decorations, matches) into ranges of this string.
-    pub(crate) fn row_text(&self, buffer: &Buffer, row: usize) -> RowText {
-        let range = self.row(row).range.clone();
+    pub(crate) fn row_text(
+        &self,
+        buffer: &Buffer,
+        row: usize,
+        mut measure: impl FnMut(Range<usize>, Range<Points>),
+    ) -> RowText {
+        let info = self.row(row);
+        let range = info.range.clone();
         let source = slice_text(buffer.rope(), range.clone());
         let mut text = String::with_capacity(source.len());
         let mut tabs = Vec::new();
@@ -321,6 +327,11 @@ impl DisplayMap {
         let mut x = 0.0;
         for (at, grapheme) in graphemes(&source) {
             let width = self.metrics.advance(grapheme, x);
+            let byte = range.start + at;
+            measure(
+                byte..byte + grapheme.len(),
+                Points(info.indent.0 + x)..Points(info.indent.0 + x + width),
+            );
             if grapheme == "\t" {
                 let spaces = if space > 0.0 {
                     (width / space).round().max(1.0) as usize
@@ -1153,7 +1164,7 @@ mod tests {
         assert_eq!(map.x_of(&buffer, 2), px(40.0));
         assert_eq!(map.x_of(&buffer, 3), px(50.0));
         assert_eq!(map.x_of(&buffer, 5), px(40.0));
-        let text = map.row_text(&buffer, 0);
+        let text = map.row_text(&buffer, 0, |_, _| {});
         assert_eq!(text.text, "a   b");
         assert_eq!(text.display_range(0..1), 0..1);
         assert_eq!(text.display_range(1..2), 1..4);
@@ -1162,7 +1173,7 @@ mod tests {
         assert_eq!(text.buffer_offset(2), 1);
         assert_eq!(text.buffer_offset(4), 2);
         assert_eq!(text.buffer_offset(5), 3);
-        let text = map.row_text(&buffer, 1);
+        let text = map.row_text(&buffer, 1, |_, _| {});
         assert_eq!(text.text, "    c");
         assert_eq!(text.display_range(5..6), 4..5);
         // Past the middle of the tab's advance is after it.
@@ -1175,7 +1186,7 @@ mod tests {
     fn row_text_maps_multibyte_text() {
         let buffer = Buffer::new("é\t中");
         let map = map(&buffer, None, vec![]);
-        let text = map.row_text(&buffer, 0);
+        let text = map.row_text(&buffer, 0, |_, _| {});
         assert_eq!(text.text, "é   中");
         assert_eq!(text.display_range(0..2), 0..2);
         assert_eq!(text.display_range(3..6), 5..8);

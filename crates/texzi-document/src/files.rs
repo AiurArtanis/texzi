@@ -1,6 +1,9 @@
 //! Document file formats and serialization.
 use crate::{DocId, SaveCapture, Snapshot, Store, TargetKey};
 use std::sync::Arc;
+#[allow(unsafe_code)]
+pub(crate) mod history_file;
+pub(crate) mod legacy_aliases;
 pub mod paged;
 pub(crate) const IMPORT_CHUNK: usize = 64 * 1024;
 #[cfg(windows)]
@@ -137,11 +140,13 @@ impl LoadedBytes {
     pub fn attach(self, store: &mut Store) -> Result<(Snapshot, FileBinding), FileError> {
         // File identity is not yet resolved: even a real read is not a verified
         // filesystem binding. Import decoded content without claiming disk identity.
-        let snapshot = store.open_decoded(&self.text, self.format)?;
+        let original = self.original.clone();
+        let format = self.format;
+        let snapshot = store.open_loaded_with_line_limit(self, usize::MAX, || false)?;
         let binding = FileBinding {
             imported: snapshot.clone(),
-            original: self.original,
-            format: self.format,
+            original,
+            format,
         };
         Ok((snapshot, binding))
     }
@@ -189,9 +194,7 @@ impl FileBinding {
         {
             return Ok(self.original.clone());
         }
-        let utf8 = s.body.to_utf8();
-        let text = std::str::from_utf8(&utf8).map_err(|_| FileError::InvalidBytes)?;
-        encode(text, format).map(Arc::from)
+        encode_body(&s.body, format).map(Arc::from)
     }
     /// Encode before reserving the save. &mut Store keeps capture/encoding serial.
     /// The returned bytes always belong to the captured token, never a later edit.
@@ -211,6 +214,26 @@ impl FileBinding {
             format,
         })
     }
+}
+
+/// Serialize the requested format, preserving an imported legacy spelling
+/// wherever the current document still has that source provenance.
+pub fn encode_body(body: &crate::Body, format: Format) -> Result<Vec<u8>, FileError> {
+    if format.encoding == Encoding::Utf8 {
+        return Ok(body.serialized_utf8(format.bom));
+    }
+    if body
+        .legacy
+        .as_ref()
+        .is_some_and(|m| m.encoding == format.encoding)
+    {
+        return body.encode_aliases(format);
+    }
+    let utf8 = body.serialized_utf8(false);
+    encode(
+        std::str::from_utf8(&utf8).map_err(|_| FileError::InvalidBytes)?,
+        format,
+    )
 }
 
 fn legacy(e: Encoding) -> Result<&'static encoding_rs::Encoding, FileError> {

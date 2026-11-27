@@ -13,6 +13,7 @@ The baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78eace7af23
 
 ## Presentation and fonts
 
+- `text.rs` locates the overlapping DirectWrite lines by their logical text offsets before collecting range boxes. It also locates a caret's line by binary search with the original upstream/downstream affinity and empty-line rules. Glyphs, attachments and bidi order within each selected line use the original geometry routine.
 - `render.rs`, `surface.rs`, and `lib.rs` expose `node_presentation` to the active engine task. It pairs mounted node geometry with the surface's successful swap-chain presentation counter. Texzi uses it to show the bounded first page before promoting a large document to its complete editable model. A return from Present records submission by the app.
 - The declared workbench has its own swap chain. Its frame counter survives swap-chain recreation, its visible-content requests invalidate that HWND, and its successful draws contribute paint and present times when `NSH_FPS` is enabled.
 - A declared window coalesces paints received while drawing or placing native children. A pending draw resumes after the active frame releases its swap chain, including when DXGI defers presentation. This keeps the workbench open when a focused byte-position field disappears with its paged document.

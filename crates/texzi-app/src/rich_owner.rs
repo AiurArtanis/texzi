@@ -1,8 +1,10 @@
 //! UI-thread dispatcher: rich states are projections, never a second history.
+mod find;
 use crate::{
     editor_owner::NativeView,
     rich_projection::{Projection, manager},
 };
+pub(crate) use find::RenderedText;
 use nsh_base::{
     editor::{ExternalDocument, ExternalEditKind, ExternalSelections, ExternalSnapshot},
     rich_editor::{
@@ -194,77 +196,6 @@ impl RichOwner {
     }
     pub fn session(&self) -> EditorSession {
         self.session.clone()
-    }
-    fn find_literal(&self, query: &str, previous: bool) -> Result<(usize, usize), String> {
-        if query.is_empty() {
-            return Err("请输入查找文字".into());
-        }
-        self.refresh_external()?;
-        let state = self.session.state();
-        let mut text = String::new();
-        let mut positions = std::collections::BTreeMap::new();
-        fn flatten(
-            node: &nsh_base::rich_editor::model::Node,
-            pos: usize,
-            root: bool,
-            text: &mut String,
-            positions: &mut std::collections::BTreeMap<usize, usize>,
-        ) {
-            if let Some(value) = node.text() {
-                let mut offset = pos;
-                positions.insert(text.len(), offset);
-                for ch in value.chars() {
-                    text.push(ch);
-                    offset += ch.len_utf16();
-                    positions.insert(text.len(), offset);
-                }
-            } else if node.ty().name() == "hardBreak" {
-                positions.insert(text.len(), pos);
-                text.push('\n');
-                positions.insert(text.len(), pos + 1);
-            } else {
-                if node.is_textblock() && node.child_count() == 0 {
-                    positions.insert(text.len(), pos + 1);
-                }
-                let mut offset = if root { pos } else { pos + 1 };
-                for i in 0..node.child_count() {
-                    let child = node.child(i);
-                    if i > 0 && child.is_block() {
-                        text.push(if node.ty().name() == "tableRow" {
-                            '\t'
-                        } else {
-                            '\n'
-                        });
-                    }
-                    flatten(child, offset, false, text, positions);
-                    offset += child.node_size();
-                }
-            }
-        }
-        flatten(state.doc(), 0, true, &mut text, &mut positions);
-        let hits: Vec<_> = text
-            .match_indices(query)
-            .filter_map(|(at, _)| {
-                Some((*positions.get(&at)?, *positions.get(&(at + query.len()))?))
-            })
-            .collect();
-        if hits.is_empty() {
-            return Ok((0, 0));
-        }
-        let index = if previous {
-            hits.iter()
-                .rposition(|(_, z)| *z <= state.selection().from())
-                .unwrap_or(hits.len() - 1)
-        } else {
-            hits.iter()
-                .position(|(a, _)| *a >= state.selection().to())
-                .unwrap_or(0)
-        };
-        let (a, z) = hits[index];
-        let mut tr = state.tr();
-        tr.set_selection(TextSelection::create(state.doc(), a, Some(z)));
-        self.dispatch(&self.session, tr)?;
-        Ok((index + 1, hits.len()))
     }
     fn activate(&self) -> Result<(), String> {
         let current = self.native.snapshot()?;
@@ -488,9 +419,11 @@ impl RichOwner {
         drop(p);
         match self
             .native
-            .history(self.revision.get(), self.epoch.get(), undo)
+            .clone()
+            .request_history(self.revision.get(), self.epoch.get(), undo)
         {
-            Ok(u) => {
+            Ok(None) => {}
+            Ok(Some(u)) => {
                 let state = self.session.state();
                 match Projection::parse(state.schema(), u.snapshot.rope.to_string()).and_then(|p| {
                     let mut config = EditorStateConfig::new(state.schema().clone())
@@ -685,6 +618,23 @@ pub struct ModeGate {
     pub status: Signal<String>,
 }
 impl ModeGate {
+    pub(crate) fn bind_history_pane(
+        self: &Rc<Self>,
+        shell: Owner,
+        active: impl Fn() -> bool + 'static,
+    ) {
+        let active = Rc::new(active);
+        for (view, rich) in [(&self.source, false), (&self.rich, true)] {
+            let gate = Rc::downgrade(self);
+            let active = active.clone();
+            view.bind_history_target(shell, self.status, move || {
+                active()
+                    && gate
+                        .upgrade()
+                        .is_some_and(|g| g.rich_mode.get() == rich && !g.busy())
+            });
+        }
+    }
     pub fn new(source: Rc<NativeView>, rich: Rc<NativeView>) -> Rc<Self> {
         Rc::new(Self {
             source,
@@ -698,15 +648,15 @@ impl ModeGate {
     pub(crate) fn rich_cursor_status(&self) -> Option<String> {
         self.rich.cursor_status()
     }
-    pub(crate) fn recovery_selection(&self) -> Option<ExternalSelections> {
+    pub(crate) fn selection_view(&self) -> &NativeView {
         if self.rich_mode.get() {
             &self.rich
         } else {
             &self.source
         }
-        .snapshot()
-        .ok()
-        .map(|snapshot| snapshot.selections)
+    }
+    pub(crate) fn recovery_selection(&self) -> Option<ExternalSelections> {
+        self.selection_view().snapshot().ok().map(|s| s.selections)
     }
     pub fn busy(&self) -> bool {
         self.source.is_composing() || self.rich.is_composing()
@@ -996,30 +946,13 @@ impl ModeGate {
             let owner = active.as_ref().ok_or("正文视图尚未准备完成")?;
             owner.history(undo);
             let status = owner.status.get();
-            if !status.is_empty() {
+            if !status.is_empty() && !owner.native.loading_history_status(&status) {
                 return Err(status);
             }
         } else {
-            let current = self.source.snapshot()?;
-            self.source
-                .history(current.revision, current.view_epoch, undo)?;
-            self.source.notify();
+            self.source.undo_redo(undo)?;
         }
         Ok(())
-    }
-    pub fn find_literal(&self, query: &str, previous: bool) -> Result<(usize, usize), String> {
-        if self.busy() {
-            return Err("请先完成或取消中文组合".into());
-        }
-        if self.rich_mode.get() {
-            self.active
-                .borrow()
-                .as_ref()
-                .ok_or("正文视图未就绪")?
-                .find_literal(query, previous)
-        } else {
-            self.source.find_literal(query, previous)
-        }
     }
     pub fn source_mounted(&self) {
         self.active.borrow_mut().take();
@@ -1177,9 +1110,24 @@ mod tests {
             });
             gate.to_rich();
             assert!(gate.rich_mode.get(), "{}", gate.status.get());
-            assert_eq!(gate.find_literal("apple\npear", false).unwrap(), (1, 1));
-            assert_eq!(gate.find_literal("example.invalid", false).unwrap(), (0, 0));
-            assert_eq!(gate.find_literal("label", false).unwrap(), (1, 1));
+            assert_eq!(
+                crate::app_shell::find_panel::fixtures::find_rich(&gate, &source, "apple\npear")
+                    .unwrap(),
+                (1, 1)
+            );
+            assert_eq!(
+                crate::app_shell::find_panel::fixtures::find_rich(
+                    &gate,
+                    &source,
+                    "example.invalid"
+                )
+                .unwrap(),
+                (0, 0)
+            );
+            assert_eq!(
+                crate::app_shell::find_panel::fixtures::find_rich(&gate, &source, "label").unwrap(),
+                (1, 1)
+            );
             assert!(gate.rich_mode.get());
             assert_eq!(bytes(&source), raw.as_bytes());
             assert_eq!(

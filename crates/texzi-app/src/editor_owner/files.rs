@@ -1,5 +1,5 @@
 use super::*;
-use doc::files::{Encoding, FileError, Format, LoadedBytes, encode, save};
+use doc::files::{Encoding, FileError, Format, LoadedBytes, save};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -117,8 +117,7 @@ pub(crate) enum SourcePreparation {
     Building,
 }
 
-pub(crate) const MAX_EDIT_LINES: usize = 2_000_000;
-pub(crate) const MAX_EDIT_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) use texzi_document::{MAX_EDIT_BYTES, MAX_EDIT_LINES};
 
 pub(crate) fn line_limit_message() -> String {
     format!("文件超过完整编辑上限（{MAX_EDIT_LINES} 行），可继续只读分页查看。")
@@ -251,12 +250,7 @@ impl PreparedFile {
         on_stage(SourcePreparation::Building);
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let snapshot = store
-            .open_decoded_with_line_limit(
-                loaded.into_shared_text(),
-                format,
-                MAX_EDIT_LINES,
-                cancelled,
-            )
+            .open_loaded_with_line_limit(loaded, MAX_EDIT_LINES, cancelled)
             .map_err(|e| match e {
                 doc::Error::LineLimit => PrepareError::LineLimit(format.encoding),
                 e => PrepareError::Other(err(e)),
@@ -434,17 +428,11 @@ impl NativeView {
             let bytes = match unchanged {
                 Some(bytes) => bytes,
                 None => {
-                    let utf8 = body.to_utf8();
-                    let bytes = if format == UTF8 {
-                        utf8
-                    } else {
-                        let text = std::str::from_utf8(&utf8)
-                            .map_err(|error| SaveError::Other(error.to_string()))?;
-                        encode(text, format).map_err(|error| match error {
+                    let bytes =
+                        doc::files::encode_body(&body, format).map_err(|error| match error {
                             FileError::Unrepresentable => SaveError::Encoding,
                             other => SaveError::Other(format!("{other:?}")),
-                        })?
-                    };
+                        })?;
                     Arc::from(bytes)
                 }
             };
