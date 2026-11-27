@@ -1,4 +1,5 @@
 use super::{CONTROL_STATES, Document, Shell, border_width, color, font_size};
+use crate::origami::{local_glass_description, local_glass_surface};
 use crate::table_controls::{self, ACTIONS, TableAction};
 use nsh_base::rich_editor::view::{RichEditorApi, TableAnchor, TableAnchorGeometry};
 use nsh_core::{
@@ -405,13 +406,10 @@ impl TableHud {
             .element_ref(&self.tools)
             .role(AccessibilityRole::Toolbar)
             .label("表格操作")
-            .p(px(PADDING))
+            .p(|| px(PADDING + border_width().0))
             .gap(px(GRID_GAP))
-            .rounded(px(8.0))
-            .border(border_width)
-            .border_color(move || color("chrome-edge"))
-            .bg(move || color("paper"))
             .text_color(move || color("ink-1"))
+            .child(local_glass_surface(px(8.0)))
             .child(buttons)
             .child(
                 view()
@@ -430,6 +428,7 @@ impl TableHud {
                         .app_class("truncate")
                         .flex_1()
                         .min_w(px(0.0))
+                        .text_color(local_glass_description("muted-readable"))
                         .text_size(px(font_size("meta"))),
                     )
                     .child(

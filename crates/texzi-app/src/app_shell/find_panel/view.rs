@@ -197,14 +197,12 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                 .child(options)
                 .child(navigation);
             let controls = view()
+                .relative()
                 .w(px(396.0))
                 .max_w(relative(1.0))
-                .p(px(5.0))
+                .p(px(6.0))
                 .gap(px(4.0))
-                .border(px(1.0))
-                .border_color(divider)
-                .bg(frame)
-                .app_class("rounded-md")
+                .child(crate::origami::local_glass_surface(px(6.0)))
                 .child(input_row)
                 .child(when(
                     move || mode.get() == "replace",

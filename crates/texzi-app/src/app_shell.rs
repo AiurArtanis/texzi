@@ -48,7 +48,10 @@ mod session_recovery;
 #[path = "settings_view.rs"]
 mod settings_view;
 
-use crate::origami::{CONTROL_STATES, border_width, color, current_color, font_size, metric};
+use crate::origami::{
+    CONTROL_STATES, border_width, color, current_color, font_size, local_glass_description,
+    local_glass_surface, metric,
+};
 const TITLE_ICON_WIDTH: f32 = 42.0;
 const TITLE_MENU_WIDTH: f32 = 50.0;
 const TITLE_SEARCH_GAP: f32 = 10.0;
@@ -3066,38 +3069,38 @@ fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoEl
     let name = doc.clone();
     let disabled = doc.clone();
     let backdrop = doc.clone();
-    icon_button(SOURCE_ICON, "切换到源码", metric("modeWidth"), 18.0)
+    view()
         .absolute()
+        .w(px(metric("modeWidth")))
         .h(px(metric("modeHeight")))
         .top(px(12.0))
         .right(px(16.0))
         .z_index(1)
-        .border(border_width)
-        .border_color(divider)
-        .bg(move || {
-            if backdrop.displayed_rich() {
-                frame()
-            } else {
-                selected_surface()
-            }
-        })
-        .accessibility_label(move || {
-            Some(SharedString::from(if name.displayed_rich() {
-                "切换到源码"
-            } else {
-                "返回所见即所得"
-            }))
-        })
-        .selected(move || !selected.displayed_rich())
-        .disabled(move || {
-            disabled.pending_mode.get().is_some()
-                || (!disabled.displayed_rich()
-                    && disabled.source.disk_len() > large_file::SOURCE_ONLY_BYTES)
-        })
-        .on_press(move |_: &()| {
-            shell.second_active.set(second);
-            shell.request_mode(doc.clone(), !doc.displayed_rich());
-        })
+        .child(local_glass_surface(px(6.0)))
+        .child(
+            icon_button(SOURCE_ICON, "切换到源码", metric("modeWidth"), 18.0)
+                .size_full()
+                .bg(move || {
+                    selected_surface().opacity(if backdrop.displayed_rich() { 0.0 } else { 0.35 })
+                })
+                .accessibility_label(move || {
+                    Some(SharedString::from(if name.displayed_rich() {
+                        "切换到源码"
+                    } else {
+                        "返回所见即所得"
+                    }))
+                })
+                .selected(move || !selected.displayed_rich())
+                .disabled(move || {
+                    disabled.pending_mode.get().is_some()
+                        || (!disabled.displayed_rich()
+                            && disabled.source.disk_len() > large_file::SOURCE_ONLY_BYTES)
+                })
+                .on_press(move |_: &()| {
+                    shell.second_active.set(second);
+                    shell.request_mode(doc.clone(), !doc.displayed_rich());
+                }),
+        )
 }
 
 fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
@@ -3989,12 +3992,9 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                             .on_layout(move |bounds: &Bounds<Points>| {
                                 zen_hint_width.set(bounds.size.width);
                             })
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(8.0))
-                            .border(border_width)
-                            .border_color(|| color("chrome-edge"))
-                            .bg(|| color("paper-subtle"))
+                            .px(|| px(8.0 + border_width().0))
+                            .py(|| px(4.0 + border_width().0))
+                            .child(local_glass_surface(px(8.0)))
                             .child(text("再按一次 Esc 退出 Zen").number_of_lines(1))
                             .child(tab_ribbon()),
                     )
@@ -4472,12 +4472,13 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
     let notice = s.quick_notice;
     let scanning = s.quick_scanning;
     let stop = s.clone();
+    let description = local_glass_description("muted-readable");
     view()
+        .relative()
         .rounded(px(12.0))
         .overflow_hidden()
-        .bg(|| color("paper"))
-        .border(border_width)
-        .border_color(|| color("chrome-edge"))
+        .p(border_width)
+        .child(local_glass_surface(px(12.0)))
         .child(
             nsh_base::command()
                 .items(move || {
@@ -4515,14 +4516,14 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
                 .when(!compact, |command| {
                     command
                         .search_prefix(shell_glyph(SEARCH_ICON, 16.0))
-                        .search_suffix(text(if spotlight { "全部" } else if files { "文件" } else { "命令" }).text_color(secondary_foreground))
+                        .search_suffix(text(if spotlight { "全部" } else if files { "文件" } else { "命令" }).text_color(description))
                 })
                 .search_accessibility_label("搜索文件或命令")
                 .list_class("max-h-64")
                 .item_class("focus:bg-sidebar-accent focus:text-sidebar-accent-foreground disabled:text-(--control-disabled)")
                 .item_style(|s| s.mx(px(6.0)).px(px(8.0)).py(px(7.0)).rounded(px(6.0)))
                 .group_style(|s| s.px(px(12.0)).py(px(4.0)).text_size(px(font_size("meta")))
-                    .font_weight(FontWeight::SEMIBOLD).text_color(secondary_foreground))
+                    .font_weight(FontWeight::SEMIBOLD).text_color(description))
                 .render_item(|entry: &nsh_base::CommandEntry| {
                     view()
                         .flex_row()
@@ -4540,7 +4541,7 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
                                 .text_size(px(font_size("meta")))
                         }))
                 })
-                .empty(text("没有匹配结果").p(px(12.0)).text_color(secondary_foreground))
+                .empty(text("没有匹配结果").p(px(12.0)).text_color(description))
                 .on_query_change(move |q: &SharedString| {
                     if let Some(command) = files.then(|| q.strip_prefix('>')).flatten() {
                         query.set(command.trim_start().to_owned());
@@ -4589,7 +4590,7 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
                     .p(px(8.0))
                     .border_t(px(1.0))
                     .border_color(divider)
-                    .child(text(move || notice.get()).text_color(secondary_foreground).text_size(px(font_size("meta"))))
+                    .child(text(move || notice.get()).text_color(description).text_size(px(font_size("meta"))))
                     .child(when(scanning, move || {
                         let stop = stop.clone();
                         nsh_base::button()
@@ -4602,7 +4603,7 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
             text("↑↓ 选择 · Enter 打开或执行 · Esc 关闭")
                 .px(px(12.0))
                 .py(px(6.0))
-                .text_color(secondary_foreground)
+                .text_color(description)
                 .text_size(px(font_size("meta"))),
         )
 }

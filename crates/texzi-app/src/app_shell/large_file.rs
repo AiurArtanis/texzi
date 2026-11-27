@@ -3,7 +3,7 @@ use super::*;
 use crate::editor_owner::{
     MAX_EDIT_BYTES, PrepareError, PreparedFile, SourcePreparation, line_limit_message,
 };
-use crate::origami::local_glass_description;
+use crate::origami::{local_glass_description, local_glass_surface};
 use std::{
     collections::VecDeque,
     sync::Mutex,
@@ -846,15 +846,22 @@ fn archive_banner(
         let failed = matches!(archive.state, ArchiveState::Failed(_));
         Some(
             view()
+                .relative()
                 .min_w(px(0.0))
                 .gap(px(6.0))
-                .p(px(10.0))
-                .rounded(px(8.0))
-                .border(border_width)
-                .border_color(|| color("chrome-edge"))
-                .bg(|| color("apricot-soft"))
+                .p(|| px(10.0 + border_width().0))
                 .role(AccessibilityRole::Group)
                 .label("草稿归档")
+                .child(local_glass_surface(px(8.0)))
+                .child(
+                    view()
+                        .absolute()
+                        .inset(border_width)
+                        .rounded(px(7.0))
+                        .pointer_events(PointerEvents::None)
+                        .accessible(false)
+                        .bg(|| color("apricot-soft")),
+                )
                 .child(
                     text(archive.reason.clone())
                         .text_size(px(font_size("meta")))
@@ -966,7 +973,7 @@ fn archive_paths(
                     .number_of_lines(move || if full.get() { 0u32 } else { 1u32 })
                     .text_overflow(EllipsizeMode::Middle)
                     .text_size(px(font_size("meta")))
-                    .text_color(|| color("muted-readable"))
+                    .text_color(local_glass_description("muted-readable"))
             }),
         )
         .child(
@@ -1375,9 +1382,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                                 .rounded(px(metric("paperRadius")))
                                 .p(|| px(14.0 + border_width().0))
                                 .gap(px(8.0))
-                                .child(crate::origami::local_glass_surface(px(metric(
-                                    "paperRadius",
-                                ))))
+                                .child(local_glass_surface(px(metric("paperRadius"))))
                                 .child(heading)
                                 .child(when(
                                     move || import_state.get() == ImportState::Loading,
