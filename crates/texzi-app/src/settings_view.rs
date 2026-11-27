@@ -454,6 +454,12 @@ fn encoding_picker(
                 )
                 .accessibility_label("新文件默认编码")
                 .value(move || nsh_base::SelectValue::from(selected.get()))
+                .popup_class(|| {
+                    Some(SharedString::from(format!(
+                        "rounded-md border-[{}px] border-(--chrome-edge) bg-(--glass-solid) text-(--glass-label)",
+                        border_width().0
+                    )))
+                })
                 .trigger(
                     view()
                         .h(px(metric("field")))
