@@ -111,12 +111,12 @@ pub(crate) fn generation() -> u64 {
     GENERATION.with(Cell::get)
 }
 
-pub(crate) fn refresh_local_glass_pressure() -> bool {
+pub(crate) fn refresh_local_glass_pressure(interested: bool) -> Option<bool> {
     GFX.with(|gfx| {
         gfx.borrow()
             .as_ref()
             .and_then(|gfx| gfx.local_glass.as_ref())
-            .is_some_and(crate::decor::local_glass::DevicePressure::refresh)
+            .and_then(|pressure| pressure.refresh(interested))
     })
 }
 
@@ -257,7 +257,7 @@ const RESIZE_FRAME_WAIT: std::time::Duration = std::time::Duration::from_millis(
 
 /// Whether DWM shows window `hwnd`: visible, its top-level window neither
 /// minimized nor cloaked.
-fn composed(hwnd: HWND) -> bool {
+pub(crate) fn composed(hwnd: HWND) -> bool {
     use windows::Win32::{
         Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
         UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, IsIconic, IsWindowVisible},

@@ -522,12 +522,13 @@ fn capture_backdrop(
     let (width, height) = (right - left, bottom - top);
     if local_glass {
         let pressure = cx.gfx.local_glass.as_ref()?;
-        if !pressure.allows_glass()
-            || !cx
-                .local_glass
-                .as_mut()?
-                .reserve(width, height, [size.width, size.height])
-        {
+        let budget = cx.local_glass.as_mut()?;
+        if !budget.reserve(width, height, [size.width, size.height]) {
+            return None;
+        }
+        let allowed = pressure.allows_glass();
+        budget.pressure_allowed = Some(allowed);
+        if !allowed {
             return None;
         }
     }

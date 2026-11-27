@@ -1873,6 +1873,8 @@ struct Drawn {
     layers: Vec<usize>,
     /// Where the backdrop views drawn go.
     backdrops: Vec<Placement>,
+    /// Pressure decision used by an eligible local glass card in this pass.
+    local_glass_pressure: Option<bool>,
 }
 
 /// A window of the app's own as its frame draws it
@@ -1890,6 +1892,7 @@ pub(crate) struct WindowFrame<'a> {
     /// Its swap chain, and the scale of the chain's target.
     pub(crate) swap: &'a mut Option<gfx::SwapChain>,
     pub(crate) presentation: &'a std::cell::Cell<u64>,
+    pub(crate) local_glass_pressure: &'a std::cell::Cell<Option<(u64, bool)>>,
     pub(crate) target_scale: &'a std::cell::Cell<f32>,
     /// Its client area in pixels, and its pixels per point.
     pub(crate) size: (u32, u32),
@@ -1913,6 +1916,7 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
         composition,
         swap,
         presentation,
+        local_glass_pressure,
         target_scale,
         size,
         scale,
@@ -1996,6 +2000,11 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
                 return false;
             }
             presentation.set(presentation.get().wrapping_add(1));
+            local_glass_pressure.set(
+                drawn
+                    .local_glass_pressure
+                    .map(|allowed| (gfx::generation(), allowed)),
+            );
             if let (Some(fps), Some(painted), Some(showing)) = (fps, painted, showing) {
                 fps.painted(painted, showing.elapsed());
             }
@@ -2143,6 +2152,10 @@ fn draw_into(
     let items = std::mem::take(&mut cx.drawn);
     let composed = std::mem::take(&mut cx.composed);
     let backdrops = cx.backdrops.take().unwrap_or_default();
+    let local_glass_pressure = cx
+        .local_glass
+        .take()
+        .and_then(|budget| budget.pressure_allowed);
     let local_glass_device_error = cx.local_glass_device_error.take();
     let (layers, error) = match cx.split.take() {
         Some(s) => (s.layers, s.error),
@@ -2163,6 +2176,7 @@ fn draw_into(
         composed,
         layers,
         backdrops,
+        local_glass_pressure,
     })
 }
 

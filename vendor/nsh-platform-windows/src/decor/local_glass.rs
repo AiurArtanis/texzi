@@ -1,4 +1,7 @@
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
 
 use nsh_core::{Gradient, NodeId, Points};
 use windows::Win32::Graphics::Dxgi::{
@@ -27,13 +30,11 @@ pub fn set_local_glass(id: NodeId, style: LocalGlassStyle) -> bool {
     true
 }
 
-/// Refreshes the active device's recent glass requests. Call with the app's
+/// Refreshes glass pressure while eligible windows are showing cards. Call with the app's
 /// periodic visual-preference query from an engine main-thread task.
 pub fn refresh_local_glass_pressure() {
-    if crate::gfx::refresh_local_glass_pressure()
-        && let Some(surface) = crate::surface::task_surface()
-    {
-        surface.invalidate();
+    if let Some(surface) = crate::surface::task_surface() {
+        crate::app_window::refresh_local_glass_pressure(&surface);
     }
 }
 
@@ -47,6 +48,8 @@ const DEVICE_HEADROOM: u64 = 16 * 1024 * 1024;
 pub(crate) struct FrameBudget {
     bytes: u64,
     copies: u8,
+    /// The cached pressure allowance used by an eligible card in this frame.
+    pub(crate) pressure_allowed: Option<bool>,
 }
 
 impl FrameBudget {
@@ -69,43 +72,65 @@ impl FrameBudget {
 /// A sample from the native adapter, shared by windows on this graphics device.
 pub(crate) struct DevicePressure {
     adapter: IDXGIAdapter3,
-    allowed: Cell<Option<bool>>,
-    requested: Cell<bool>,
+    sample: PressureSample,
 }
 
 impl DevicePressure {
     pub(crate) fn new(adapter: IDXGIAdapter3) -> Self {
         Self {
             adapter,
-            allowed: Cell::new(None),
-            requested: Cell::new(false),
+            sample: PressureSample::default(),
         }
     }
 
     pub(crate) fn allows_glass(&self) -> bool {
-        self.requested.set(true);
-        self.allowed.get().unwrap_or_else(|| self.query())
+        self.sample
+            .current
+            .get()
+            .map(|(_, allowed)| allowed)
+            .unwrap_or_else(|| self.refresh(true).unwrap_or(false))
     }
 
-    pub(crate) fn refresh(&self) -> bool {
-        if !self.requested.replace(false) {
-            return false;
-        }
-        let previous = self.allowed.get();
-        previous != Some(self.query())
+    pub(crate) fn refresh(&self, interested: bool) -> Option<bool> {
+        self.sample
+            .refresh(interested, Instant::now(), || self.query())
     }
 
     fn query(&self) -> bool {
         let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
         // SAFETY: the adapter belongs to this device and the output is live.
-        let enough = unsafe {
+        unsafe {
             self.adapter
                 .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
         }
         .is_ok()
-            && info.Budget.saturating_sub(info.CurrentUsage) >= DEVICE_HEADROOM;
-        self.allowed.set(Some(enough));
-        enough
+            && info.Budget.saturating_sub(info.CurrentUsage) >= DEVICE_HEADROOM
+    }
+}
+
+#[derive(Default)]
+struct PressureSample {
+    current: Cell<Option<(Instant, bool)>>,
+}
+
+impl PressureSample {
+    fn refresh(
+        &self,
+        interested: bool,
+        now: Instant,
+        query: impl FnOnce() -> bool,
+    ) -> Option<bool> {
+        if !interested {
+            return None;
+        }
+        if let Some((last, allowed)) = self.current.get()
+            && now.saturating_duration_since(last) < Duration::from_secs(1)
+        {
+            return Some(allowed);
+        }
+        let allowed = query();
+        self.current.set(Some((now, allowed)));
+        Some(allowed)
     }
 }
 
@@ -123,5 +148,39 @@ mod tests {
         assert!(frame.reserve(512, 292, [1600, 1000]));
         assert!(!frame.reserve(1, 1, [1600, 1000]));
         assert!(FrameBudget::default().reserve(512, 292, [820, 480]));
+    }
+
+    #[test]
+    fn static_card_recovers_and_a_dormant_window_does_not_query() {
+        let pressure = PressureSample::default();
+        let start = Instant::now();
+        let queries = Cell::new(0);
+        let query = || {
+            queries.set(queries.get() + 1);
+            queries.get() >= 3
+        };
+        assert_eq!(pressure.refresh(false, start, query), None);
+        let presented = pressure.refresh(true, start, query);
+        assert_eq!(presented, Some(false));
+
+        let next = start + Duration::from_secs(1);
+        assert_eq!(pressure.refresh(true, next, query), presented);
+        // A second window or timer on the same device reuses that sample.
+        assert_eq!(pressure.refresh(true, next, query), presented);
+        assert_eq!(queries.get(), 2);
+
+        // The still-presented card has not drawn again since the first denial.
+        let recovered = start + Duration::from_secs(2);
+        assert_eq!(pressure.refresh(true, recovered, query), Some(true));
+        assert_eq!(queries.get(), 3);
+        assert_eq!(
+            pressure.refresh(false, recovered + Duration::from_secs(1), query),
+            None
+        );
+        assert_eq!(
+            pressure.refresh(false, recovered + Duration::from_secs(2), query),
+            None
+        );
+        assert_eq!(queries.get(), 3);
     }
 }

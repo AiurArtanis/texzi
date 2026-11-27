@@ -51,7 +51,7 @@ use nsh_core::{
 };
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT},
+    Graphics::Gdi::{BeginPaint, EndPaint, MONITOR_DEFAULTTONULL, MonitorFromWindow, PAINTSTRUCT},
     UI::{Input::KeyboardAndMouse::EnableWindow, WindowsAndMessaging::*},
 };
 
@@ -94,6 +94,8 @@ pub(crate) struct AppWindow {
     swap: RefCell<Option<crate::gfx::SwapChain>>,
     /// Successful presents in this window, including across swap-chain changes.
     presentation: Cell<u64>,
+    /// The device generation and pressure decision used by the last presented card.
+    local_glass_pressure: Cell<Option<(u64, bool)>>,
     /// The scale of the swap chain's target.
     target_scale: Cell<f32>,
     /// Its client area in pixels, and its scale.
@@ -146,6 +148,41 @@ pub(crate) fn presentation(surface: &Surface, id: NodeId, request: bool) -> Opti
         invalidate(&window);
     }
     Some(frame)
+}
+
+/// Samples pressure while a recently presented eligible card is still visible.
+pub(crate) fn refresh_local_glass_pressure(surface: &Surface) {
+    let Ok(windows) = surface.windows.try_borrow() else {
+        return;
+    };
+    let generation = crate::gfx::generation();
+    let mut interested = windows
+        .iter()
+        .filter_map(|window| {
+            let allowed = visible_local_glass(window.local_glass_pressure.get(), generation, || {
+                !window.closed.get() && crate::gfx::composed(window.hwnd)
+                    // SAFETY: the live HWND is retained by this UI thread.
+                    && !unsafe { MonitorFromWindow(window.hwnd, MONITOR_DEFAULTTONULL) }.is_invalid()
+            })?;
+            Some((window, allowed))
+        })
+        .peekable();
+    if let Some(allowed) = crate::gfx::refresh_local_glass_pressure(interested.peek().is_some()) {
+        for (window, presented) in interested {
+            if allowed != presented {
+                invalidate(window);
+            }
+        }
+    }
+}
+
+fn visible_local_glass(
+    presented: Option<(u64, bool)>,
+    generation: u64,
+    visible: impl FnOnce() -> bool,
+) -> Option<bool> {
+    let (device, allowed) = presented?;
+    (device == generation && visible()).then_some(allowed)
 }
 
 /// Whether dialog root `id` is shown in a window of its own.
@@ -370,6 +407,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         composed: RefCell::default(),
         swap: RefCell::new(None),
         presentation: Cell::new(0),
+        local_glass_pressure: Cell::new(None),
         target_scale: Cell::new(0.0),
         pixels: Cell::new((0, 0)),
         scale: Cell::new(1.0),
@@ -630,6 +668,7 @@ fn paint(surface: &Rc<Surface>, window: &AppWindow) {
             composition: web.as_deref(),
             swap: &mut window.swap.borrow_mut(),
             presentation: &window.presentation,
+            local_glass_pressure: &window.local_glass_pressure,
             target_scale: &window.target_scale,
             size: window.pixels.get(),
             scale: window.scale.get(),
@@ -1034,6 +1073,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_current_visible_local_glass_presentations_request_pressure() {
+        let generation = 7;
+        assert_eq!(visible_local_glass(None, generation, || panic!()), None);
+        assert_eq!(
+            visible_local_glass(Some((6, false)), generation, || panic!()),
+            None
+        );
+        assert_eq!(
+            visible_local_glass(Some((generation, false)), generation, || false),
+            None
+        );
+        assert_eq!(
+            visible_local_glass(Some((generation, false)), generation, || true),
+            Some(false)
+        );
+        assert_eq!(
+            visible_local_glass(Some((generation, true)), generation, || true),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn a_nested_workbench_paint_wakes_the_window_after_the_active_frame() {
         let app = crate::app::AppView::new(None, Default::default()).unwrap();
         let surface = app.surface();
@@ -1117,6 +1178,7 @@ mod tests {
             composed: RefCell::default(),
             swap: RefCell::new(None),
             presentation: Cell::new(0),
+            local_glass_pressure: Cell::new(None),
             target_scale: Cell::new(0.0),
             pixels: Cell::new((0, 0)),
             scale: Cell::new(1.0),
@@ -1201,6 +1263,7 @@ mod tests {
                 composed: RefCell::default(),
                 swap: RefCell::new(None),
                 presentation: Cell::new(0),
+                local_glass_pressure: Cell::new(None),
                 target_scale: Cell::new(0.0),
                 pixels: Cell::new((0, 0)),
                 scale: Cell::new(1.0),
