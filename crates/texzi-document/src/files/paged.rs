@@ -95,6 +95,16 @@ impl FileSource {
     }
 
     pub fn complete_bytes(&self, limit: u64, cancel: &AtomicBool) -> io::Result<Vec<u8>> {
+        self.complete_bytes_with_progress(limit, cancel, |_| {})
+    }
+
+    /// Reports cumulative bytes only after a full chunk has been read and the file lock released.
+    pub fn complete_bytes_with_progress(
+        &self,
+        limit: u64,
+        cancel: &AtomicBool,
+        mut on_read: impl FnMut(u64),
+    ) -> io::Result<Vec<u8>> {
         if self.len > limit {
             return Err(io::Error::other("文件超出此次完整编辑预算，请选择分页查看"));
         }
@@ -117,6 +127,7 @@ impl FileSource {
                 file.read_exact(&mut chunk[..count])?;
             }
             bytes.extend_from_slice(&chunk[..count]);
+            on_read(bytes.len() as u64);
         }
         self.check(self.lock()?.metadata()?)?;
         Ok(bytes)
@@ -606,6 +617,35 @@ mod tests {
         let second = reader.read(Position::Boundary(first.end)).unwrap();
         assert_eq!(second.start, first.end);
         assert!(original.starts_with(&(first.text + &second.text)));
+    }
+
+    #[test]
+    fn complete_read_reports_exact_bytes_without_holding_the_source_lock() {
+        let chunk = 64 * 1024;
+        let bytes = vec![b'a'; chunk + 7];
+        let fixture = Fixture::new(&bytes);
+        let source = FileSource::open(&fixture.0).unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut reported = Vec::new();
+        let loaded = source
+            .complete_bytes_with_progress(source.len, &cancel, |read| {
+                assert!(source.file.try_lock().is_ok());
+                reported.push(read);
+            })
+            .unwrap();
+        assert_eq!(loaded, bytes);
+        assert_eq!(reported, [chunk as u64, source.len]);
+
+        reported.clear();
+        assert!(
+            source
+                .complete_bytes_with_progress(source.len, &cancel, |read| {
+                    reported.push(read);
+                    cancel.store(true, Ordering::Relaxed);
+                })
+                .is_err()
+        );
+        assert_eq!(reported, [chunk as u64]);
     }
 
     #[test]

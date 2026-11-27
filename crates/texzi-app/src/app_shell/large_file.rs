@@ -1,6 +1,12 @@
 use super::*;
-use crate::editor_owner::{MAX_EDIT_BYTES, PrepareError, line_limit_message};
-use std::collections::VecDeque;
+use crate::editor_owner::{
+    MAX_EDIT_BYTES, PrepareError, PreparedFile, SourcePreparation, line_limit_message,
+};
+use std::{
+    collections::VecDeque,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 use texzi_document::files::{
     Encoding,
     paged::{Calibration, FileSource, Page, PagedFile, Position},
@@ -12,6 +18,7 @@ const HUGE_BYTES: u64 = 200 * MIB;
 // Editing owns decoded text, provenance, a Rope and a save-conflict baseline.
 // Only one such import runs at a time. Files above this bound stay seekable.
 pub(super) const SOURCE_ONLY_BYTES: u64 = 50_000_000;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(125);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImportState {
@@ -20,6 +27,46 @@ enum ImportState {
     Cancelling,
     Cancelled,
     LineLimit,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImportProgress {
+    PreparingPreview,
+    Queued,
+    VerifyingSource,
+    RestoringDraft,
+    PreparingSource(SourcePreparation),
+    Attaching,
+}
+
+impl ImportProgress {
+    fn read_percent(self, total: u64) -> Option<u32> {
+        match self {
+            Self::PreparingSource(SourcePreparation::Reading(read)) if total != 0 => {
+                Some((read * 100 / total) as u32)
+            }
+            _ => None,
+        }
+    }
+
+    fn label(self, total: u64) -> String {
+        match self {
+            Self::PreparingPreview => "正在准备首屏预览…".into(),
+            Self::Queued => "等待完整加载…".into(),
+            Self::VerifyingSource => "正在校验原文件…".into(),
+            Self::RestoringDraft => "正在准备恢复草稿…".into(),
+            Self::PreparingSource(SourcePreparation::Reading(read)) => {
+                if let Some(percent) = self.read_percent(total) {
+                    format!("读取 {percent}% · {read} / {total} 字节")
+                } else {
+                    "正在读取文件…".into()
+                }
+            }
+            Self::PreparingSource(SourcePreparation::Decoding) => "正在解码文件…".into(),
+            Self::PreparingSource(SourcePreparation::Building) => "正在构建编辑模型…".into(),
+            Self::Attaching => "正在打开编辑视图…".into(),
+        }
+    }
 }
 
 pub(super) fn requires_editable(id: &str) -> bool {
@@ -40,6 +87,12 @@ pub(super) fn requires_editable(id: &str) -> bool {
             && !matches!(id, "texzi.find.inFolder" | "texzi.find.close"))
 }
 
+#[derive(PartialEq)]
+struct VisiblePage {
+    data: Page,
+    encoding: Encoding,
+}
+
 pub(super) struct LargeFile {
     source: Arc<FileSource>,
     choice: Cell<Option<Encoding>>,
@@ -51,10 +104,11 @@ pub(super) struct LargeFile {
     pub(super) restored_view: Option<session_recovery::EditorView>,
     pub(super) restored_draft: Signal<Option<session_recovery::Draft>>,
     reader: RefCell<Option<Arc<PagedFile>>>,
-    page: Signal<Option<Rc<Page>>>,
+    page: Signal<Option<Rc<VisiblePage>>>,
     message: Signal<String>,
     reading: Signal<bool>,
     import_state: Signal<ImportState>,
+    import_progress: Signal<Option<Arc<Mutex<ImportProgress>>>>,
     generation: Cell<u64>,
     cancel: RefCell<Option<Arc<AtomicBool>>>,
 }
@@ -87,6 +141,7 @@ impl LargeFile {
             }),
             reading: signal(false),
             import_state: signal(ImportState::Idle),
+            import_progress: signal_with(None, SignalEquals::Never),
             generation: Cell::new(0),
             cancel: Default::default(),
         })
@@ -130,6 +185,7 @@ impl LargeFile {
             cancel.store(true, Ordering::Relaxed);
         }
         self.import_state.set(ImportState::Idle);
+        self.import_progress.set(None);
     }
 
     fn mark_line_limit(self: &Rc<Self>, owner: Owner, encoding: Encoding) {
@@ -148,7 +204,7 @@ impl LargeFile {
             // Invalidate an in-flight navigation before replacing the sampled reader.
             let at = self
                 .page
-                .with(|page| page.as_ref().map_or(0, |page| page.start));
+                .with(|page| page.as_ref().map_or(0, |page| page.data.start));
             self.generation.set(self.generation.get().wrapping_add(1));
             self.reading.set(false);
             self.reader.borrow_mut().take();
@@ -179,6 +235,11 @@ impl LargeFile {
         self.reading.set(false);
     }
 
+    fn show_page(&self, data: Page, encoding: Encoding) {
+        self.page.set(Some(Rc::new(VisiblePage { data, encoding })));
+        self.message.set(String::new());
+    }
+
     fn calibrate(self: &Rc<Self>, owner: Owner) {
         let Some(pos) = self.pending_seek.get() else {
             return;
@@ -191,11 +252,18 @@ impl LargeFile {
         }
         let view = self.clone();
         let generation = self.generation.get();
-        let encoding = encoding_name(reader.encoding);
+        let encoding = reader.encoding;
+        let label = encoding_name(encoding);
         self.reading.set(true);
         owner.run(|| {
             spawn(async move {
+                if view.generation.get() != generation {
+                    return;
+                }
                 let mut from = reader.scan_start(pos);
+                let mut sampled_at = Instant::now();
+                view.message
+                    .set(format!("正在校准 {label} 字符边界 · 已到字节 {from}"));
                 loop {
                     let reader = reader.clone();
                     let step = blocking(move || reader.calibrate_step(pos, from)).await;
@@ -205,8 +273,11 @@ impl LargeFile {
                     match step {
                         Ok(Ok(Calibration::More(at))) => {
                             from = at;
-                            view.message
-                                .set(format!("正在校准 {encoding} 字符边界 · 已到字节 {at}"));
+                            if sampled_at.elapsed() >= PROGRESS_INTERVAL {
+                                sampled_at = Instant::now();
+                                view.message
+                                    .set(format!("正在校准 {label} 字符边界 · 已到字节 {at}"));
+                            }
                             // Yield between bounded reads, with a visible and cancellable operation.
                             let _ = next_frame().await;
                             if view.generation.get() != generation {
@@ -214,11 +285,7 @@ impl LargeFile {
                             }
                         }
                         Ok(Ok(Calibration::Ready(page))) => {
-                            view.message.set(format!(
-                                "{encoding} · 字节 {}–{} / {}",
-                                page.start, page.end, view.len
-                            ));
-                            view.page.set(Some(Rc::new(page)));
+                            view.show_page(page, encoding);
                             view.pending_seek.set(None);
                             break;
                         }
@@ -292,18 +359,21 @@ impl LargeFile {
                     Ok(Ok((reader, Err(error)))) => {
                         if error.kind() == std::io::ErrorKind::WouldBlock {
                             view.pending_seek.set(Some(pos));
+                            let at = match pos {
+                                Position::Boundary(at)
+                                | Position::Near(at)
+                                | Position::Before(at) => at,
+                            };
+                            view.message.set(format!("请求位置 {at} B · {error}"));
+                        } else {
+                            view.message.set(error.to_string());
                         }
                         *view.reader.borrow_mut() = Some(reader);
-                        view.message.set(error.to_string());
                     }
                     Ok(Ok((reader, Ok(page)))) => {
-                        let label = encoding_name(reader.encoding);
-                        view.message.set(format!(
-                            "{label} · 字节 {}–{} / {}",
-                            page.start, page.end, reader.len
-                        ));
+                        let encoding = reader.encoding;
                         *view.reader.borrow_mut() = Some(reader);
-                        view.page.set(Some(Rc::new(page)));
+                        view.show_page(page, encoding);
                     }
                     Ok(Err(e)) => view.message.set(format!("读取失败：{e}")),
                     Err(e) => view.message.set(format!("读取任务未完成：{e}")),
@@ -327,6 +397,7 @@ struct Import {
     doc: Rc<Document>,
     large: Rc<LargeFile>,
     cancel: Arc<AtomicBool>,
+    progress: Arc<Mutex<ImportProgress>>,
 }
 
 #[derive(Default)]
@@ -396,7 +467,9 @@ impl Shell {
             return;
         }
         let cancel = Arc::new(AtomicBool::new(false));
+        let progress = Arc::new(Mutex::new(ImportProgress::PreparingPreview));
         *large.cancel.borrow_mut() = Some(cancel.clone());
+        large.import_progress.set(Some(progress.clone()));
         large.import_state.set(ImportState::Loading);
         if large.page.with(Option::is_none) && !large.reading.get() {
             large.load(self.owner, Position::Boundary(0), None);
@@ -418,11 +491,13 @@ impl Shell {
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                shell
-                    .imports
-                    .jobs
-                    .borrow_mut()
-                    .push_back(Import { doc, large, cancel });
+                *progress.lock().unwrap() = ImportProgress::Queued;
+                shell.imports.jobs.borrow_mut().push_back(Import {
+                    doc,
+                    large,
+                    cancel,
+                    progress,
+                });
                 shell.next_import();
             })
         });
@@ -441,6 +516,7 @@ impl Shell {
             .is_some_and(|active| Arc::ptr_eq(active, &token))
         {
             file.import_state.set(ImportState::Cancelling);
+            file.import_progress.set(None);
             file.message.set("正在取消完整加载…".into());
         } else {
             // Neither a preview still preparing nor a queued import owns a full model.
@@ -473,18 +549,26 @@ impl Shell {
                 let source = job.large.source.clone();
                 let encoding = job.large.choice.get();
                 let draft = job.large.restored_draft.get_untracked();
+                let progress = job.progress.clone();
                 let result = blocking(move || {
-                    if let Some(draft) = draft {
-                        return draft.prepare(&source, &path, MAX_EDIT_BYTES, &cancel);
-                    }
-                    source.verify_path(&path).map_err(|e| e.to_string())?;
-                    crate::editor_owner::PreparedFile::from_source(
-                        &source,
-                        MAX_EDIT_BYTES,
-                        &cancel,
-                        encoding,
-                    )
-                    .map(|prepared| (prepared, true))
+                    let report = |stage| *progress.lock().unwrap() = stage;
+                    let prepared = if let Some(draft) = draft {
+                        report(ImportProgress::RestoringDraft);
+                        draft.prepare(&source, &path, MAX_EDIT_BYTES, &cancel)
+                    } else {
+                        report(ImportProgress::VerifyingSource);
+                        source.verify_path(&path).map_err(|e| e.to_string())?;
+                        PreparedFile::from_source_with_progress(
+                            &source,
+                            MAX_EDIT_BYTES,
+                            &cancel,
+                            encoding,
+                            |stage| report(ImportProgress::PreparingSource(stage)),
+                        )
+                        .map(|prepared| (prepared, true))
+                    }?;
+                    report(ImportProgress::Attaching);
+                    Ok(prepared)
                 })
                 .await;
                 if job.cancel.load(Ordering::Relaxed) {
@@ -604,6 +688,57 @@ fn action(label: &'static str, click: impl Fn() + 'static) -> impl IntoElement {
         .on_press(move |_: &()| click())
 }
 
+fn import_progress(
+    source: Signal<Option<Arc<Mutex<ImportProgress>>>>,
+    total: u64,
+) -> impl IntoElement {
+    let progress = signal(ImportProgress::PreparingPreview);
+    effect(move || {
+        if source.with(Option::is_some) {
+            let sample = move || {
+                let Some(stage) = source
+                    .with_untracked(|source| source.as_ref()?.try_lock().ok().map(|stage| *stage))
+                else {
+                    return;
+                };
+                if progress.get_untracked() != stage {
+                    progress.set(stage);
+                }
+            };
+            sample();
+            let timer = set_interval(PROGRESS_INTERVAL, sample);
+            cleanup(move || timer.cancel());
+        }
+    });
+    view()
+        .gap(px(2.))
+        .child(text(move || progress.get().label(total)).number_of_lines(2))
+        .child(
+            nsh_base::progress()
+                .accessibility_label(move || {
+                    let label = if progress.get().read_percent(total).is_some() {
+                        "源文件读取进度"
+                    } else {
+                        "完整加载阶段"
+                    };
+                    Some(SharedString::from(label))
+                })
+                .value(move || progress.get().read_percent(total).unwrap_or(0) as f32)
+                .indeterminate(move || progress.get().read_percent(total).is_none())
+                .track_class("bg-muted")
+                .track_style(|s| s.h(px(2.)).rounded_full().overflow_hidden())
+                .indicator_class("bg-primary")
+                .indicator_style(move |s| {
+                    let s = s.h_full().rounded_full();
+                    if progress.get().read_percent(total).is_none() {
+                        s.w(px(0.))
+                    } else {
+                        s
+                    }
+                }),
+        )
+}
+
 pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -> impl IntoElement {
     let owner = shell.owner;
     let id = doc.id;
@@ -614,6 +749,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let page = file.page;
     let message = file.message;
     let import_state = file.import_state;
+    let progress = file.import_progress;
     let bytes = file.len;
     let open = file.clone();
     let import = file.clone();
@@ -628,7 +764,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
         let file = navigator.clone();
         action(label, move || {
             if let Some(page) = file.page.get() {
-                file.load(owner, get(&page, bytes), None);
+                file.load(owner, get(&page.data, bytes), None);
             }
         })
     };
@@ -645,7 +781,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let codec = |label, encoding| {
         let file = file.clone();
         action(label, move || {
-            let start = file.page.with(|p| p.as_ref().map_or(0, |p| p.start));
+            let start = file.page.with(|p| p.as_ref().map_or(0, |p| p.data.start));
             file.load(owner, Position::Near(start), Some(encoding));
         })
     };
@@ -700,7 +836,32 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
             move || import_state.get() == ImportState::LineLimit,
             || text(line_limit_message()).number_of_lines(2),
         ))
-        .child(text(move || message.get()).number_of_lines(2))
+        .child(when(
+            move || import_state.get() == ImportState::Loading,
+            move || import_progress(progress, bytes),
+        ))
+        .child(when(
+            move || !message.with(String::is_empty),
+            move || text(move || message.get()).number_of_lines(2),
+        ))
+        .child(when(
+            move || page.with(Option::is_some),
+            move || {
+                text(move || {
+                    page.with(|page| match page {
+                        Some(page) => format!(
+                            "{} · 字节 [{}, {}) / {} B",
+                            encoding_name(page.encoding),
+                            page.data.start,
+                            page.data.end,
+                            bytes
+                        ),
+                        None => String::new(),
+                    })
+                })
+                .number_of_lines(2)
+            },
+        ))
         .child(when(move || calibration.pending_seek.get().is_some(), {
             let file = file.clone();
             move || {
@@ -772,7 +933,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 nsh_base::editor::editor()
                     .element_ref(&body)
                     .component_ref(&reference)
-                    .default_value(Some(SharedString::from(page.text.clone())))
+                    .default_value(Some(SharedString::from(page.data.text.clone())))
                     .read_only(true)
                     .line_numbers(false)
                     .soft_wrap(false)

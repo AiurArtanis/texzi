@@ -108,6 +108,13 @@ pub(crate) struct PreparedFile {
     files: FileState,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourcePreparation {
+    Reading(u64),
+    Decoding,
+    Building,
+}
+
 pub(crate) const MAX_EDIT_LINES: usize = 2_000_000;
 pub(crate) const MAX_EDIT_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -195,6 +202,16 @@ impl PreparedFile {
         cancel: &AtomicBool,
         encoding: Option<Encoding>,
     ) -> Result<Self, PrepareError> {
+        Self::from_source_with_progress(source, limit, cancel, encoding, |_| {})
+    }
+
+    pub(crate) fn from_source_with_progress(
+        source: &doc::files::paged::FileSource,
+        limit: u64,
+        cancel: &AtomicBool,
+        encoding: Option<Encoding>,
+        mut on_stage: impl FnMut(SourcePreparation),
+    ) -> Result<Self, PrepareError> {
         let stopped = || {
             if cancel.load(Ordering::Relaxed) {
                 Err("已取消加载".to_owned())
@@ -203,10 +220,14 @@ impl PreparedFile {
             }
         };
         stopped()?;
+        on_stage(SourcePreparation::Reading(0));
         let raw = source
-            .complete_bytes(limit, cancel)
+            .complete_bytes_with_progress(limit, cancel, |read| {
+                on_stage(SourcePreparation::Reading(read));
+            })
             .map_err(|e| e.to_string())?;
         stopped()?;
+        on_stage(SourcePreparation::Decoding);
         let bytes: Arc<[u8]> = raw.into();
         let cancelled = || cancel.load(Ordering::Relaxed);
         let decode = |codec| LoadedBytes::decode_cancellable(bytes.clone(), codec, cancelled);
@@ -224,6 +245,7 @@ impl PreparedFile {
         .map_err(|error| format!("{error:?}"))?;
         let format = loaded.format();
         stopped()?;
+        on_stage(SourcePreparation::Building);
         let mut store = doc::Store::new(doc::HistoryBudget::default());
         let snapshot = store
             .open_decoded_with_line_limit(
@@ -469,6 +491,60 @@ mod tests {
                 .block_on(doc.save_file(existing.clone(), true, false))
                 .unwrap();
             assert_eq!(fs::read(existing).unwrap(), original);
+        });
+    }
+
+    #[test]
+    fn complete_import_reports_reading_before_decode_and_model_build() {
+        with_file("import-progress", |dir, _| {
+            let path = dir.join("exact.txt");
+            let chunk = 64 * 1024;
+            let bytes = b"a".repeat(chunk + 7);
+            fs::write(&path, &bytes).unwrap();
+            let source = doc::files::paged::FileSource::open(&path).unwrap();
+            let cancel = AtomicBool::new(false);
+            let mut stages = Vec::new();
+            let prepared = PreparedFile::from_source_with_progress(
+                &source,
+                source.len,
+                &cancel,
+                None,
+                |stage| stages.push(stage),
+            )
+            .unwrap();
+            assert_eq!(
+                stages,
+                [
+                    SourcePreparation::Reading(0),
+                    SourcePreparation::Reading(chunk as u64),
+                    SourcePreparation::Reading(source.len),
+                    SourcePreparation::Decoding,
+                    SourcePreparation::Building,
+                ]
+            );
+            assert_eq!(prepared.attach().unwrap().text().unwrap().as_bytes(), bytes);
+
+            stages.clear();
+            let stopped = PreparedFile::from_source_with_progress(
+                &source,
+                source.len,
+                &cancel,
+                None,
+                |stage| {
+                    stages.push(stage);
+                    if stage == SourcePreparation::Reading(chunk as u64) {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                },
+            );
+            assert!(stopped.is_err());
+            assert_eq!(
+                stages,
+                [
+                    SourcePreparation::Reading(0),
+                    SourcePreparation::Reading(chunk as u64)
+                ],
+            );
         });
     }
 
