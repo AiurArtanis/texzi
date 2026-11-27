@@ -16,6 +16,8 @@
 // UIA's constants (`UIA_NamePropertyId`, ...) are matched as patterns.
 #![allow(non_upper_case_globals)]
 
+mod recovery;
+
 use std::{mem::ManuallyDrop, rc::Rc};
 
 use nsh_core::{AccessibilityCurrent, Checked, Command, NodeId, Points, ROOT_ID, ViewKind};
@@ -25,7 +27,7 @@ use windows::{
         Graphics::Gdi::{ClientToScreen, ScreenToClient},
         System::{
             Com::SAFEARRAY,
-            Ole::{SafeArrayCreateVector, SafeArrayPutElement},
+            Ole::{SafeArrayCreateVector, SafeArrayDestroy, SafeArrayPutElement},
             Variant::{VARIANT, VT_BOOL, VT_BSTR, VT_I4, VT_R8, VariantClear},
         },
         UI::Accessibility::*,
@@ -34,7 +36,12 @@ use windows::{
 };
 
 use super::{Control, Exposed, Part, part, toggled};
-use crate::{geom::Mat4, surface::Surface, view::NshView};
+use crate::{
+    geom::Mat4,
+    surface::Surface,
+    system::{recovery_accessibility, recovery_blocks_background},
+    view::NshView,
+};
 
 // --- VARIANTs --------------------------------------------------------------
 
@@ -149,6 +156,9 @@ fn target(key: u64, id: NodeId) -> Result<Target> {
         .ok()
         .and_then(|m| m.views.get(id))
         .ok_or_else(not_available)?;
+    if recovery_blocks_background(&surface, window_of(&surface, &view)) {
+        return Err(not_available());
+    }
     match super::exposed(&view) {
         Ok(Some(e)) if e == view => Ok(Target { surface, view }),
         _ => Err(not_available()),
@@ -208,6 +218,26 @@ fn scale_in(surface: &Surface, window: NodeId, hwnd: HWND) -> f32 {
 
 fn runtime_id(id: NodeId) -> [i32; 2] {
     [UiaAppendRuntimeId as i32, id as i32]
+}
+
+fn runtime_array(id: &[i32]) -> Result<*mut SAFEARRAY> {
+    // SAFETY: a new VT_I4 array, filled here and owned by the caller.
+    unsafe {
+        let array = SafeArrayCreateVector(VT_I4, 0, id.len() as u32);
+        if array.is_null() {
+            return Err(Error::from_hresult(
+                windows::Win32::Foundation::E_OUTOFMEMORY,
+            ));
+        }
+        for (i, value) in id.iter().enumerate() {
+            let index = i as i32;
+            if let Err(error) = SafeArrayPutElement(array, &index, (value as *const i32).cast()) {
+                let _ = SafeArrayDestroy(array);
+                return Err(error);
+            }
+        }
+        Ok(array)
+    }
 }
 
 // --- Geometry --------------------------------------------------------------
@@ -300,21 +330,57 @@ pub(super) fn structure_changed(surface: &Rc<Surface>) {
     let mut windows = vec![ROOT_ID];
     windows.extend(crate::app_window::ids(surface));
     for window in windows {
-        let root: IRawElementProviderSimple = Root {
-            key: surface.key(),
-            window,
-        }
-        .into();
-        let mut id = runtime_id(window);
-        // SAFETY: the runtime id outlives the call.
-        let _ = unsafe {
-            UiaRaiseStructureChangedEvent(
-                &root,
-                StructureChangeType_ChildrenInvalidated,
-                id.as_mut_ptr(),
-                id.len() as i32,
-            )
+        structure_changed_in(surface, window);
+    }
+}
+
+fn structure_changed_in(surface: &Surface, window: NodeId) {
+    let root: IRawElementProviderSimple = Root {
+        key: surface.key(),
+        window,
+    }
+    .into();
+    let mut id = runtime_id(window);
+    // SAFETY: the runtime id outlives the call.
+    let _ = unsafe {
+        UiaRaiseStructureChangedEvent(
+            &root,
+            StructureChangeType_ChildrenInvalidated,
+            id.as_mut_ptr(),
+            id.len() as i32,
+        )
+    };
+}
+
+pub(super) fn recovery_changed(surface: &Surface, window_id: NodeId) {
+    if window(surface, window_id).is_some() {
+        structure_changed_in(surface, window_id);
+        recovery_focus_changed(surface, window_id);
+    }
+}
+
+pub(super) fn recovery_focus_changed(surface: &Surface, window_id: NodeId) {
+    let Some((_, hwnd)) = window(surface, window_id) else {
+        return;
+    };
+    if !recovery::owns_keyboard(hwnd) {
+        return;
+    }
+    let provider: Option<IRawElementProviderSimple> =
+        if let Some(dialog) = recovery_accessibility(surface, window_id) {
+            dialog.focus().map(|index| {
+                recovery::Node::new(surface.key(), window_id, dialog.serial(), Some(index)).into()
+            })
+        } else if recovery_blocks_background(surface, window_id) {
+            None
+        } else {
+            window_focused_view(surface, window_id)
+                .as_ref()
+                .map(|view| simple(surface.key(), Some(view)))
         };
+    if let Some(provider) = provider {
+        // SAFETY: plain call; all native modal state borrows have ended.
+        let _ = unsafe { UiaRaiseAutomationEvent(&provider, UIA_AutomationFocusChangedEventId) };
     }
 }
 
@@ -492,6 +558,9 @@ pub(super) fn notify(surface: &Rc<Surface>, view: Option<&NshView>, text: &str, 
 
 /// The focus moved to `view`.
 pub(super) fn focus_changed(surface: &Rc<Surface>, view: &NshView) {
+    if recovery_blocks_background(surface, window_of(surface, view)) {
+        return;
+    }
     let p = simple(surface.key(), Some(view));
     // SAFETY: plain call.
     let _ = unsafe { UiaRaiseAutomationEvent(&p, UIA_AutomationFocusChangedEventId) };
@@ -576,12 +645,18 @@ impl IRawElementProviderSimple_Impl for Root_Impl {
 
 impl IRawElementProviderFragment_Impl for Root_Impl {
     fn Navigate(&self, direction: NavigateDirection) -> Result<IRawElementProviderFragment> {
-        let (_, root, _) = self.window()?;
+        let (surface, root, _) = self.window()?;
         let pick = match direction {
             NavigateDirection_FirstChild => <[NshView]>::first,
             NavigateDirection_LastChild => <[NshView]>::last,
             _ => return none(),
         };
+        if let Some(dialog) = recovery_accessibility(&surface, self.window) {
+            return Ok(recovery::Node::new(self.key, self.window, dialog.serial(), None).into());
+        }
+        if recovery_blocks_background(&surface, self.window) {
+            return none();
+        }
         let kids = super::element_children(&root, true);
         match pick(&kids) {
             Some(v) => Ok(element(self.key, v)),
@@ -627,6 +702,19 @@ impl IRawElementProviderFragmentRoot_Impl for Root_Impl {
         let _ = unsafe { ScreenToClient(hwnd, &mut p) };
         let scale = scale_in(&surface, self.window, hwnd).max(0.01);
         let (px, py) = (p.x as f32 / scale, p.y as f32 / scale);
+        if let Some(dialog) = recovery_accessibility(&surface, self.window) {
+            return Ok(
+                match dialog.at_point(recovery::client_size(&root), px, py) {
+                    Some(button) => {
+                        recovery::Node::new(self.key, self.window, dialog.serial(), button).into()
+                    }
+                    None => self.this(),
+                },
+            );
+        }
+        if recovery_blocks_background(&surface, self.window) {
+            return Ok(self.this());
+        }
         let found =
             hit(&root, &Mat4::new(), px, py).and_then(|v| super::exposed(&v).ok().flatten());
         Ok(match found {
@@ -636,15 +724,33 @@ impl IRawElementProviderFragmentRoot_Impl for Root_Impl {
     }
 
     fn GetFocus(&self) -> Result<IRawElementProviderFragment> {
-        let (surface, _, _) = self.window()?;
-        // Each window keeps its own keyboard focus; a field's is shared.
-        let focused =
-            crate::keyboard::focused_in(&surface, self.window).or_else(|| super::focused(&surface));
-        match focused.filter(|v| window_of(&surface, v) == self.window) {
+        let (surface, _, hwnd) = self.window()?;
+        if let Some(dialog) = recovery_accessibility(&surface, self.window) {
+            return match dialog.focus().filter(|_| recovery::owns_keyboard(hwnd)) {
+                Some(button) => {
+                    Ok(
+                        recovery::Node::new(self.key, self.window, dialog.serial(), Some(button))
+                            .into(),
+                    )
+                }
+                None => none(),
+            };
+        }
+        if recovery_blocks_background(&surface, self.window) {
+            return none();
+        }
+        match window_focused_view(&surface, self.window) {
             Some(v) => Ok(element(self.key, &v)),
             None => none(),
         }
     }
+}
+
+fn window_focused_view(surface: &Surface, window: NodeId) -> Option<NshView> {
+    // Each window keeps its own keyboard focus; a field's is shared.
+    crate::keyboard::focused_in(surface, window)
+        .or_else(|| super::focused(surface))
+        .filter(|v| window_of(surface, v) == window)
 }
 
 // --- Elements --------------------------------------------------------------
@@ -930,22 +1036,7 @@ impl IRawElementProviderFragment_Impl for Element_Impl {
     }
 
     fn GetRuntimeId(&self) -> Result<*mut SAFEARRAY> {
-        let id = runtime_id(self.id);
-        // SAFETY: a new array of two VT_I4 elements, filled in place and
-        // handed over to the caller.
-        unsafe {
-            let array = SafeArrayCreateVector(VT_I4, 0, id.len() as u32);
-            if array.is_null() {
-                return Err(Error::from_hresult(
-                    windows::Win32::Foundation::E_OUTOFMEMORY,
-                ));
-            }
-            for (i, v) in id.iter().enumerate() {
-                let index = i as i32;
-                SafeArrayPutElement(array, &index, (v as *const i32).cast())?;
-            }
-            Ok(array)
-        }
+        runtime_array(&runtime_id(self.id))
     }
 
     fn BoundingRectangle(&self) -> Result<UiaRect> {

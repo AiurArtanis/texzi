@@ -949,6 +949,30 @@ impl UiThread {
     }
 }
 
+#[cfg(test)]
+impl UiThread {
+    /// Runs only the dispatcher calls queued for the calling test's UI thread.
+    pub(crate) fn dispatch_pending_calls(self) {
+        let hwnd = HWND(self.0 as *mut _);
+        let mut message = MSG::default();
+        // SAFETY: the dispatcher belongs to this thread, and the filter
+        // peeks only the work posted to it by UiThread::invoke.
+        unsafe {
+            while PeekMessageW(
+                &mut message,
+                Some(hwnd),
+                WM_NSH_CALL,
+                WM_NSH_CALL,
+                PM_REMOVE,
+            )
+            .as_bool()
+            {
+                DispatchMessageW(&message);
+            }
+        }
+    }
+}
+
 unsafe extern "system" fn dispatch_proc(
     hwnd: HWND,
     msg: u32,

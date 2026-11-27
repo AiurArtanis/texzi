@@ -1321,6 +1321,9 @@ fn add_overlay(surface: &Rc<Surface>, serial: u64, kind: OverlayKind) {
         kind.opacity().set(0.0);
         fade(surface, serial, 1.0, FADE_IN, false);
     }
+    if recovery_blocks_background(surface, dialog.window) {
+        crate::access::recovery_changed(surface, dialog.window);
+    }
 }
 
 /// Window `id` is closing: the dialogs it showed are dismissed (`-1`), so
@@ -1405,10 +1408,14 @@ fn drop_overlay(surface: &Surface, serial: u64) {
         let i = o.iter().position(|o| o.serial == serial)?;
         Some(o.remove(i))
     });
-    if let Some(overlay) = removed
-        && let Some(root) = overlay_root(surface, &overlay.kind)
-    {
-        root.remove_native(&overlay.kind.item());
+    if let Some(overlay) = removed {
+        if let Some(root) = overlay_root(surface, &overlay.kind) {
+            root.remove_native(&overlay.kind.item());
+        }
+        let OverlayKind::Dialog(dialog) = overlay.kind;
+        if dialog.recovered.is_some() || recovery_blocks_background(surface, dialog.window) {
+            crate::access::recovery_changed(surface, dialog.window);
+        }
     }
 }
 
@@ -1767,15 +1774,19 @@ struct RecoveredDraftStyle {
     frozen: FrozenModal,
     appearance: Cell<RecoveredAppearance>,
     body_offset: Cell<f32>,
+    title: Option<String>,
+    description: Option<String>,
 }
 
 impl RecoveredDraftStyle {
-    fn new(serial: u64, ready_to_capture: bool) -> Self {
+    fn new(serial: u64, ready_to_capture: bool, dialog: &Dialog) -> Self {
         let appearance = RecoveredAppearance::read();
         Self {
             frozen: FrozenModal::new(serial, appearance.capture && ready_to_capture),
             appearance: Cell::new(appearance),
             body_offset: Cell::new(0.0),
+            title: dialog.title.clone(),
+            description: dialog.message.clone(),
         }
     }
 }
@@ -2156,7 +2167,6 @@ struct DialogItem {
     /// Answered: fading out, no more input.
     closing: Cell<bool>,
     /// The buttons' texts, in order.
-    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     labels: Vec<String>,
 }
 
@@ -2356,9 +2366,19 @@ impl DialogItem {
             VK_ESCAPE => return self.escape(),
             _ => return,
         };
-        self.focus.set(step_focus(&order, self.focus.get(), step));
+        self.set_focus(step_focus(&order, self.focus.get(), step));
+    }
+
+    fn set_focus(&self, index: Option<usize>) {
+        let changed = self.focus.replace(index) != index;
         self.keyboard.set(true);
         self.invalidate();
+        if changed
+            && self.recovered.is_some()
+            && let Some(surface) = Surface::by_key(self.key)
+        {
+            crate::access::recovery_focus_changed(&surface, self.window);
+        }
     }
 }
 
@@ -2733,7 +2753,7 @@ fn show_dialog_item(
     let keyboard = recovery.is_some();
     let (recovered, reply) = match recovery {
         Some((request, sender, capture)) => (
-            Some(RecoveredDraftStyle::new(serial, capture)),
+            Some(RecoveredDraftStyle::new(serial, capture, dialog)),
             DialogReply::Recovered {
                 actions: request.actions.clone(),
                 sender: RefCell::new(Some(sender)),
@@ -2849,6 +2869,120 @@ pub(crate) fn recovery_wheel(surface: &Surface, event: &WheelEvent) -> bool {
     };
     dialog.scroll_body(event.dy);
     true
+}
+
+/// A recovery overlay shields its workbench through teardown, including
+/// when an ordinary prompt temporarily takes the top position.
+pub(crate) fn recovery_blocks_background(surface: &Surface, window: NodeId) -> bool {
+    dialog_in_window(surface, window, |d| d.recovered.is_some()).is_some()
+}
+
+/// The current, same-window recovery overlay. Closing keeps the background
+/// shielded until the overlay is actually removed.
+pub(crate) fn recovery_accessibility(
+    surface: &Surface,
+    window: NodeId,
+) -> Option<RecoveryAccessibility> {
+    let dialog = dialog_in_window(surface, window, DialogItem::takes_input)?;
+    dialog.recovered.as_ref()?;
+    Some(RecoveryAccessibility(dialog))
+}
+
+#[cfg(test)]
+pub(crate) fn show_recovery_for_access_test(
+    surface: &Rc<Surface>,
+    resume_save_as: bool,
+) -> (u64, oneshot::Receiver<RecoveredDraftChoice>) {
+    let options = nsh_base::alert_dialog()
+        .title("Recovered draft")
+        .description("A new file can keep this draft.")
+        .cancel("continue", "Keep editing")
+        .destructive("discard", "Discard")
+        .action("save-as", "Save As");
+    let request = RecoveredDraftRequest::new(options, resume_save_as).unwrap();
+    let (sender, reply) = oneshot::channel();
+    let serial = show_dialog_item(
+        surface,
+        ROOT_ID,
+        &request.dialog,
+        Some((&request, sender, false)),
+    )
+    .expect("recovery dialog");
+    (serial, reply)
+}
+
+/// An ephemeral view of the active card, backed by its actual drawing,
+/// focus and button handlers. UIA retains IDs and resolves this afresh.
+pub(crate) struct RecoveryAccessibility(Rc<DialogItem>);
+
+impl RecoveryAccessibility {
+    pub(crate) fn serial(&self) -> u64 {
+        self.0.serial
+    }
+
+    pub(crate) fn labels(&self) -> &[String] {
+        &self.0.labels
+    }
+
+    pub(crate) fn choice(&self, index: usize) -> Option<RecoveredDraftChoice> {
+        let DialogReply::Recovered { actions, .. } = &self.0.reply else {
+            return None;
+        };
+        actions.get(index).copied()
+    }
+
+    pub(crate) fn title(&self) -> Option<&str> {
+        self.0.recovered.as_ref()?.title.as_deref()
+    }
+
+    pub(crate) fn description(&self) -> Option<&str> {
+        self.0.recovered.as_ref()?.description.as_deref()
+    }
+
+    pub(crate) fn focus(&self) -> Option<usize> {
+        self.0.focus.get()
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        !self.0.closing.get()
+    }
+
+    pub(crate) fn bounds(&self, size: (f32, f32), button: Option<usize>) -> Option<Bounds<Points>> {
+        let layout = self.0.geometry(size);
+        match button {
+            Some(i) => layout.buttons.get(i).copied(),
+            None => layout.cards.first().copied(),
+        }
+    }
+
+    /// Whether the point hit the card, and which button (if any).
+    pub(crate) fn at_point(&self, size: (f32, f32), x: f32, y: f32) -> Option<Option<usize>> {
+        if x < 0.0 || y < 0.0 || x >= size.0 || y >= size.1 {
+            return None;
+        }
+        self.0.geometry(size);
+        match self.0.target(x, y) {
+            Target::Button(index) => Some(Some(index)),
+            Target::Card => Some(None),
+            Target::Outside => None,
+        }
+    }
+
+    pub(crate) fn focus_button(&self, index: usize) -> bool {
+        if !self.enabled() || index >= self.labels().len() {
+            return false;
+        }
+        self.0.set_focus(Some(index));
+        true
+    }
+
+    pub(crate) fn invoke(&self, index: usize) -> bool {
+        if !self.enabled() || index >= self.labels().len() {
+            return false;
+        }
+        self.0.answer(index as i32);
+        true
+    }
 }
 
 fn dialog_in_window(

@@ -827,6 +827,18 @@ pub(crate) fn focus(surface: &Rc<Surface>, view: &NshView) {
     }
 }
 
+pub(crate) fn recovery_changed(surface: &Surface, window: NodeId) {
+    if clients_listening() {
+        uia::recovery_changed(surface, window);
+    }
+}
+
+pub(crate) fn recovery_focus_changed(surface: &Surface, window: NodeId) {
+    if clients_listening() {
+        uia::recovery_focus_changed(surface, window);
+    }
+}
+
 /// The keyboard focus moved to `view` (a text field): tells assistive
 /// technologies. Called by the modules that move it.
 pub(crate) fn focus_changed(surface: &Rc<Surface>, view: &NshView) {
