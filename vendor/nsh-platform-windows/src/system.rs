@@ -1898,6 +1898,7 @@ enum Part {
 struct RecoveryParts {
     badge: bool,
     summary: bool,
+    caption_inset: f32,
 }
 
 /// Where a dialog's parts go (surface coordinates).
@@ -2018,7 +2019,13 @@ fn layout_alert(
     } else {
         n * BUTTON_HEIGHT + (n - 1.0) * BUTTON_GAP
     };
-    let window_height = (view.1 - 2.0 * GUTTER).max(0.0);
+    let vertical_space = (view.1 - 2.0 * GUTTER).max(0.0);
+    // Keep the actions visible even when a resized window cannot fit the
+    // caption and the footer together.
+    let caption_inset = details
+        .caption_inset
+        .clamp(0.0, (vertical_space - buttons_h).max(0.0));
+    let window_height = vertical_space - caption_inset;
     let footer_pad = if recovery {
         PAD.min(((window_height - buttons_h) / 4.0).max(0.0))
     } else {
@@ -2034,7 +2041,12 @@ fn layout_alert(
     let body_view_height = (body - 2.0 * body_pad).max(0.0);
     let height = body + footer_h;
     let x = ((view.0 - width) / 2.0).round();
-    let y = ((view.1 - height) / 2.0).round().max(0.0);
+    let min_y = if caption_inset > 0.0 {
+        caption_inset + GUTTER
+    } else {
+        0.0
+    };
+    let y = ((view.1 - height) / 2.0).round().max(min_y);
     let card = rect(x, y, width, height);
     let footer = rect(x, y + body, width, footer_h);
     let buttons = (0..buttons)
@@ -2257,6 +2269,7 @@ struct DialogTexts {
 /// scale changes.
 struct DialogLayout {
     size: (f32, f32),
+    caption_inset: f32,
     geometry: Geometry,
 }
 
@@ -2305,9 +2318,11 @@ impl DialogItem {
     }
 
     fn geometry(&self, size: (f32, f32)) -> Geometry {
+        let caption_inset = self.recovery_caption_inset();
         let mut layout = self.layout.borrow_mut();
         if let Some(l) = &*layout
             && l.size == size
+            && l.caption_inset == caption_inset
         {
             return l.geometry.clone();
         }
@@ -2340,6 +2355,7 @@ impl DialogItem {
                 self.recovered.as_ref().map(|_| RecoveryParts {
                     badge: t.badge.is_some(),
                     summary: t.summary.is_some(),
+                    caption_inset,
                 }),
                 &measure,
             )
@@ -2372,9 +2388,26 @@ impl DialogItem {
         }
         *layout = Some(DialogLayout {
             size,
+            caption_inset,
             geometry: geometry.clone(),
         });
         geometry
+    }
+
+    fn recovery_caption_inset(&self) -> f32 {
+        if self.recovered.is_none() {
+            return 0.0;
+        }
+        let Some(hwnd) = Surface::by_key(self.key)
+            .and_then(|surface| crate::app_window::hwnd_of(&surface, self.window))
+        else {
+            return 0.0;
+        };
+        crate::window::shell(hwnd)
+            .and_then(|shell| shell.title_bar.get())
+            .unwrap_or_else(|| crate::chrome::title_bar_area(hwnd))
+            .top
+            .0
     }
 
     fn target(&self, x: f32, y: f32) -> Target {
@@ -2804,7 +2837,12 @@ impl Hosted for DialogItem {
         }
     }
 
-    fn hit(&self, _x: f32, _y: f32, _size: (f32, f32)) -> bool {
+    fn hit(&self, _x: f32, _y: f32, size: (f32, f32)) -> bool {
+        // Use the same current bounds as drawing and accessibility when
+        // a resize or caption change arrives before the next frame.
+        if self.recovered.is_some() {
+            self.geometry(size);
+        }
         // Keep recovery input within this dialog until its overlay is removed.
         self.takes_input()
     }
@@ -3926,6 +3964,7 @@ mod tests {
             Some(RecoveryParts {
                 badge: true,
                 summary: true,
+                ..Default::default()
             }),
             &|part, width| match part {
                 Part::Badge => (100.0, 18.0),
@@ -3953,6 +3992,48 @@ mod tests {
                 .iter()
                 .all(|button| button.origin.y.0 >= bottom(body))
         );
+    }
+
+    #[test]
+    fn recovery_card_clears_the_caption_at_compact_and_normal_sizes() {
+        let measure = |part, width| match part {
+            Part::Badge => (100.0, 18.0),
+            Part::Title => (width, 42.0),
+            Part::Message => (width, 124.0),
+            Part::Summary => (width, 18.0),
+            Part::Button(_) => (88.0, 16.0),
+        };
+        let layout = |size, caption_inset| {
+            layout_alert(
+                size,
+                true,
+                true,
+                3,
+                Some(RecoveryParts {
+                    badge: true,
+                    summary: true,
+                    caption_inset,
+                }),
+                &measure,
+            )
+        };
+        let bottom = |r: Bounds<Points>| r.origin.y.0 + r.size.height.0;
+        let compact = layout((333.0, 331.0), 38.0);
+        let card = compact.cards[0];
+        assert_eq!(card.origin.y.0, 38.0 + metrics::GUTTER);
+        assert_eq!(bottom(card), 331.0 - metrics::GUTTER);
+        assert!(!compact.row);
+        assert_eq!(compact.buttons.len(), 3);
+        let body = compact
+            .body_viewport
+            .expect("scrollable explanation and summary");
+        assert!(body.size.height.0 > 0.0 && compact.body_travel() > 0.0);
+        assert!(
+            compact.buttons.iter().all(|button| {
+                button.origin.y.0 >= bottom(body) && bottom(*button) < bottom(card)
+            })
+        );
+        assert_eq!(layout((960.0, 843.0), 38.0), layout((960.0, 843.0), 0.0));
     }
 
     #[test]
