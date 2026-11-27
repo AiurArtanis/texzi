@@ -526,9 +526,7 @@ fn capture_backdrop(
         if !budget.reserve(width, height, [size.width, size.height]) {
             return None;
         }
-        let allowed = pressure.allows_glass();
-        budget.pressure_allowed = Some(allowed);
-        if !allowed {
+        if !budget.allows_glass(|| pressure.allows_glass()) {
             return None;
         }
     }

@@ -53,6 +53,10 @@ pub(crate) struct FrameBudget {
 }
 
 impl FrameBudget {
+    pub(crate) fn allows_glass(&mut self, sample: impl FnOnce() -> bool) -> bool {
+        *self.pressure_allowed.get_or_insert_with(sample)
+    }
+
     pub(crate) fn reserve(&mut self, width: u32, height: u32, target: [u32; 2]) -> bool {
         let pixels = u64::from(width) * u64::from(height);
         let remaining = FRAME_BYTES - self.bytes;
@@ -84,11 +88,7 @@ impl DevicePressure {
     }
 
     pub(crate) fn allows_glass(&self) -> bool {
-        self.sample
-            .current
-            .get()
-            .map(|(_, allowed)| allowed)
-            .unwrap_or_else(|| self.refresh(true).unwrap_or(false))
+        self.refresh(true).unwrap_or(false)
     }
 
     pub(crate) fn refresh(&self, interested: bool) -> Option<bool> {
@@ -180,6 +180,40 @@ mod tests {
         assert_eq!(
             pressure.refresh(false, recovered + Duration::from_secs(2), query),
             None
+        );
+        assert_eq!(queries.get(), 3);
+    }
+
+    #[test]
+    fn first_eligible_frame_after_idle_rechecks_the_old_allowance() {
+        let pressure = PressureSample::default();
+        let start = Instant::now();
+        let queries = Cell::new(0);
+        let query = || {
+            queries.set(queries.get() + 1);
+            queries.get() == 1
+        };
+        let mut opened = FrameBudget::default();
+        assert!(opened.allows_glass(|| pressure.refresh(true, start, query).unwrap()));
+        let reopened = start + Duration::from_secs(30);
+        assert_eq!(pressure.refresh(false, reopened, query), None);
+        assert_eq!(queries.get(), 1);
+
+        // The first eligible draw after reopening must observe the new denial.
+        let mut reopened_frame = FrameBudget::default();
+        assert!(!reopened_frame.allows_glass(|| pressure.refresh(true, reopened, query).unwrap()));
+        assert!(!reopened_frame.allows_glass(|| panic!("the second card reuses this frame")));
+        // The periodic check and draws on the same device share the interval.
+        for millis in [0, 16, 999] {
+            assert_eq!(
+                pressure.refresh(true, reopened + Duration::from_millis(millis), query),
+                Some(false)
+            );
+        }
+        assert_eq!(queries.get(), 2);
+        assert_eq!(
+            pressure.refresh(true, reopened + Duration::from_secs(1), query),
+            Some(false)
         );
         assert_eq!(queries.get(), 3);
     }
