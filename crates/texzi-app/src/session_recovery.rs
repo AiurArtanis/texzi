@@ -736,7 +736,7 @@ pub(super) fn saved(shell: &Rc<Shell>, doc: &Document) {
     }
 }
 
-pub(super) fn remove_discarded(shell: &Shell, id: u64) -> io::Result<()> {
+pub(super) fn remove_closed_tab(shell: &Shell, id: u64) -> io::Result<()> {
     let Some(session) = shell.session.borrow().clone() else {
         return Ok(());
     };
@@ -989,6 +989,10 @@ pub(super) fn apply_scroll(doc: &Document, rich: bool) {
 }
 
 #[cfg(test)]
+#[path = "recovery_save_copy_tests.rs"]
+mod save_copy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use nsh_core::{ApproxTextEngine, Core, Size, element::Root};
@@ -997,7 +1001,7 @@ mod tests {
         static RECOVERY_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     }
 
-    fn recovery_tab(path: &Path, bytes: &[u8]) -> Tab {
+    pub(super) fn recovery_tab(path: &Path, bytes: &[u8]) -> Tab {
         Tab {
             id: 4,
             path: Some(LocalPath::from_path(path)),
@@ -1022,7 +1026,7 @@ mod tests {
         }
     }
 
-    fn record(tab: Tab) -> WindowRecord {
+    pub(super) fn record(tab: Tab) -> WindowRecord {
         WindowRecord {
             version: 1,
             folder: None,
@@ -1139,12 +1143,12 @@ mod tests {
         recovery.writing.set(true);
         let obstructed = disk.path.with_extension("tmp");
         fs::create_dir(&obstructed).unwrap();
-        assert!(remove_discarded(&restored, 4).is_err());
+        assert!(remove_closed_tab(&restored, 4).is_err());
         assert!(!recovery.writing.get());
         assert!(tab.source.is_dirty().unwrap());
         assert_eq!(disk.read().unwrap().tabs.len(), 1);
         fs::remove_dir(&obstructed).unwrap();
-        remove_discarded(&restored, 4).unwrap();
+        remove_closed_tab(&restored, 4).unwrap();
         assert!(disk.read().unwrap().tabs.is_empty());
         disk.update(1, || Ok(Some(record(initial)))).unwrap();
         assert!(
@@ -1333,7 +1337,7 @@ mod tests {
         assert_eq!(shell.current().unwrap().id, original.id);
         assert_eq!(session.retained.borrow().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), b"published");
-        remove_discarded(&shell, original.id).unwrap();
+        remove_closed_tab(&shell, original.id).unwrap();
         let remaining = disk.read().unwrap().tabs;
         assert_eq!(remaining.len(), 1);
         assert!(remaining[0].draft.as_ref() == Some(&draft));

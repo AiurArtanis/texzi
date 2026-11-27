@@ -1,4 +1,5 @@
 //! Application shell. Native menus and the palette share command identities.
+mod draft_close;
 mod large_file;
 mod splitter;
 use crate::editor_owner::SaveError;
@@ -77,6 +78,27 @@ fn display_path(path: &Path) -> String {
     } else {
         value.strip_prefix(r"\\?\").unwrap_or(&value).to_owned()
     }
+}
+
+fn save_path_dialog(original: Option<&Path>, save_as: bool) -> SaveDialog {
+    let mut dialog = SaveDialog::new().title(if save_as || original.is_some() {
+        "另存为新文件"
+    } else {
+        "保存新文件"
+    });
+    if let Some(path) = original {
+        if let Some(parent) = path.parent() {
+            dialog = dialog.directory(parent);
+        }
+        if let Some(stem) = path.file_stem() {
+            let extension = path
+                .extension()
+                .map(|ext| format!(".{}", ext.to_string_lossy()))
+                .unwrap_or_default();
+            dialog = dialog.file_name(format!("{}-副本{extension}", stem.to_string_lossy()));
+        }
+    }
+    dialog
 }
 
 struct Document {
@@ -354,6 +376,7 @@ struct Shell {
     chord_generation: Cell<u64>,
     source_ref: Cell<Option<ComponentRef<Editor>>>,
     modal: Rc<Cell<bool>>,
+    draft_close_focus_epoch: Cell<u64>,
     auto_saving: Signal<Option<u64>>,
     split: Signal<Option<Rc<Document>>>,
     split_down: Signal<bool>,
@@ -607,6 +630,7 @@ impl Shell {
             chord_generation: Cell::new(0),
             source_ref: Cell::new(None),
             modal: Rc::new(Cell::new(false)),
+            draft_close_focus_epoch: Cell::new(0),
             auto_saving: signal(None),
             split: signal(None),
             split_down: signal(false),
@@ -649,6 +673,7 @@ impl Shell {
             );
         effect(move || set_color_scheme(theme.get()));
         auto_save::install(&s);
+        s.watch_draft_close_focus();
         // Notify observers must precede actual Shell bindings: NSH chooses
         // one newest match, so later registration could shadow a real command.
         let reset = s.zen_exit.clone();
@@ -1284,24 +1309,7 @@ impl Shell {
             let mut destination = original.clone();
             loop {
                 if choose_path {
-                    let mut dialog = SaveDialog::new().title(if save_as || original.is_some() {
-                        "另存为新文件"
-                    } else {
-                        "保存新文件"
-                    });
-                    if let Some(path) = &original {
-                        if let Some(parent) = path.parent() {
-                            dialog = dialog.directory(parent);
-                        }
-                        if let Some(stem) = path.file_stem() {
-                            let extension = path
-                                .extension()
-                                .map(|ext| format!(".{}", ext.to_string_lossy()))
-                                .unwrap_or_default();
-                            dialog = dialog
-                                .file_name(format!("{}-副本{extension}", stem.to_string_lossy()));
-                        }
-                    }
+                    let dialog = save_path_dialog(original.as_deref(), save_as);
                     destination = self.owner.run(|| pick_save_path(dialog)).await?;
                     if destination.is_none() {
                         self.show_cancelled_save(saved);
@@ -1324,19 +1332,7 @@ impl Shell {
                         break;
                     }
                     Err(SaveError::Encoding) => {
-                        let answer = self
-                            .owner
-                            .run(|| {
-                                nsh_base::alert_dialog()
-                                    .title("当前编码无法保存部分字符")
-                                    .action("utf8", "改存 UTF-8")
-                                    .cancel("cancel", "取消")
-                                    .close_on_escape(true)
-                                    .show()
-                            })
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        if answer.action.as_deref() != Some("utf8") {
+                        if !self.confirm_save_as_utf8().await? {
                             self.show_cancelled_save(saved);
                             return Ok(());
                         }
@@ -1370,6 +1366,20 @@ impl Shell {
             }
         }
         Ok(())
+    }
+    async fn confirm_save_as_utf8(&self) -> Result<bool, String> {
+        let answer = self
+            .owner
+            .run(|| {
+                nsh_base::alert_dialog()
+                    .title("当前编码无法保存部分字符")
+                    .action("utf8", "改存 UTF-8")
+                    .cancel("cancel", "取消")
+                    .close_on_escape(true)
+                    .show()
+            })
+            .await?;
+        Ok(answer.action.as_deref() == Some("utf8"))
     }
     fn show_cancelled_save(self: &Rc<Self>, saved: usize) {
         self.restore_editor_focus();
@@ -1469,6 +1479,10 @@ impl Shell {
             return;
         }
         if doc.needs_close_confirmation() {
+            if doc.large.is_some() || doc.source.is_recovered_draft() {
+                self.confirm_recovered_close(doc);
+                return;
+            }
             let s = self.clone();
             await_shell_modal(
                 &self.owner,
@@ -1487,7 +1501,7 @@ impl Shell {
                 },
                 move |result| {
                     if result.is_ok_and(|r| r.action.as_deref() == Some("discard")) {
-                        match session_recovery::remove_discarded(&s, id) {
+                        match session_recovery::remove_closed_tab(&s, id) {
                             Ok(()) => s.remove(id),
                             Err(error) => s.explain("无法更新恢复记录", &error.to_string()),
                         }
@@ -1501,6 +1515,9 @@ impl Shell {
         }
     }
     fn remove(&self, id: u64) {
+        self.remove_with_reopen(id, None);
+    }
+    fn remove_with_reopen(&self, id: u64, reopen: Option<ClosedTab>) {
         if self
             .recovery_split
             .borrow()
@@ -1519,14 +1536,16 @@ impl Shell {
                 if let Some(large) = &doc.large {
                     large.close();
                 }
-                let reopen = if doc.large.is_some()
-                    || (doc.source.disk_len() >= LARGE_BYTES
-                        && !doc.source.is_dirty().unwrap_or(true))
-                {
-                    doc.path.get().map(ClosedTab::File)
-                } else {
-                    None
-                };
+                let reopen = reopen.or_else(|| {
+                    if doc.large.is_some()
+                        || (doc.source.disk_len() >= LARGE_BYTES
+                            && !doc.source.is_dirty().unwrap_or(true))
+                    {
+                        doc.path.get().map(ClosedTab::File)
+                    } else {
+                        None
+                    }
+                });
                 self.closed
                     .borrow_mut()
                     .push(reopen.unwrap_or(ClosedTab::Document(doc)));

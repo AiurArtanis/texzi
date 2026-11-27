@@ -11,6 +11,7 @@ use std::{
 pub(super) struct FileState {
     format: Format,
     disk: Option<DiskContents>,
+    recovered: bool,
     pub(super) keep_dirty_revision: Option<doc::Revision>,
     #[cfg(test)]
     before_publish: Option<BeforePublish>,
@@ -34,6 +35,7 @@ impl Default for FileState {
         Self {
             format: UTF8,
             disk: None,
+            recovered: false,
             keep_dirty_revision: None,
             #[cfg(test)]
             before_publish: None,
@@ -182,6 +184,7 @@ impl PreparedFile {
             files: FileState {
                 format,
                 disk,
+                recovered: true,
                 ..FileState::default()
             },
         })
@@ -280,6 +283,10 @@ impl PreparedFile {
 }
 
 impl NativeView {
+    pub(crate) fn is_recovered_draft(&self) -> bool {
+        self.owner.files.borrow().recovered
+    }
+
     pub(crate) fn file_status(&self) -> Option<(&'static str, &'static str)> {
         self.track();
         let encoding = match self.owner.files.borrow().format {
@@ -341,6 +348,63 @@ impl NativeView {
                 .map_err(save_state_error)?;
             store.snapshot(id).map_err(save_state_error)?
         };
+        let (format, bytes) = self
+            .write_snapshot(&snapshot, path, replace, use_utf8)
+            .await?;
+        let current = {
+            let mut store = self.owner.store.borrow_mut();
+            let current = store.snapshot(snapshot.doc).map_err(save_state_error)?;
+            store
+                .record_disk_save(&snapshot)
+                .map_err(save_state_error)?;
+            current
+        };
+        {
+            let mut files = self.owner.files.borrow_mut();
+            files.format = format;
+            if current.revision == snapshot.revision {
+                files.recovered = false;
+            }
+            // Keep the dirty marker if an edit and undo arrived during this write.
+            files.keep_dirty_revision =
+                (current.revision != snapshot.revision).then_some(current.revision);
+            files.disk = Some(DiskContents {
+                bytes,
+                token: Some(snapshot.token),
+            });
+        }
+        self.notify();
+        Ok(())
+    }
+
+    pub(crate) async fn write_draft_copy(
+        &self,
+        path: PathBuf,
+        revision: u64,
+        use_utf8: bool,
+    ) -> Result<Option<u64>, SaveError> {
+        let snapshot = {
+            let store = self.owner.store.borrow();
+            let id = store.view(self.view).map_err(save_state_error)?.doc;
+            store.snapshot(id).map_err(save_state_error)?
+        };
+        if snapshot.revision.0 != revision {
+            return Ok(None);
+        }
+        // A detached copy must leave the draft's live save token and original binding
+        // intact until its recovery record can be updated and the tab can close.
+        self.write_snapshot(&snapshot, path, false, use_utf8)
+            .await?;
+        Ok(Some(snapshot.revision.0))
+    }
+
+    async fn write_snapshot(
+        &self,
+        snapshot: &doc::Snapshot,
+        path: PathBuf,
+        replace: bool,
+        use_utf8: bool,
+    ) -> Result<(Format, Arc<[u8]>), SaveError> {
         let (format, original, unchanged) = {
             let files = self.owner.files.borrow();
             let format = if use_utf8 { UTF8 } else { files.format };
@@ -394,28 +458,7 @@ impl NativeView {
         })
         .await
         .map_err(|error| SaveError::Other(error.to_string()))??;
-
-        let current = {
-            let mut store = self.owner.store.borrow_mut();
-            let current = store.snapshot(snapshot.doc).map_err(save_state_error)?;
-            store
-                .record_disk_save(&snapshot)
-                .map_err(save_state_error)?;
-            current
-        };
-        {
-            let mut files = self.owner.files.borrow_mut();
-            files.format = format;
-            // Keep the dirty marker if an edit and undo arrived during this write.
-            files.keep_dirty_revision =
-                (current.revision != snapshot.revision).then_some(current.revision);
-            files.disk = Some(DiskContents {
-                bytes,
-                token: Some(snapshot.token),
-            });
-        }
-        self.notify();
-        Ok(())
+        Ok((format, bytes))
     }
 }
 
