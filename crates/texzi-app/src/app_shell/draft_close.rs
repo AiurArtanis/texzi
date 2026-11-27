@@ -45,19 +45,33 @@ impl RecoveredClose {
                 .destructive("discard", "放弃并关闭")
                 .close_on_escape(true);
         }
-        let description = "恢复草稿 · 尚未另存为文件\n此标签来自上次会话的恢复记录。你可以继续编辑、另存为文件，或放弃这份草稿。";
-        let summary = draft_summary(&self.draft);
         nsh_base::alert_dialog()
             .title(title)
-            .description(format!("{description}\n\n{summary}"))
+            .description(
+                "此标签来自上次会话的恢复记录。你可以继续编辑、另存为文件，或放弃这份草稿。",
+            )
             .action("save-as", "另存为…")
             .destructive("discard", "放弃并关闭")
             // Windows focuses the last regular action. Enter must continue editing.
             .action("continue", "继续编辑")
             .close_on_escape(true)
     }
+
+    #[cfg(not(test))]
+    fn dialog_details(&self) -> nsh_platform_windows::RecoveredDraftDetails {
+        let editable = self.revision.is_some();
+        nsh_platform_windows::RecoveredDraftDetails {
+            badge: Some(if editable {
+                "恢复草稿 · 尚未另存为文件".into()
+            } else {
+                "恢复草稿 · 只读预览".into()
+            }),
+            summary: editable.then(|| draft_summary(&self.draft)),
+        }
+    }
 }
 
+#[cfg(not(test))]
 fn draft_summary(draft: &Document) -> String {
     let Some(body) = draft.source.current_body() else {
         return String::new();
@@ -181,10 +195,11 @@ impl Shell {
         {
             self.owner
                 .run(|| {
-                    nsh_platform_windows::show_recovered_draft_dialog(
+                    nsh_platform_windows::show_recovered_draft_dialog_with_details(
                         &self.draft_dialog_host,
                         pending.dialog(),
                         resume_save_as,
+                        pending.dialog_details(),
                     )
                 })
                 .await
