@@ -179,6 +179,67 @@ fn document_navigation_leaves_settings_without_mutating_retained_editors() {
 }
 
 #[test]
+fn compact_title_keeps_the_quick_search_input_below_the_system_controls() {
+    use nsh_core::{
+        desktop::{WindowMode, WindowPlacement, WindowState},
+        geometry::{Bounds, point},
+    };
+    let size = Size {
+        width: px(321.0),
+        height: px(600.0),
+    };
+    let bounds = Bounds {
+        origin: point(px(0.0), px(0.0)),
+        size,
+    };
+    let mut window = WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+    window.focused = true;
+    window.visible = true;
+    let mut environment = Environment::default();
+    environment.os = Os::Windows;
+    environment.window = size;
+    environment.title_bar.top = px(38.0);
+    environment.title_bar.right = px(138.0);
+    environment.window_state = Some(window);
+    let mut core = Core::new(ApproxTextEngine, size);
+    core.set_environment(environment);
+    core.mount_root(&Root::new::<SavePickerFixture>(|| ()));
+    let search_nodes = |core: &mut Core<ApproxTextEngine>| {
+        let mut nodes = Vec::new();
+        for _ in 0..5 {
+            core.run_component_tasks();
+            if let Some(batch) = core.commit() {
+                for item in batch.items {
+                    if let MountItem::ViewProps { id, props } = item
+                        && props.accessibility.label.as_deref() == Some("搜索文件或命令")
+                        && !nodes.contains(&id)
+                    {
+                        nodes.push(id);
+                    }
+                }
+            }
+        }
+        nodes
+    };
+    let nodes = search_nodes(&mut core);
+    assert_eq!(nodes.len(), 1);
+    let trigger = nodes[0];
+    let button = core.measure(trigger).unwrap();
+    assert_eq!(button.frame.size.width, px(32.0));
+    assert!(button.page.x.0 + button.frame.size.width.0 < 321.0 - 138.0);
+    assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
+    let nodes = search_nodes(&mut core);
+    let input = nodes
+        .into_iter()
+        .filter_map(|id| core.measure(id))
+        .find(|measure| measure.page.y.0 >= 38.0)
+        .expect("quick input below the title");
+    assert!(input.frame.size.width.0 > 280.0);
+    assert!(input.page.x.0 >= 8.0);
+    assert!(input.page.x.0 + input.frame.size.width.0 <= 321.0 - 8.0);
+}
+
+#[test]
 fn activity_settings_opens_one_closable_tab_at_the_bottom() {
     let mut core = Core::new(
         ApproxTextEngine,

@@ -3647,6 +3647,16 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                     .justify_center()
                     .child(view().w(px(460.0)).max_w(relative(1.0)).child(palette))
                     .into_element()
+            } else if quick.compact_menu() {
+                view()
+                    .absolute()
+                    .top(px(metric("title") + 4.0))
+                    .left(px(metric("edgeGap")))
+                    .right(px(metric("edgeGap")))
+                    .z_index(3)
+                    .window_drag(false)
+                    .child(palette)
+                    .into_element()
             } else {
                 view()
                     .absolute()
@@ -3659,6 +3669,17 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                     .into_element()
             })
         }))
+}
+
+const LARGE_SOURCE_NO_HIGHLIGHT: &str = "大文件 · 无高亮";
+const LARGE_SOURCE_NO_WRAP: &str = "已暂停自动换行";
+
+fn source_protection(doc: &Document) -> (bool, bool) {
+    doc.source.track();
+    (
+        doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES,
+        doc.source_wrap_limited(),
+    )
 }
 
 fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
@@ -3703,6 +3724,29 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
         } else {
             message
         };
+        if document.compact_menu()
+            && let Some(doc) = current
+                .as_ref()
+                .filter(|doc| doc.large.is_none() && !doc.displayed_rich())
+        {
+            let hints = match source_protection(doc) {
+                (true, true) => Some(format!(
+                    "{LARGE_SOURCE_NO_HIGHLIGHT} · {LARGE_SOURCE_NO_WRAP}"
+                )),
+                (true, false) => Some(LARGE_SOURCE_NO_HIGHLIGHT.to_owned()),
+                (false, true) => Some(LARGE_SOURCE_NO_WRAP.to_owned()),
+                (false, false) => None,
+            };
+            if let Some(hints) = hints {
+                return if important(&message) {
+                    (format!("{message} · {hints}"), tone)
+                } else if dirty {
+                    (format!("未保存 · {hints}"), "warning-fg")
+                } else {
+                    (hints, "warning-fg")
+                };
+            }
+        }
         (message, tone)
     });
     view()
@@ -3760,11 +3804,14 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 let activate = shell.clone();
                 let label_shell = shell.clone();
                 let label_doc = doc.clone();
-                if !compact && doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES {
-                    fields = fields.child(text("大文件 · 无高亮").number_of_lines(1));
-                }
-                if !compact && doc.source_wrap_limited() {
-                    fields = fields.child(text("已暂停自动换行").number_of_lines(1));
+                if !compact {
+                    let (highlighting, wrapping) = source_protection(&doc);
+                    if highlighting {
+                        fields = fields.child(text(LARGE_SOURCE_NO_HIGHLIGHT).number_of_lines(1));
+                    }
+                    if wrapping {
+                        fields = fields.child(text(LARGE_SOURCE_NO_WRAP).number_of_lines(1));
+                    }
                 }
                 fields = fields.child(
                     nsh_base::button()
