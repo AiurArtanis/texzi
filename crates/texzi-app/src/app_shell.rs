@@ -2757,6 +2757,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let root = s.root;
     let status_doc = doc.clone();
     let mode_doc = doc.clone();
+    let zen = s.zen;
     let format_doc = doc.clone();
     let format_shell = s.clone();
     let markdown = move || path.with(|value| value.as_deref().is_some_and(is_markdown));
@@ -3051,12 +3052,14 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
             format_button(format_shell.clone(), format_doc.clone(), second)
         }))
         .child(when(
+            move || !zen.get() && can_show_mode_button(&mode_doc),
             move || {
-                mode_doc.is_markdown()
-                    || mode_doc.displayed_rich()
-                    || mode_doc.pending_mode.get().is_some()
+                mode_button(s.clone(), doc.clone(), second)
+                    .absolute()
+                    .top(px(12.0))
+                    .right(px(16.0))
+                    .z_index(1)
             },
-            move || mode_button(s.clone(), doc.clone(), second),
         ))
 }
 
@@ -3076,19 +3079,23 @@ fn restore_editor_scroll(doc: Rc<Document>, rich: bool) {
     });
 }
 
-fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
+fn can_show_mode_button(doc: &Document) -> bool {
+    doc.editable_body_ready()
+        && (doc.is_markdown() || doc.displayed_rich() || doc.pending_mode.get().is_some())
+}
+
+fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> View {
     let selected = doc.clone();
     let name = doc.clone();
     let disabled = doc.clone();
     let backdrop = doc.clone();
     let material = shell.clone();
     view()
-        .absolute()
+        .test_id("texzi.editor.mode-toggle")
+        .relative()
         .w(px(metric("modeWidth")))
         .h(px(metric("modeHeight")))
-        .top(px(12.0))
-        .right(px(16.0))
-        .z_index(1)
+        .flex_shrink_0()
         .child(local_glass_surface_when(px(6.0), move || {
             material.mode_glass_allowed()
         }))

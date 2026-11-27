@@ -91,6 +91,7 @@ pub(super) fn footer(shell: Rc<Shell>) -> impl IntoElement {
         pending.set(Some((target, queue.submit(input))));
     });
     let results = jobs.clone();
+    let mode_shell = shell.clone();
     effect(move || {
         if let Some((target, generation)) = pending.get() {
             let results = results.clone();
@@ -109,7 +110,10 @@ pub(super) fn footer(shell: Rc<Shell>) -> impl IntoElement {
     cleanup(move || jobs.cancel());
     view()
         .w_full()
-        .items_end()
+        .flex_row()
+        .items_center()
+        .justify_end()
+        .gap(px(6.0))
         .bg(|| color("paper"))
         .pr(px(12.0))
         .py(px(2.0))
@@ -120,8 +124,15 @@ pub(super) fn footer(shell: Rc<Shell>) -> impl IntoElement {
                 .role(AccessibilityRole::Text)
                 .focusable(true)
                 .tabular_nums()
+                .min_w(px(0.0))
                 .text_size(px(font_size("meta")))
                 .text_color(|| color("muted-readable"))
                 .app_class("focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring")
+        }))
+        .child(dynamic(move || {
+            let doc = mode_shell.current()?;
+            can_show_mode_button(&doc).then(|| {
+                mode_button(mode_shell.clone(), doc, mode_shell.second_active.get()).into_element()
+            })
         }))
 }

@@ -579,7 +579,11 @@ fn spotlight_and_find_have_material_priority_over_both_mounted_mode_buttons() {
 #[component]
 fn ZenReadingColumnFixture() -> impl IntoElement {
     let shell = super::Shell::new();
-    shell.add_with_mode(NativeView::fixture("阅读列测试"), None, Some(false));
+    shell.add_with_mode(
+        NativeView::fixture(""),
+        Some("zen-column.md".into()),
+        Some(false),
+    );
     let toggle = shell.clone();
     let escape = shell.clone();
     view()
@@ -619,50 +623,69 @@ fn zen_measured_column_reuses_the_editor_and_fits_a_narrow_window() {
         let mut core = Core::new(ApproxTextEngine, size);
         core.set_environment(environment);
         core.mount_root(&Root::new::<ZenReadingColumnFixture>(|| ()));
-        let mut trigger = None;
-        let mut escape = None;
-        let mut column = None;
-        for _ in 0..4 {
-            core.run_component_tasks();
-            if let Some(batch) = core.commit() {
-                for item in batch.items {
-                    if let MountItem::ViewProps { id, props } = item {
-                        match props.test_id.as_deref() {
-                            Some("test.toggle-zen") => trigger = Some(id),
-                            Some("test.zen-escape") => escape = Some(id),
-                            Some("texzi.editor.reading-column") => column = Some(id),
+        let trigger = Cell::new(None);
+        let escape = Cell::new(None);
+        let column = Cell::new(None);
+        let pump = |core: &mut Core<ApproxTextEngine>, modes: &mut Vec<NodeId>| {
+            let mut count = None;
+            let mut hint = None;
+            for _ in 0..4 {
+                core.run_component_tasks();
+                if let Some(batch) = core.commit() {
+                    for item in batch.items {
+                        match item {
+                            MountItem::ViewProps { id, props } => match props.test_id.as_deref() {
+                                Some("test.toggle-zen") => trigger.set(Some(id)),
+                                Some("test.zen-escape") => escape.set(Some(id)),
+                                Some("texzi.editor.reading-column") => column.set(Some(id)),
+                                Some("texzi.editor.mode-toggle") if !modes.contains(&id) => {
+                                    modes.push(id);
+                                }
+                                _ => {}
+                            },
+                            MountItem::Text { id, text, .. } if text.visible_text() == "0 字" => {
+                                count = Some(id);
+                            }
+                            MountItem::Text { id, text, .. }
+                                if text.visible_text() == "再按一次 Esc 退出 Zen" =>
+                            {
+                                hint = Some(id);
+                            }
                             _ => {}
                         }
                     }
                 }
             }
-        }
-        let trigger = trigger.unwrap();
-        let column = column.unwrap();
-        let before = core.measure(column).unwrap().frame.size.width.0;
-        let toggle = |core: &mut Core<ApproxTextEngine>| {
-            assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
-            for _ in 0..4 {
-                core.run_component_tasks();
-                core.commit();
-            }
+            modes.retain(|id| core.measure(*id).is_some());
+            (count, hint)
         };
-        let escape = escape.unwrap();
-        toggle(&mut core);
+        let mut modes = Vec::new();
+        let (count, _) = pump(&mut core, &mut modes);
+        assert!(count.is_none());
+        let (trigger, escape, column) = (
+            trigger.get().unwrap(),
+            escape.get().unwrap(),
+            column.get().unwrap(),
+        );
+        assert_eq!(modes.len(), 1);
+        let normal = core.measure(modes[0]).unwrap();
+        let before = core.measure(column).unwrap().frame.size.width.0;
+        assert!(core.component_event(trigger, EventKind::Press, &EventPayload::None));
+        let (count, _) = pump(&mut core, &mut modes);
+        assert_eq!(modes.len(), 1);
+        let footer_mode = core.measure(modes[0]).unwrap();
+        let count = core.measure(count.unwrap()).unwrap();
+        assert!(footer_mode.page.y.0 > 550.0);
+        assert!(count.page.x + count.frame.size.width <= footer_mode.page.x);
+        assert!(footer_mode.page.x.0 + footer_mode.frame.size.width.0 <= width);
+        assert!(count.page.y >= footer_mode.page.y);
+        assert!(
+            count.page.y + count.frame.size.height
+                <= footer_mode.page.y + footer_mode.frame.size.height
+        );
+
         assert!(core.component_event(escape, EventKind::Press, &EventPayload::None));
-        let mut hint = None;
-        for _ in 0..4 {
-            core.run_component_tasks();
-            if let Some(batch) = core.commit() {
-                for item in batch.items {
-                    if let MountItem::Text { id, text, .. } = item
-                        && text.visible_text() == "再按一次 Esc 退出 Zen"
-                    {
-                        hint = Some(id);
-                    }
-                }
-            }
-        }
+        let (_, hint) = pump(&mut core, &mut modes);
         let hint = core.measure(hint.unwrap()).unwrap();
         let hint_center = hint.page.x.0 + hint.frame.size.width.0 / 2.0;
         assert!((hint_center - width / 2.0).abs() < 3.0);
@@ -676,10 +699,9 @@ fn zen_measured_column_reuses_the_editor_and_fits_a_narrow_window() {
             assert!(reading.frame.size.width.0 > width - 24.0);
         }
         assert!(core.component_event(escape, EventKind::Press, &EventPayload::None));
-        for _ in 0..4 {
-            core.run_component_tasks();
-            core.commit();
-        }
+        pump(&mut core, &mut modes);
+        assert_eq!(modes.len(), 1);
+        assert_eq!(core.measure(modes[0]).unwrap().page, normal.page);
         assert_eq!(core.measure(column).unwrap().frame.size.width.0, before);
     }
 }
