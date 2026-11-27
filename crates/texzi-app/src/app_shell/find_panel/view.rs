@@ -456,13 +456,13 @@ fn outline_color(current: bool, dark: bool) -> Hsla {
     };
     rgb(rgb_code).into()
 }
-pub(super) fn note_present(s: &Shell, doc: &Document) {
+pub(super) fn note_present(s: &Shell, doc: &Rc<Document>) {
     let st = &s.find_panel;
     let Some(start) = st.started.get() else {
         return;
     };
     let request = st.generation.get();
-    if st.frame_probe.get() == Some(request) {
+    if st.frame_probe.get() == Some(request) || !active(s, doc) {
         return;
     }
     let view = st.viewport.borrow();
@@ -475,16 +475,17 @@ pub(super) fn note_present(s: &Shell, doc: &Document) {
     st.frame_probe.set(Some(request));
     st.metric("visible_marks_ready", 1);
     let flag = st.cancel.borrow().clone();
-    let body = doc.body;
-    // This optional probe reports an upper bound from the real window's
-    // successful Present counter. No text, path or search term enters the log.
+    let field = st.query_input;
+    let probe_start = std::time::Instant::now();
+    // This mounted input belongs to the same visible AppWindow as the marks.
+    // The composite editor may have no native node of its own.
     s.owner.run(|| {
         spawn(async move {
-            let presented = wait_for_editor_frame(body).await;
+            let presented = wait_for_editor_frame(field).await;
             if presented && flag.is_some_and(|c| !c.load(Ordering::Acquire)) {
                 log::info!(
-                    "TEXZI_FIND event=first_presentation_upper request={request} elapsed_us={}",
-                    start.elapsed().as_micros()
+                    "TEXZI_FIND event=first_presentation_upper request={request} elapsed_us={} probe_us={}",
+                    start.elapsed().as_micros(), probe_start.elapsed().as_micros()
                 );
             }
         })
