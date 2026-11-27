@@ -790,12 +790,16 @@ impl Store {
         }
         let d = &self.docs[&r.doc];
         let entry = if r.redo { d.redo.last() } else { d.undo.back() };
-        let entry = entry.filter(|e| e.group == r.group).ok_or(Error::StaleRevision)?;
+        let entry = entry
+            .filter(|e| e.group == r.group)
+            .ok_or(Error::StaleRevision)?;
         let target = if r.redo { &entry.after } else { &entry.before };
         // View, revision, and group counters are local to their Store. Only
         // the job's exact still-live root can consume its off-thread result.
         if d.current.revision != r.revision
-            || target.resident().is_none_or(|root| !Arc::ptr_eq(&root, &pin))
+            || target
+                .resident()
+                .is_none_or(|root| !Arc::ptr_eq(&root, &pin))
         {
             return Err(Error::StaleRevision);
         }
