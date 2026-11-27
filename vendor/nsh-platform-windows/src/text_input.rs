@@ -1644,6 +1644,78 @@ fn notify_composition(surface: &Surface, action: NOTIFY_IME_INDEX) {
     }
 }
 
+/// Finds the focused field only if the workbench being covered still owns it.
+fn recovery_input(surface: &Surface, window: NodeId) -> Option<(NshView, Rc<InputState>)> {
+    let view = focused(surface)?;
+    if crate::app_window::window_of(surface, &view) != window {
+        return None;
+    }
+    let input = input_of(&view)?;
+    Some((view, input))
+}
+
+/// Clean up the old field's native preedit without treating it as an edit.
+pub(crate) fn cancel_recovery_composition(surface: &Surface, window: NodeId) {
+    let Some((view, input)) = recovery_input(surface, window) else {
+        return;
+    };
+    let bounds = input.composing.get();
+    if bounds.is_none() && !input.with_editor(Editor::composing).unwrap_or(false) {
+        return;
+    }
+    notify_composition(surface, CPS_CANCEL);
+    // An IMM may deliver its end asynchronously. Let RichEdit clear its
+    // preedit now as well so it cannot outlive the confirmation.
+    recovery_ime_cleanup(surface, window, WM_IME_ENDCOMPOSITION, WPARAM(0));
+
+    let committed = input.reported_text.borrow();
+    if input.text() != *committed {
+        // No result from the cancelled preedit may become real document
+        // text, even when its IME did not restore the native buffer.
+        let selection = bounds.map_or_else(
+            || input.selection(),
+            |(before, after)| {
+                let len = committed.encode_utf16().count() as u32;
+                (
+                    before.min(len),
+                    len.saturating_sub(after).max(before).min(len),
+                )
+            },
+        );
+        uncut(&input, || {
+            input.with_editor(|editor| editor.set_text(&committed));
+        });
+        input.send(EM_SETSEL, selection.0 as usize, selection.1 as isize);
+    }
+    drop(committed);
+    input.with_editor(Editor::discard_composition_notes);
+    input.composing.set(None);
+    report_composition(surface, &view, &input);
+    // Process can still apply a pending programmatic value and update the
+    // caret. The cancelled RichEdit notes above are not an edit.
+    process(surface, &view, &input);
+}
+
+/// Forward a zero-result cancellation or an end, never a start or a
+/// result string, to the old native control. Its notifications are dropped
+/// by cancel_recovery_composition; Win32 also gets its default cleanup.
+pub(crate) fn recovery_ime_cleanup(surface: &Surface, window: NodeId, msg: u32, wparam: WPARAM) {
+    if let Some((_, input)) = recovery_input(surface, window)
+        && (input.composing.get().is_some() || input.with_editor(Editor::composing) == Some(true))
+    {
+        input.send(msg, wparam.0, 0);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn seed_recovery_preedit_for_test(surface: &Surface, view: &NshView) {
+    let input = input_of(view).unwrap();
+    input.with_editor(Editor::start_composition);
+    replace_selection(&input, "ni");
+    process(surface, view, &input);
+    assert_eq!(input.composed_text().as_deref(), Some("ni"));
+}
+
 /// IME messages, which RichEdit handles for the focused field (it draws
 /// the composition in place and places the candidates at its caret);
 /// `None` for default handling.

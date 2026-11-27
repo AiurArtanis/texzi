@@ -1331,12 +1331,7 @@ pub(crate) fn window_resized(surface: &Surface, id: NodeId, width: f32, height: 
 /// Hosts a new overlay over `surface`'s views and fades it in.
 fn add_overlay(surface: &Rc<Surface>, serial: u64, kind: OverlayKind) {
     let OverlayKind::Dialog(dialog) = &kind;
-    // Its keys (Return, Escape) are the window's, not a page's.
-    if dialog.recovered.is_some() {
-        if let Some(hwnd) = crate::app_window::hwnd_of(surface, dialog.window) {
-            crate::native::take_keyboard_in(hwnd);
-        }
-    } else {
+    if dialog.recovered.is_none() {
         crate::native::take_keyboard(surface);
     }
     let env = surface.environment.get();
@@ -1348,6 +1343,14 @@ fn add_overlay(surface: &Rc<Surface>, serial: u64, kind: OverlayKind) {
             kind: kind.clone(),
         })
     });
+    // The same-window shield is live before cancellation: IMM can
+    // synchronously send the window messages while it cancels.
+    if dialog.recovered.is_some() {
+        crate::text_input::cancel_recovery_composition(surface, dialog.window);
+        if let Some(hwnd) = crate::app_window::hwnd_of(surface, dialog.window) {
+            crate::native::take_keyboard_in(hwnd);
+        }
+    }
     if env.reduce_motion {
         kind.opacity().set(1.0);
     } else {
@@ -3091,6 +3094,7 @@ pub(crate) fn recovery_accessibility(
 #[cfg(test)]
 pub(crate) fn show_recovery_for_access_test(
     surface: &Rc<Surface>,
+    window: NodeId,
     resume_save_as: bool,
     details: RecoveredDraftDetails,
 ) -> (u64, oneshot::Receiver<RecoveredDraftChoice>) {
@@ -3105,7 +3109,7 @@ pub(crate) fn show_recovery_for_access_test(
     let (sender, reply) = oneshot::channel();
     let serial = show_dialog_item(
         surface,
-        ROOT_ID,
+        window,
         &request.dialog,
         Some((&request, sender, false)),
     )

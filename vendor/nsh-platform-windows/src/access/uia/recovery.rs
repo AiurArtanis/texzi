@@ -310,8 +310,12 @@ mod tests {
             "Background input"
         );
 
-        let (serial, mut reply) =
-            show_recovery_for_access_test(&surface, false, RecoveredDraftDetails::default());
+        let (serial, mut reply) = show_recovery_for_access_test(
+            &surface,
+            ROOT_ID,
+            false,
+            RecoveredDraftDetails::default(),
+        );
         let pane = child(&root, NavigateDirection_FirstChild);
         assert_eq!(name(&pane), "Recovered draft");
         let keep = child(&pane, NavigateDirection_FirstChild);
@@ -407,6 +411,7 @@ mod tests {
 
         let (new_serial, _reply) = show_recovery_for_access_test(
             &surface,
+            ROOT_ID,
             true,
             RecoveredDraftDetails {
                 badge: Some("Recovered in the last session".into()),

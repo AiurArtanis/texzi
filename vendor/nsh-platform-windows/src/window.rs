@@ -1739,6 +1739,10 @@ fn handle(
             }
         }
         WM_CHAR => {
+            if crate::system::recovery_blocks_background(surface, data.window.unwrap_or(ROOT_ID)) {
+                data.surrogate.set(0);
+                return Some(LRESULT(0));
+            }
             let unit = wparam.0 as u16;
             if (0xD800..0xDC00).contains(&unit) {
                 data.surrogate.set(unit);
@@ -1752,12 +1756,37 @@ fn handle(
             crate::text_input::char_input(surface, &text);
             return Some(LRESULT(0));
         }
+        WM_IME_CHAR
+            if crate::system::recovery_blocks_background(
+                surface,
+                data.window.unwrap_or(ROOT_ID),
+            ) =>
+        {
+            // DefWindowProc can translate this into a later WM_CHAR.
+            return Some(LRESULT(0));
+        }
         WM_IME_SETCONTEXT
         | WM_IME_STARTCOMPOSITION
         | WM_IME_COMPOSITION
         | WM_IME_ENDCOMPOSITION
         | WM_IME_NOTIFY
         | WM_IME_REQUEST => {
+            let window = data.window.unwrap_or(ROOT_ID);
+            if crate::system::recovery_blocks_background(surface, window) {
+                return match msg {
+                    WM_IME_ENDCOMPOSITION => {
+                        crate::text_input::recovery_ime_cleanup(surface, window, msg, wparam);
+                        None
+                    }
+                    // A zero flag mask tells the receiver to drop its preedit.
+                    WM_IME_COMPOSITION if lparam.0 == 0 => {
+                        crate::text_input::recovery_ime_cleanup(surface, window, msg, wparam);
+                        None
+                    }
+                    WM_IME_SETCONTEXT | WM_IME_NOTIFY => None,
+                    _ => Some(LRESULT(0)),
+                };
+            }
             return crate::text_input::ime(surface, hwnd, msg, wparam, lparam);
         }
         WM_SETFOCUS => crate::text_input::window_focus(surface, true),
