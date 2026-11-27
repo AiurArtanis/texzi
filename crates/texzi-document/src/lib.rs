@@ -1,12 +1,16 @@
 //! Persistent document component; not connected to NSH yet.
-// Keep the document core forbidden; only the named Windows adapters in files
-// may opt into FFI. A crate-wide forbid would also reject those adapters.
+// Keep the document core forbidden; only the named file adapters may wrap
+// native file replacement and exclusive read-only mappings.
 #![deny(unsafe_code)]
 
 #[forbid(unsafe_code)]
 mod anchors;
 #[forbid(unsafe_code)]
 mod body;
+#[forbid(unsafe_code)]
+mod bulk;
+#[forbid(unsafe_code)]
+mod compact_table;
 #[forbid(unsafe_code)]
 mod coordinates;
 pub mod files;
@@ -27,12 +31,17 @@ mod views;
 
 pub use anchors::Affinity;
 pub use body::{Body, Eol, Profile};
+pub use bulk::{BulkMap, BulkPart, PreparedBulk, PreparedBulkBuilder, bulk_history_disk_usage};
 pub use coordinates::{Coordinate, GraphemeIndex, GraphemeOffset, SourceByte, Utf16Offset};
 pub use history::*;
 pub use observe::*;
 pub use provenance::OriginSpan;
 pub use view_store::DocumentViewSnapshot;
 pub use views::*;
+
+/// Limits for the complete editable model (file import and bulk replacement output).
+pub const MAX_EDIT_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_EDIT_LINES: usize = 2_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DocId(pub(crate) u64);

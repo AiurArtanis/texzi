@@ -256,6 +256,59 @@ pub struct RichEditorApi {
     rv: Rv,
 }
 
+impl RichEditorApi {
+    /// Transient view-local ranges. These never enter the document or undo history.
+    pub fn set_external_decorations(&self, ranges: Vec<crate::rich_editor::state::Decoration>) {
+        self.set_external_decorations_with_outline(ranges, None, Vec::new());
+    }
+
+    /// Pairs the inline highlights with one independently painted text range.
+    /// The outline is local to this view and empty ranges mark a position.
+    pub fn set_external_decorations_with_outline(
+        &self,
+        ranges: Vec<crate::rich_editor::state::Decoration>,
+        outline: Option<(std::ops::Range<usize>, Hsla)>,
+        mut points: Vec<(usize, Hsla)>,
+    ) {
+        points.sort_unstable_by_key(|(pos, _)| *pos);
+        if self
+            .rv
+            .external_points
+            .with_untracked(|old| old.as_ref() != points.as_slice())
+        {
+            self.rv.external_points.set(points.into());
+        }
+        if self.rv.external_outline.get_untracked() != outline {
+            self.rv.external_outline.set(outline);
+        }
+        if *self.rv.external_decorations.borrow() == ranges {
+            return;
+        }
+        *self.rv.external_decorations.borrow_mut() = ranges;
+        if self.rv.sync_decorations(&self.rv.st.borrow()) {
+            self.rv.deco_rev.update(|revision| *revision += 1);
+        }
+    }
+
+    /// Rendered-document positions at the corners of this mounted viewport.
+    /// Subscribes the caller to scroll, geometry and viewport-size changes.
+    pub fn visible_document_range(&self) -> Option<std::ops::Range<usize>> {
+        self.rv.layout_rev.get();
+        let top = self.rv.scroll_y.get();
+        let size = self.rv.viewport.get();
+        if size.height.0 <= 0.0 || size.width.0 <= 0.0 {
+            return None;
+        }
+        let geo = self.rv.geo.borrow();
+        let pos = |x, y| match geo.hit(nsh_core::geometry::point(x, y))? {
+            geometry::Hit::Text(p, _) | geometry::Hit::Node(p) => Some(p),
+        };
+        let from = pos(px(0.0), top)?;
+        let to = pos(size.width, top + size.height)?;
+        Some(from.min(to)..from.max(to))
+    }
+}
+
 #[methods]
 impl RichEditorApi {
     /// Takes the focus.

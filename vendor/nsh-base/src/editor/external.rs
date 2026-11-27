@@ -42,6 +42,17 @@ pub trait ExternalDocument {
         kind: ExternalEditKind,
     ) -> Result<ExternalUpdate, String>;
     fn history(&self, revision: u64, epoch: u64, undo: bool) -> Result<ExternalUpdate, String>;
+    /// A disk-backed owner may complete this operation later and call
+    /// `notify` with its new revision. Until then the editor keeps its cache,
+    /// selection and undo state at their present version.
+    fn request_history(
+        self: Rc<Self>,
+        revision: u64,
+        epoch: u64,
+        undo: bool,
+    ) -> Result<Option<ExternalUpdate>, String> {
+        self.history(revision, epoch, undo).map(Some)
+    }
     fn select(
         &self,
         revision: u64,

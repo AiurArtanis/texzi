@@ -1,12 +1,38 @@
 //! Persistent AVL sequence of origin spans, measured in logical UTF-8 bytes.
 //! Original leaves are bounded on import. Edits copy only the tree paths.
 use std::{ops::Range, sync::Arc};
+pub(crate) mod archive;
 
 #[derive(Clone, Debug)]
 pub struct OriginSpan {
     pub source: Arc<str>,
     pub raw: Range<usize>,
     pub logical_len: usize,
+}
+impl OriginSpan {
+    fn raw_at(&self, logical: usize) -> usize {
+        if logical == 0 || self.raw.len() == self.logical_len {
+            return self.raw.start + logical;
+        }
+        if logical == self.logical_len {
+            return self.raw.end;
+        }
+        // Imported leaves bound this scan to about 1 KiB.
+        let mut rest = &self.source[self.raw.clone()];
+        let mut count = 0;
+        while count < logical {
+            if let Some(next) = rest.strip_prefix("\r\n") {
+                count += 1;
+                rest = next;
+            } else {
+                let width = rest.chars().next().unwrap().len_utf8();
+                count += width;
+                rest = &rest[width..];
+            }
+        }
+        debug_assert_eq!(count, logical, "caller must use a scalar boundary");
+        self.raw.end - rest.len()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -18,6 +44,11 @@ struct Piece {
 enum Kind {
     Leaf(Piece),
     Branch(Tree, Tree),
+    Projected {
+        base: Tree,
+        map: Arc<crate::bulk::OriginMap>,
+        offset: usize,
+    },
 }
 #[derive(Debug)]
 struct Node {
@@ -29,6 +60,90 @@ struct Node {
 pub(crate) struct Tree(Option<Arc<Node>>);
 
 impl Tree {
+    /// Pass through imported intervals in output order, without flattening
+    /// any position table or allocating split subtrees per captured fragment.
+    pub(crate) fn visit_original<E>(
+        &self,
+        range: Range<usize>,
+        at: usize,
+        visit: &mut dyn FnMut(usize, &str, Range<usize>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if range.is_empty() {
+            return Ok(());
+        }
+        let Some(node) = &self.0 else { return Ok(()) };
+        match &node.kind {
+            Kind::Leaf(Piece { origin: None, .. }) => Ok(()),
+            Kind::Leaf(Piece {
+                origin: Some(original),
+                ..
+            }) => visit(
+                at,
+                &original.source,
+                original.raw_at(range.start)..original.raw_at(range.end),
+            ),
+            Kind::Branch(left, right) => {
+                let mid = left.len();
+                if range.start < mid {
+                    left.visit_original(range.start..range.end.min(mid), at, visit)?;
+                }
+                if range.end > mid {
+                    right.visit_original(
+                        range.start.saturating_sub(mid)..range.end - mid,
+                        at + mid.saturating_sub(range.start),
+                        visit,
+                    )?;
+                }
+                Ok(())
+            }
+            Kind::Projected { base, map, offset } => {
+                let start = offset + range.start;
+                map.try_visit(start..offset + range.end, |out, src| {
+                    if let Some(src) = src {
+                        base.visit_original(src, at + (out.start - start), visit)?;
+                    }
+                    Ok(())
+                })
+            }
+        }
+    }
+    pub(crate) fn projected(base: &Self, map: crate::bulk::OriginMap, len: usize) -> Self {
+        if len == 0
+            || map.empty()
+            || base
+                .0
+                .as_ref()
+                .is_none_or(|n| matches!(n.kind, Kind::Leaf(Piece { origin: None, .. })))
+        {
+            return Self::leaf(Piece { len, origin: None });
+        }
+        // Sparse changes can splice existing persistent trees directly. This
+        // also avoids growing a projection chain for repeated single replaces.
+        if map.few_copies() {
+            let mut output = Tree::default();
+            map.visit(0..len, |range, original| {
+                let part = if let Some(source) = original {
+                    let (_, tail) = base.split(source.start);
+                    tail.split(source.len()).0
+                } else {
+                    Self::leaf(Piece {
+                        len: range.len(),
+                        origin: None,
+                    })
+                };
+                output = Self::join(std::mem::take(&mut output), part);
+            });
+            return output;
+        }
+        Self::window(base.clone(), Arc::new(map), 0, len)
+    }
+    fn window(base: Self, map: Arc<crate::bulk::OriginMap>, offset: usize, len: usize) -> Self {
+        Self(Some(Arc::new(Node {
+            len,
+            height: 1,
+            kind: Kind::Projected { base, map, offset },
+        })))
+    }
     fn len(&self) -> usize {
         self.0.as_ref().map_or(0, |n| n.len)
     }
@@ -104,6 +219,10 @@ impl Tree {
             return (self.clone(), Self::default());
         }
         match &self.0.as_ref().unwrap().kind {
+            Kind::Projected { base, map, offset } => (
+                Self::window(base.clone(), map.clone(), *offset, at),
+                Self::window(base.clone(), map.clone(), offset + at, self.len() - at),
+            ),
             Kind::Branch(a, b) => {
                 if at < a.len() {
                     let (l, r) = a.split(at);
@@ -115,33 +234,16 @@ impl Tree {
             }
             Kind::Leaf(p) => {
                 let (o1, o2) = if let Some(o) = &p.origin {
-                    let raw = &o.source[o.raw.clone()];
-                    let mut logical = 0;
-                    let mut end = 0;
-                    let mut chars = raw.char_indices().peekable();
-                    while logical < at {
-                        let (i, c) = chars.next().unwrap();
-                        end = i + c.len_utf8();
-                        if c == '\r' {
-                            if chars.peek().is_some_and(|(_, c)| *c == '\n') {
-                                let (i, _) = chars.next().unwrap();
-                                end = i + 1;
-                            }
-                            logical += 1;
-                        } else {
-                            logical += c.len_utf8();
-                        }
-                    }
-                    assert_eq!(logical, at, "caller must split at a scalar boundary");
+                    let cut = o.raw_at(at);
                     (
                         Some(OriginSpan {
                             source: o.source.clone(),
-                            raw: o.raw.start..o.raw.start + end,
+                            raw: o.raw.start..cut,
                             logical_len: at,
                         }),
                         Some(OriginSpan {
                             source: o.source.clone(),
-                            raw: o.raw.start + end..o.raw.end,
+                            raw: cut..o.raw.end,
                             logical_len: p.len - at,
                         }),
                     )
@@ -226,6 +328,18 @@ impl Tree {
                     Kind::Branch(a, b) => {
                         walk(a, start, out);
                         walk(b, start + a.len(), out);
+                    }
+                    Kind::Projected { base, map, offset } => {
+                        map.visit(*offset..offset + n.len, |relative, input| {
+                            let at = start + (relative.start - offset);
+                            if let Some(source) = input {
+                                let (_, tail) = base.split(source.start);
+                                let (part, _) = tail.split(source.len());
+                                walk(&part, at, out);
+                            } else {
+                                out.push((at..at + relative.len(), None));
+                            }
+                        });
                     }
                 }
             }

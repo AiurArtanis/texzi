@@ -1,0 +1,9 @@
+[package]
+name = "texzi-word"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+regex-syntax = { version = "=0.8.11", default-features = false, features = ["std", "unicode-gencat"] }

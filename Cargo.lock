@@ -567,6 +567,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
 name = "fdeflate"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1387,6 +1393,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syntect",
+ "texzi-word",
  "two-face",
  "unicode-segmentation",
  "unicode-width",
@@ -1609,6 +1616,17 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pcre2-sys"
+version = "0.2.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18b9073c1a2549bd409bf4a32c94d903bb1a09bf845bc306ae148897fa0760a4"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
 ]
 
 [[package]]
@@ -2433,6 +2451,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "tendril"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2457,6 +2488,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "texzi-document",
+ "texzi-search",
  "tokio",
  "unicode-segmentation",
  "url",
@@ -2468,11 +2500,35 @@ version = "0.0.1"
 dependencies = [
  "encoding_rs",
  "getrandom 0.3.4",
+ "memmap2",
  "ropey",
  "same-file",
  "serde_json",
  "unicode-segmentation",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "texzi-search"
+version = "0.0.1"
+dependencies = [
+ "memchr",
+ "pcre2-sys",
+ "regex-syntax",
+ "ropey",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "texzi-word",
+ "unicode-segmentation",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "texzi-word"
+version = "0.0.1"
+dependencies = [
+ "regex-syntax",
 ]
 
 [[package]]

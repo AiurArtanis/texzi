@@ -4,6 +4,10 @@ The source baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78ea
 
 ## Source editor
 
+- Word movement and double-click selection use the shared `texzi-word` grapheme classification. Whole-word find uses the same CJK, kana, Hangul and Unicode 16 word runs. Language-specific editor word characters still extend the default classification.
+
+- `EditorDecoration::outline_color` adds a pointer-transparent stroke to each displayed row of an external range. The row captures its endpoints during normal grapheme and tab layout. A zero-width range draws a narrow marker at its own position.
+- `ExternalDocument::request_history` returns an immediate update for resident history. A disk-backed history owner returns a pending result, then notifies the editor after the restored revision has been published. The buffer keeps the current revision and selection while it waits.
 - `editor/external.rs`, `buffer.rs`, `commands.rs`, `controller.rs` and `mod.rs` connect a mounted editor to texzi's versioned document owner. Both editor modes share the owner's history. The view consumes incremental changes and publishes composition transitions without serializing the full rope on each change.
 - `editor/hooks.rs` and `view.rs` expose viewport and caret positioning, preserve an anchor during reflow and report the visible logical range when the source minimap subscribes. The source sink sizes itself to the remainder of the caret row so multiline RichEdit can position IME candidates. For large external documents, its additional accessibility value follows the caret with a byte cap. The rows retain their own accessible semantics.
 - `editor/languages.rs` exposes the existing language classifier for texzi's word-wrap preference. Focus and native input selection use the v0.7.1 field's own handling.
@@ -17,6 +21,9 @@ The override reuses the NSH syntect grammar, keeps tokens for the requested view
 The locked syntax library is [syntect 5.3.0](https://github.com/trishume/syntect/tree/v5.3.0). The embedded grammars come from [two-face 0.4.5](https://github.com/CosmicHorrorDev/two-face/tree/4f766bcb4499f6340e8d6dd715ab64f52c6e8ca4). [NOTICE-two-face-syntaxes.md](NOTICE-two-face-syntaxes.md) reproduces the generated acknowledgement at that commit, with line endings and trailing whitespace normalized. The source SHA-256 is 55be6f98f911df5cecc95275d95b75a916c3f4efb5f0dd322c7f835a60aedeab. The Windows package also carries two-face's README notice and the Oniguruma COPYING file from the locked onig_sys crate.
 
 ## Rich editor
+
+- A view-local outline is drawn above the mounted textblock using its own layout and scroll clip. Complete visible lines reuse their measured spans. Partial lines use the native text geometry, including bidi fragments. Sorted zero-width hits draw position markers on the visible lines. Clearing the external decorations also clears these shapes.
+- The native view exposes the visible document range and accepts transient, view-local decorations alongside plugin decorations. Texzi uses these for the active pane's rendered-text search. They have no effect on the document, selection or history.
 
 - `rich_editor/view/mod.rs` and `controller.rs` give the host its configured application keystrokes. Binding equivalence uses the NSH platform parser, including for v0.7.1's selection-dependent Copy. Plain Escape reaches the host at an empty text caret or a gap only after editor composition, node views, plugins and selections have had their turn. The terminal keeps its native focus behavior.
 - `view/session.rs` also notifies the document owner's mode guard of composition transitions. v0.7.1's public view event remains available after the view has finished processing composition.

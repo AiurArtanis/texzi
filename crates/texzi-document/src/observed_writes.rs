@@ -59,6 +59,16 @@ impl Store {
             s.submit_view_unpublished(intent)
         })
     }
+    pub fn submit_bulk(
+        &mut self,
+        view: ViewId,
+        expected_epoch: u64,
+        prepared: PreparedBulk,
+    ) -> Result<Receipt, Error> {
+        self.observed_write(prepared.base.doc, |s| {
+            s.submit_bulk_unpublished(view, expected_epoch, prepared)
+        })
+    }
     pub fn set_serialization(
         &mut self,
         doc: DocId,

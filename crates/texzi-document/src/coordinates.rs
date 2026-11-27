@@ -32,6 +32,19 @@ pub enum Coordinate {
 }
 
 impl Snapshot {
+    /// Closest UI caret boundary on the requested side of a source scalar.
+    pub fn snap_source_offset(
+        &self,
+        offset: usize,
+        affinity: crate::Affinity,
+    ) -> Result<usize, Error> {
+        let anchor = crate::Anchor {
+            position: SourceByte::at(self, offset),
+            affinity,
+        };
+        Ok(crate::views::snap_anchor(self, anchor)?.0.position.offset)
+    }
+
     pub(crate) fn check_position(&self, doc: DocId, revision: Revision) -> Result<(), Error> {
         if doc != self.doc {
             Err(Error::InvalidDoc)
