@@ -287,6 +287,8 @@ fn bind_shell_shortcuts(run: Rc<dyn Fn(&str)>) {
             key,
             KeyOptions {
                 when: nsh_core::keymap::When::Always,
+                // The workspace owns find history, including after its panel closes.
+                over_focused: matches!(id, "texzi.find.next" | "texzi.find.previous"),
                 ..Default::default()
             },
             move |_| run(id),
@@ -2243,6 +2245,7 @@ fn bind_chord_continuations(run: Rc<dyn Fn(Option<&'static str>)>) {
                 "enter",
                 "space",
                 "tab",
+                "f3",
                 "\\",
             ]
             .into_iter()
