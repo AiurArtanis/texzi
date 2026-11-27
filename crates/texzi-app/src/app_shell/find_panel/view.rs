@@ -26,15 +26,24 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                 }
             });
             let observer = s.clone();
-            let rich_doc = doc;
+            let rich_doc = doc.clone();
             effect(move || {
                 observer.find_panel.marks_rev.get();
                 if rich_doc.displayed_rich()
                     && let Some(api) = rich_doc.rich_reference.api::<RichEditorApi>()
                 {
                     let st = &observer.find_panel;
+                    if !rich_doc
+                        .source
+                        .search_snapshot()
+                        .is_ok_and(|(snap, _)| st.version.get() == Some((snap.revision.0, true)))
+                    {
+                        api.set_external_decorations(Vec::new());
+                        return;
+                    }
                     let current = st.current_mark.borrow().clone();
                     let mut marks = Vec::new();
+                    let mut points = Vec::new();
                     for range in st
                         .visible
                         .borrow()
@@ -51,12 +60,15 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                                     .into_iter()
                                     .collect(),
                             ));
+                        } else if Some(range) != current.as_ref() {
+                            points.push((range.start, outline_color(false, dark())));
                         }
                     }
-                    if !marks.is_empty() {
-                        note_present(&observer, &rich_doc);
-                    }
-                    api.set_external_decorations(marks);
+                    api.set_external_decorations_with_outline(
+                        marks,
+                        current.map(|r| (r, outline_color(true, dark()))),
+                        points,
+                    );
                 }
             });
             let st = &s.find_panel;
@@ -75,7 +87,7 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
             let close = s.clone();
             let all = s.clone();
             let r_actions = s.clone();
-            let details = s.clone();
+            let scoped = st.scoped;
             let glyph = move || {
                 if mode.get() == "replace" {
                     "⌄"
@@ -122,12 +134,21 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                         .on_submit(move |_: &str| navigate(&submit, false)),
                 )
                 .child(
-                    text(move || short_status(&status.get()))
-                        .text_size(px(11.0))
-                        .text_color(foreground)
-                        .max_w(px(86.0))
-                        .number_of_lines(1)
-                        .text_overflow(EllipsizeMode::Tail),
+                    text(move || {
+                        let scope = if scoped.get() {
+                            "选区"
+                        } else if doc.displayed_rich() {
+                            "正文"
+                        } else {
+                            "源码"
+                        };
+                        short_status(&status.get(), scope)
+                    })
+                    .text_size(px(11.0))
+                    .text_color(foreground)
+                    .max_w(px(151.0))
+                    .number_of_lines(1)
+                    .text_overflow(EllipsizeMode::Tail),
                 )
                 .child(toggle(&s, Toggle::Case, "Aa", "区分大小写"))
                 .child(toggle(&s, Toggle::Word, "ab", "整词匹配"))
@@ -168,6 +189,7 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                     move || {
                         let s = r_actions.clone();
                         let replacement = s.clone();
+                        let submit_replacement = s.clone();
                         view()
                             .flex_row()
                             .items_center()
@@ -184,6 +206,7 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                                     .on_composition_change(move |e: &Composition| {
                                         r_comp.set(e.composing)
                                     })
+                                    .on_submit(move |_: &str| replace(&submit_replacement, false))
                                     .on_change(move |v: &str| {
                                         value.set(v.into());
                                         if replacement.find_panel.status.get() == "正在准备替换…"
@@ -201,37 +224,11 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                     },
                 ))
                 .child(when(
-                    move || mode.get() == "replace" || is_message(&status.get()),
+                    move || is_message(&status.get()),
                     move || {
-                        let doc = details.current();
-                        let panel = details.clone();
-                        text(move || {
-                            let message = status.get();
-                            if is_message(&message) {
-                                return message;
-                            }
-                            let st = &panel.find_panel;
-                            let scope = if st.scoped.get() {
-                                "选区"
-                            } else if doc.as_ref().is_some_and(|d| d.displayed_rich()) {
-                                "正文"
-                            } else {
-                                "源码"
-                            };
-                            let engine = if st.regex.get() {
-                                "正则"
-                            } else {
-                                "普通文字"
-                            };
-                            let casing = if st.case.get() {
-                                "区分大小写"
-                            } else {
-                                "忽略大小写"
-                            };
-                            format!("范围：{scope} · {engine} · {casing}")
-                        })
-                        .text_size(px(11.0))
-                        .text_color(foreground)
+                        text(move || status.get())
+                            .text_size(px(11.0))
+                            .text_color(foreground)
                     },
                 ));
             view()
@@ -247,16 +244,22 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
     )
 }
 fn is_message(status: &str) -> bool {
-    !status.contains(" · ") && !matches!(status, "" | "请输入查找文字" | "正在查找…")
+    !status.contains(" · ")
+        && !matches!(
+            status,
+            "" | "请输入查找文字" | "正在查找…" | "已找到匹配，正在计数…"
+        )
 }
-fn short_status(status: &str) -> String {
+fn short_status(status: &str, active_scope: &str) -> String {
     if let Some((scope, rest)) = status.split_once(" · ") {
         let number = rest.split(' ').next().unwrap_or(rest);
         format!("{scope} {number}")
-    } else if status == "请输入查找文字" {
-        String::new()
     } else {
-        "…".into()
+        match status {
+            "正在查找…" => format!("{active_scope} 查找中"),
+            "已找到匹配，正在计数…" => format!("{active_scope} 计数中"),
+            _ => active_scope.into(),
+        }
     }
 }
 fn action(label: &'static str) -> nsh_base::ButtonElement {
@@ -307,13 +310,24 @@ fn bindings(s: &Rc<Shell>) {
         if shell.chord.get() {
             return;
         }
-        for key in ["escape", "shift+enter", "alt+enter"] {
+        for (key, command) in [
+            ("escape", "texzi.find.close"),
+            ("shift+escape", "texzi.find.close"),
+            ("shift+enter", "texzi.find.previous"),
+            ("alt+enter", "texzi.find.selectAllMatches"),
+            ("alt+c", "texzi.find.toggleCase"),
+            ("alt+w", "texzi.find.toggleWholeWord"),
+            ("alt+r", "texzi.find.toggleRegex"),
+            ("alt+l", "texzi.find.toggleSelection"),
+            ("mod+shift+1", "texzi.find.replaceOne"),
+            ("mod+alt+enter", "texzi.find.replaceAll"),
+        ] {
             let s = shell.clone();
             on_key_with(
                 key,
                 KeyOptions {
                     when: nsh_core::keymap::When::Always,
-                    pass_through: key == "escape",
+                    pass_through: command == "texzi.find.close",
                     ..Default::default()
                 },
                 move |_| {
@@ -324,11 +338,7 @@ fn bindings(s: &Rc<Shell>) {
                     {
                         return;
                     }
-                    match key {
-                        "escape" => s.close_panel(),
-                        "shift+enter" => navigate(&s, true),
-                        _ => select_all(&s),
-                    }
+                    s.run(command);
                 },
             );
         }
@@ -385,6 +395,7 @@ fn viewport_changed(s: &Rc<Shell>, doc: &Rc<Document>, range: Range<usize>) {
         return;
     }
     s.find_panel.viewport.replace(range);
+    note_present(s, doc);
     request_marks(s, doc, false);
 }
 pub(super) fn request_marks(s: &Rc<Shell>, doc: &Rc<Document>, immediate: bool) {
@@ -430,13 +441,22 @@ pub(super) fn request_marks(s: &Rc<Shell>, doc: &Rc<Document>, immediate: bool) 
 }
 fn highlight_class(current: bool, dark: bool) -> &'static str {
     match (current, dark) {
-        (true, true) => "bg-[#955239] text-[#ffffff] underline",
-        (true, false) => "bg-[#eaa077] text-[#25160e] underline",
+        (true, true) => "bg-[#955239] text-[#ffffff]",
+        (true, false) => "bg-[#eaa077] text-[#25160e]",
         (false, true) => "bg-[#5b432f] text-[#fff0d8]",
         (false, false) => "bg-[#ffdeb9] text-[#332313]",
     }
 }
-fn note_present(s: &Shell, doc: &Document) {
+fn outline_color(current: bool, dark: bool) -> Hsla {
+    let rgb_code = match (current, dark) {
+        (true, false) => 0xe07a48,
+        (true, true) => 0xf6b28e,
+        (false, false) => 0xecc5a4,
+        (false, true) => 0x82634e,
+    };
+    rgb(rgb_code).into()
+}
+pub(super) fn note_present(s: &Shell, doc: &Document) {
     let st = &s.find_panel;
     let Some(start) = st.started.get() else {
         return;
@@ -453,14 +473,15 @@ fn note_present(s: &Shell, doc: &Document) {
         return;
     }
     st.frame_probe.set(Some(request));
+    st.metric("visible_marks_ready", 1);
     let flag = st.cancel.borrow().clone();
     let body = doc.body;
     // This optional probe reports an upper bound from the real window's
     // successful Present counter. No text, path or search term enters the log.
     s.owner.run(|| {
         spawn(async move {
-            wait_for_editor_frame(body).await;
-            if body.node().is_some() && flag.is_some_and(|c| !c.load(Ordering::Acquire)) {
+            let presented = wait_for_editor_frame(body).await;
+            if presented && flag.is_some_and(|c| !c.load(Ordering::Acquire)) {
                 log::info!(
                     "TEXZI_FIND event=first_presentation_upper request={request} elapsed_us={}",
                     start.elapsed().as_micros()
@@ -481,7 +502,6 @@ pub(in crate::app_shell) fn source_marks(s: &Shell, doc: &Rc<Document>) -> Vec<E
     if st.version.get() != Some((snapshot.revision.0, false)) {
         return Vec::new();
     }
-    note_present(s, doc);
     let rope = snapshot.body.source();
     let current = st.current_mark.borrow();
     let ranges = st.visible.borrow();
@@ -491,20 +511,15 @@ pub(in crate::app_shell) fn source_marks(s: &Shell, doc: &Rc<Document>) -> Vec<E
         .chain(current.iter())
         .map(|r| {
             let mut d = EditorDecoration::default();
-            let class = highlight_class(Some(r) == current.as_ref(), dark());
+            let is_current = Some(r) == current.as_ref();
             let from = position(rope, r.start);
             let to = position(rope, r.end);
             d.range = EditorRange::new(from, to);
-            d.class = Some(class.into());
-            if r.is_empty() {
-                d.line_class = Some(
-                    if dark() {
-                        "bg-[#443a31]"
-                    } else {
-                        "bg-[#ffead6]"
-                    }
-                    .into(),
-                );
+            if !r.is_empty() {
+                d.class = Some(highlight_class(is_current, dark()).into());
+            }
+            if is_current || r.is_empty() {
+                d.outline_color = Some(outline_color(is_current, dark()));
             }
             d
         })

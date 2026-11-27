@@ -322,12 +322,11 @@ impl Buffer {
     /// Whether bytes `range` are ASCII, so their UTF-16 columns are their
     /// bytes. Answered at once when the whole text is ASCII.
     pub(crate) fn is_ascii(&self, range: Range<usize>) -> bool {
-        self.rope.len_chars() == self.rope.len_bytes()
-            || self
-                .rope
-                .byte_slice(range)
-                .chunks()
-                .all(|chunk| chunk.is_ascii())
+        if self.rope.len_chars() == self.rope.len_bytes() {
+            return true;
+        }
+        let slice = self.rope.byte_slice(range);
+        slice.len_chars() == slice.len_bytes()
     }
 
     /// Applies `edits` together: ranges of the text as it is now, sorted,

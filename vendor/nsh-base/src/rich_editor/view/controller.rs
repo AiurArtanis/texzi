@@ -197,6 +197,8 @@ pub(crate) struct Rv {
     pub(crate) geo: Rc<RefCell<Geometry>>,
     pub(crate) decorations: Rc<RefCell<Vec<Decoration>>>,
     pub(super) external_decorations: Rc<RefCell<Vec<Decoration>>>,
+    pub(super) external_outline: Signal<Option<(std::ops::Range<usize>, Hsla)>>,
+    pub(super) external_points: Signal<Rc<[(usize, Hsla)]>>,
     /// The document changed: the blocks.
     pub(crate) doc_rev: Signal<u64>,
     /// The selection changed.
@@ -294,6 +296,8 @@ impl Rv {
             geo: Rc::default(),
             decorations: Rc::default(),
             external_decorations: Rc::default(),
+            external_outline: signal(None),
+            external_points: signal(Rc::from([])),
             doc_rev: signal(0),
             sel_rev: signal(0),
             deco_rev: signal(0),

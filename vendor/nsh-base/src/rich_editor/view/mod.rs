@@ -254,6 +254,28 @@ pub struct RichEditorApi {
 impl RichEditorApi {
     /// Transient view-local ranges. These never enter the document or undo history.
     pub fn set_external_decorations(&self, ranges: Vec<crate::rich_editor::state::Decoration>) {
+        self.set_external_decorations_with_outline(ranges, None, Vec::new());
+    }
+
+    /// Pairs the inline highlights with one independently painted text range.
+    /// The outline is local to this view and empty ranges mark a position.
+    pub fn set_external_decorations_with_outline(
+        &self,
+        ranges: Vec<crate::rich_editor::state::Decoration>,
+        outline: Option<(std::ops::Range<usize>, Hsla)>,
+        mut points: Vec<(usize, Hsla)>,
+    ) {
+        points.sort_unstable_by_key(|(pos, _)| *pos);
+        if self
+            .rv
+            .external_points
+            .with_untracked(|old| old.as_ref() != points.as_slice())
+        {
+            self.rv.external_points.set(points.into());
+        }
+        if self.rv.external_outline.get_untracked() != outline {
+            self.rv.external_outline.set(outline);
+        }
         if *self.rv.external_decorations.borrow() == ranges {
             return;
         }

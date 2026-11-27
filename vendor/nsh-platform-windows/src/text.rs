@@ -3632,8 +3632,21 @@ impl WinLayout {
     /// The line a caret at `position` is on (the rule of
     /// [`TextPosition::line`], without copying the lines out).
     fn line_of(&self, position: TextPosition) -> Option<&Line> {
-        let i = position.line_in(self.lines.iter().map(|l| l.info.start..l.info.end))?;
-        self.lines.get(i)
+        let o = position.offset;
+        let i = self.lines.partition_point(|l| match position.affinity {
+            Affinity::Upstream => l.info.end < o,
+            Affinity::Downstream => l.info.end <= o,
+        });
+        if let Some(l) = self.lines.get(i)
+            && match position.affinity {
+                Affinity::Upstream => l.info.start < o,
+                Affinity::Downstream => l.info.start <= o,
+            }
+        {
+            return Some(l);
+        }
+        let past = self.lines.partition_point(|l| l.info.start <= o);
+        self.lines.get(past.saturating_sub(1))
     }
 
     /// The x (content coordinates) of the caret at `offset` on `line`: the
@@ -3724,13 +3737,37 @@ impl WinLayout {
         }
     }
 
+    fn lines_for_range(&self, a: u32, b: u32) -> &[Line] {
+        if a >= b {
+            return &[];
+        }
+        if self.lines.len() == 1 {
+            return &self.lines;
+        }
+        // DirectWrite lines, including empty ones, are in ascending logical
+        // text order. Bidi changes glyph order inside these lines only.
+        let start = self.lines.partition_point(|line| line.info.end <= a);
+        let end = self.lines.partition_point(|line| line.info.start < b);
+        &self.lines[start.min(end)..end]
+    }
+
     /// Calls `f(x, y, width, height)` with the rectangles (content
     /// coordinates) that highlight the characters of `range`: per line,
     /// the spans of selected glyphs and attachments, line high. The
     /// trimming ellipsis is never selected.
-    fn range_rects(&self, (a, b): (u32, u32), mut f: impl FnMut(f32, f32, f32, f32)) {
+    fn range_rects(&self, (a, b): (u32, u32), f: impl FnMut(f32, f32, f32, f32)) {
+        self.range_rects_in(self.lines_for_range(a, b), a, b, f);
+    }
+
+    fn range_rects_in(
+        &self,
+        lines: &[Line],
+        a: u32,
+        b: u32,
+        mut f: impl FnMut(f32, f32, f32, f32),
+    ) {
         let mut spans: Vec<(f32, f32)> = Vec::new();
-        for line in &self.lines {
+        for line in lines {
             let (y, h) = (line.info.y.0, line.info.height.0);
             spans.clear();
             for s in self.line_stops(line) {
@@ -4490,6 +4527,52 @@ mod tests {
         // Right to left: the right edge is the start.
         assert_eq!(l.hit_test((size.width + px(5.0)).0, 2.0).offset, 0);
         assert_eq!(l.hit_test(-5.0, 2.0).offset, 9);
+    }
+
+    #[test]
+    fn range_boxes_skip_distant_lines_and_preserve_wrap_bidi_and_empty_lines() {
+        let engine = engine();
+        let s = "abc שלום     مرحبا\n\nA🙂 narrow wrapping paragraph 12345678.\n".repeat(12);
+        let text = text(&[(&s, plain(15.))]);
+        let (_, layout) = layout_of(&engine, &text, Some(78.));
+        let l = layout.downcast::<WinLayout>().unwrap();
+        assert!(l.lines.len() > 40);
+        let len = s.encode_utf16().count() as u32;
+        let tail = l
+            .lines
+            .iter()
+            .rev()
+            .find(|l| l.info.end > l.info.start + 1)
+            .unwrap();
+        let at = tail.info.start;
+        assert_eq!(l.lines_for_range(at, at + 1).len(), 1);
+        for o in 0..=len + 2 {
+            for affinity in [Affinity::Upstream, Affinity::Downstream] {
+                let p = TextPosition::new(o, affinity);
+                let i = p
+                    .line_in(l.lines.iter().map(|l| l.info.start..l.info.end))
+                    .unwrap();
+                assert!(std::ptr::eq(l.line_of(p).unwrap(), &l.lines[i]), "{p:?}");
+            }
+        }
+        for (a, b) in [
+            (0, 0),
+            (0, 2),
+            (2, 8),
+            (5, 19),
+            (13, 29),
+            (18, 18),
+            (4, len),
+            (at, at + 1),
+            (at + 1, len),
+            (len, len),
+        ] {
+            let mut previous = Vec::new();
+            let mut clipped = Vec::new();
+            l.range_rects_in(&l.lines, a, b, |x, y, w, h| previous.push((x, y, w, h)));
+            l.range_rects((a, b), |x, y, w, h| clipped.push((x, y, w, h)));
+            assert_eq!(clipped, previous, "range {a}..{b}");
+        }
     }
 
     #[test]

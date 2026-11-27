@@ -168,31 +168,33 @@ impl Document {
     }
 }
 
-async fn wait_for_editor_frame(reference: ElementRef) {
+async fn wait_for_editor_frame(reference: ElementRef) -> bool {
     // The first task runs after this turn's mount, allowing the ref to point
     // to the new element before observing native presentations.
     if run_on_main_thread(|| ()).await.is_err() {
-        return;
+        return false;
     }
-    let Some(node) = reference.node() else { return };
+    let Some(node) = reference.node() else {
+        return false;
+    };
     let Ok(Some((baseline, _))) =
         run_on_main_thread(move || nsh_platform_windows::node_presentation(node, None)).await
     else {
-        return;
+        return false;
     };
     while reference.node() == Some(node) {
         let _ = next_frame().await;
-        if !matches!(
-            run_on_main_thread(move || nsh_platform_windows::node_presentation(
-                node,
-                Some(baseline)
-            ))
-            .await,
-            Ok(Some((_, false)))
-        ) {
-            break;
+        match run_on_main_thread(move || {
+            nsh_platform_windows::node_presentation(node, Some(baseline))
+        })
+        .await
+        {
+            Ok(Some((_, true))) => return true,
+            Ok(Some((_, false))) => {}
+            _ => return false,
         }
     }
+    false
 }
 // Toolbar and command-palette entries share the same per-view drafts and
 // confirmation methods. Neither surface owns a second editable document.
@@ -892,6 +894,9 @@ impl Shell {
             && large_file::requires_editable(id)
         {
             return Some("此标签尚未载入完整编辑模型，分页内容仅供查看和复制。".into());
+        }
+        if find_panel::Toggle::command(id).is_some() && !find_panel::is_open(&self.panel.get()) {
+            return Some("请先打开文内查找".into());
         }
         if id == "texzi.editor.toggleWrap"
             && self.current().is_some_and(|doc| doc.source_wrap_limited())
@@ -1827,6 +1832,10 @@ impl Shell {
         self.owner.run(|| self.run_ready(id));
     }
     fn run_ready(self: &Rc<Self>, id: &str) {
+        if let Some(option) = find_panel::Toggle::command(id) {
+            find_panel::change(self, option);
+            return;
+        }
         if crate::rich_commands::handles(id) {
             self.markdown_command(id);
             return;
@@ -2093,7 +2102,8 @@ impl Shell {
     }
 }
 pub(crate) fn supported(id: &str) -> bool {
-    crate::rich_commands::handles(id)
+    find_panel::Toggle::command(id).is_some()
+        || crate::rich_commands::handles(id)
         || source_command(id).is_some()
         || matches!(
             id,
@@ -2148,7 +2158,8 @@ fn line_column(value: &str) -> Result<(usize, usize), String> {
     }
 }
 fn document_action(id: &str) -> bool {
-    source_command(id).is_some()
+    find_panel::Toggle::command(id).is_some()
+        || source_command(id).is_some()
         || crate::rich_commands::handles(id)
         || matches!(
             id,

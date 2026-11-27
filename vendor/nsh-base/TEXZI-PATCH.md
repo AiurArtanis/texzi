@@ -4,6 +4,7 @@ The source baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78ea
 
 ## Source editor
 
+- `EditorDecoration::outline_color` adds a pointer-transparent stroke to each displayed row of an external range. The row captures its endpoints during normal grapheme and tab layout. A zero-width range draws a narrow marker at its own position.
 - `ExternalDocument::request_history` returns an immediate update for resident history. A disk-backed history owner returns a pending result, then notifies the editor after the restored revision has been published. The buffer keeps the current revision and selection while it waits.
 - `editor/external.rs`, `buffer.rs`, `commands.rs`, `controller.rs` and `mod.rs` connect a mounted editor to texzi's versioned document owner. Both editor modes share the owner's history. The view consumes incremental changes and publishes composition transitions without serializing the full rope on each change.
 - `editor/hooks.rs` and `view.rs` expose viewport and caret positioning, preserve an anchor during reflow and report the visible logical range when the source minimap subscribes. The source sink sizes itself to the remainder of the caret row so multiline RichEdit can position IME candidates. For large external documents, its additional accessibility value follows the caret with a byte cap. The rows retain their own accessible semantics.
@@ -11,6 +12,7 @@ The source baseline is [NSH v0.7.1](https://github.com/longbridge/nsh/tree/f78ea
 
 ## Rich editor
 
+- A view-local outline is drawn above the mounted textblock using its own layout and scroll clip. Complete visible lines reuse their measured spans. Partial lines use the native text geometry, including bidi fragments. Sorted zero-width hits draw position markers on the visible lines. Clearing the external decorations also clears these shapes.
 - The native view exposes the visible document range and accepts transient, view-local decorations alongside plugin decorations. Texzi uses these for the active pane's rendered-text search. They have no effect on the document, selection or history.
 
 - `rich_editor/view/mod.rs` and `controller.rs` give the host its configured application keystrokes. Binding equivalence uses the NSH platform parser, including for v0.7.1's selection-dependent Copy. Plain Escape reaches the host at an empty text caret or a gap only after editor composition, node views, plugins and selections have had their turn. The terminal keeps its native focus behavior.

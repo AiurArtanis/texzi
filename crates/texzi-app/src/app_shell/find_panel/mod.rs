@@ -26,11 +26,23 @@ enum Intent {
     SelectAll,
 }
 #[derive(Clone, Copy, PartialEq)]
-enum Toggle {
+pub(super) enum Toggle {
     Case,
     Word,
     Regex,
     Selection,
+}
+
+impl Toggle {
+    pub(super) fn command(id: &str) -> Option<Self> {
+        Some(match id {
+            "texzi.find.toggleCase" => Self::Case,
+            "texzi.find.toggleWholeWord" => Self::Word,
+            "texzi.find.toggleRegex" => Self::Regex,
+            "texzi.find.toggleSelection" => Self::Selection,
+            _ => return None,
+        })
+    }
 }
 
 pub(super) struct State {
@@ -113,6 +125,7 @@ impl State {
     fn supersede(&self) -> u64 {
         self.stop_viewport();
         if let Some(flag) = self.cancel.take() {
+            self.metric("cancel_requested", 0);
             flag.store(true, Ordering::Release);
         }
         let n = self.generation.get().wrapping_add(1);
@@ -322,7 +335,7 @@ fn valid(s: &Shell, doc: &Rc<Document>, generation: u64) -> bool {
             .ok()
             .is_some_and(|(v, _)| st.version.get() == Some((v.revision.0, doc.displayed_rich())))
 }
-fn change(s: &Rc<Shell>, which: Toggle) {
+pub(super) fn change(s: &Rc<Shell>, which: Toggle) {
     let Some(doc) = target(s) else { return };
     let st = &s.find_panel;
     if st.editing() {
@@ -507,19 +520,31 @@ fn launch(
     st.cancel.replace(Some(cancel.clone()));
     let (tx, rx) = mpsc::channel();
     let serial = st.serial.clone();
+    let trace_start = st.started.get();
     if let Err(error) = std::thread::Builder::new()
         .name("texzi-find".into())
         .spawn(move || {
+            let stopped = || {
+                if let Some(start) = trace_start {
+                    log::info!(
+                        "TEXZI_FIND event=worker_stopped request={generation} elapsed_us={}",
+                        start.elapsed().as_micros()
+                    );
+                }
+            };
             let Ok(_guard) = serial.lock() else {
                 let _ = tx.send(Event::Failed("查找线程已退出".into()));
                 return;
             };
             if cancel.load(Ordering::Acquire) {
+                stopped();
                 return;
             }
             let event = work(cancel.clone(), &tx).unwrap_or_else(Event::Failed);
             if !cancel.load(Ordering::Acquire) {
                 let _ = tx.send(event);
+            } else {
+                stopped();
             }
         })
     {
@@ -541,6 +566,7 @@ fn poll(weak: std::rc::Weak<Shell>, doc: Rc<Document>, generation: u64, rx: Rece
                 s.find_panel.status.set("已找到匹配，正在计数…".into());
                 s.find_panel.current_mark.replace(Some(hit));
                 s.find_panel.marks_rev.update(|n| *n += 1);
+                view::note_present(&s, &doc);
             }
             Ok(event) => {
                 finish(&s, &doc, event);
@@ -641,6 +667,7 @@ fn present(s: &Rc<Shell>, doc: &Rc<Document>, hit: Option<Hit>, wrapped: bool, n
     st.current.replace(hit);
     st.current_mark.replace(view_hit.clone());
     st.marks_rev.update(|v| *v += 1);
+    view::note_present(s, doc);
     let scope = if st.scoped.get() {
         "选区"
     } else if doc.displayed_rich() {

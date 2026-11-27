@@ -118,6 +118,7 @@ impl NativeView {
         self.notify();
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn submit_find_replace(
         &self,
         epoch: u64,
