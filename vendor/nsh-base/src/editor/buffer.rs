@@ -612,11 +612,15 @@ impl Buffer {
     }
     fn external_history(&mut self, undo: bool) -> Option<(Vec<Change>, Selections)> {
         let ext = self.external.clone()?;
-        match ext.0.history(self.version, self.external_epoch, undo) {
-            Ok(update) => {
+        match ext
+            .0
+            .request_history(self.version, self.external_epoch, undo)
+        {
+            Ok(Some(update)) => {
                 let changes = self.install_external(update);
                 Some((changes, self.external_selection.take().unwrap()))
             }
+            Ok(None) => None,
             Err(error) => {
                 log::warn!("texzi document history rejected: {error}");
                 None

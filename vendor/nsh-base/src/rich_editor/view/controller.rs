@@ -196,6 +196,7 @@ pub(crate) struct Rv {
     pub(crate) tree: Rc<RefCell<Tree>>,
     pub(crate) geo: Rc<RefCell<Geometry>>,
     pub(crate) decorations: Rc<RefCell<Vec<Decoration>>>,
+    pub(super) external_decorations: Rc<RefCell<Vec<Decoration>>>,
     /// The document changed: the blocks.
     pub(crate) doc_rev: Signal<u64>,
     /// The selection changed.
@@ -292,6 +293,7 @@ impl Rv {
             tree: Rc::default(),
             geo: Rc::default(),
             decorations: Rc::default(),
+            external_decorations: Rc::default(),
             doc_rev: signal(0),
             sel_rev: signal(0),
             deco_rev: signal(0),
@@ -850,7 +852,7 @@ impl Rv {
     }
 
     /// The plugins' decorations of `state`: whether they changed.
-    fn sync_decorations(&self, state: &EditorState) -> bool {
+    pub(super) fn sync_decorations(&self, state: &EditorState) -> bool {
         let mut all = Vec::new();
         for plugin in state.plugins() {
             if let Some(set) = plugin.decorations(state) {
@@ -858,6 +860,7 @@ impl Rv {
             }
         }
         let mut current = self.decorations.borrow_mut();
+        all.extend(self.external_decorations.borrow().iter().cloned());
         if *current == all {
             return false;
         }
