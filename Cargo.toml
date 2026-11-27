@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/texzi-app", "crates/texzi-document"]
+members = ["crates/texzi-app", "crates/texzi-document", "crates/texzi-search"]
 exclude = ["vendor/markdown", "vendor/nsh-base", "vendor/nsh-platform-windows"]
 resolver = "3"
 
