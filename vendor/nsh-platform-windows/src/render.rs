@@ -2226,6 +2226,16 @@ mod tests {
 
     mod capture;
 
+    struct ReleaseTestGraphics;
+
+    impl Drop for ReleaseTestGraphics {
+        fn drop(&mut self) {
+            // Release COM objects before the harness thread reaches Windows TLS teardown.
+            crate::decor::probe::release_test_resources();
+            gfx::lost();
+        }
+    }
+
     thread_local! {
         /// How many views the passes on this thread drew ([`draw_content`]).
         pub(super) static DRAWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -2704,6 +2714,7 @@ mod tests {
     /// geometry; corners that differ make one.
     #[test]
     fn a_uniform_background_fill_makes_no_geometry() {
+        let _release_graphics = ReleaseTestGraphics;
         let Ok(gfx) = gfx::get() else {
             // No Direct3D device, not even WARP.
             return;
@@ -2755,6 +2766,7 @@ mod tests {
                 let tint = &style.view.effects.as_ref().unwrap().background_images[0];
                 [tint.clone(), tint.clone()]
             });
+        let _release_graphics = ReleaseTestGraphics;
         let Ok(gfx) = gfx::get() else {
             return;
         };

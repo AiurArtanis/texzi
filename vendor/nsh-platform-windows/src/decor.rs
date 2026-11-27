@@ -1286,6 +1286,11 @@ pub(crate) mod probe {
         GEOMETRIES.with(|count| count.set(0));
     }
 
+    pub(crate) fn release_test_resources() {
+        super::gradient::release_test_collections();
+        super::cache::clear();
+    }
+
     /// What `view` reached since the last [`reset`].
     pub(crate) fn counts(view: NodeId) -> Counts {
         COUNTS.with(|counts| counts.borrow().get(&view).copied().unwrap_or_default())
