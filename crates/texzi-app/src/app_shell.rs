@@ -43,10 +43,11 @@ mod session_recovery;
 #[path = "settings_view.rs"]
 mod settings_view;
 
-pub(super) const TITLE_BAR_HEIGHT: f32 = 44.0;
-const TITLE_ICON_WIDTH: f32 = 44.0;
+use crate::origami::{CONTROL_STATES, border_width, color, current_color, font_size, metric};
+const TITLE_ICON_WIDTH: f32 = 42.0;
 const TITLE_MENU_WIDTH: f32 = 50.0;
-const TITLE_SEARCH_GAP: f32 = 14.0;
+const TITLE_SEARCH_GAP: f32 = 10.0;
+const TITLE_DRAG_MIN: f32 = 18.0;
 
 #[derive(Clone, PartialEq)]
 struct SearchHit {
@@ -339,6 +340,7 @@ struct Shell {
     root: Signal<Option<PathBuf>>,
     sidebar: Signal<bool>,
     sidebar_width: Signal<f32>,
+    compact_drawer: Signal<bool>,
     sidebar_drag_start: Signal<f32>,
     notice: Signal<String>,
     panel: Signal<String>,
@@ -386,28 +388,25 @@ pub(crate) fn background() -> Hsla {
     }
 }
 fn frame() -> Hsla {
-    if dark() {
-        rgb(0x20242b).into()
-    } else {
-        rgb(0xf3f4f6).into()
-    }
+    current_color("paper-subtle")
 }
 
 fn secondary_foreground() -> Hsla {
-    rgb(if dark() { 0xa7b0bd } else { 0x616975 }).into()
+    current_color("muted-readable")
 }
 
 fn divider() -> Hsla {
-    rgb(if dark() { 0x434b57 } else { 0xc9ced6 }).into()
+    current_color("chrome-edge")
 }
 
 fn indicator() -> Hsla {
-    rgb(if dark() { 0x79aaef } else { 0x3267b0 }).into()
+    current_color("iris")
 }
 
 fn selected_surface() -> Hsla {
-    rgb(if dark() { 0x303e54 } else { 0xdce9fc }).into()
+    current_color("selected-bg")
 }
+
 impl Shell {
     fn primary(&self) -> Option<Rc<Document>> {
         self.docs
@@ -459,6 +458,7 @@ impl Shell {
     }
 
     fn activate_primary(&self, id: u64) {
+        self.compact_drawer.set(false);
         self.leave_editor_document(Some(id));
         if let Some(previous) = self.primary().filter(|previous| previous.id != id) {
             session_recovery::keep_scroll(&previous);
@@ -591,7 +591,8 @@ impl Shell {
             imports: Default::default(),
             root: signal(None),
             sidebar: signal(true),
-            sidebar_width: signal(232.0),
+            sidebar_width: signal(metric("sidebar")),
+            compact_drawer: signal(false),
             sidebar_drag_start: signal(232.0),
             notice: signal(String::new()),
             panel: signal(String::new()),
@@ -759,31 +760,64 @@ impl Shell {
             settings::new_document_format(encoding.as_str().unwrap(), eol.as_str().unwrap());
         self.add(self.owner.run(|| NativeView::new_file(format, eol)), None);
     }
-    fn title_room(&self) -> f32 {
-        let width = self
-            .window
+    fn content_width(&self) -> f32 {
+        self.window
             .state()
-            .map_or(880.0, |state| state.content_bounds.size.width.0);
-        width - self.window.title_bar().right.0
+            .map_or(880.0, |state| state.content_bounds.size.width.0)
     }
+
+    fn title_room(&self) -> f32 {
+        self.content_width() - self.window.title_bar().right.0
+    }
+
     fn compact_menu(&self) -> bool {
-        self.title_room()
-            < TITLE_ICON_WIDTH
-                + TITLE_MENU_WIDTH * MenuGroup::ALL.len() as f32
-                + TITLE_SEARCH_GAP
-                + 64.0
+        self.content_width() < metric("compactBelow")
+            || self.title_room()
+                < TITLE_ICON_WIDTH
+                    + TITLE_MENU_WIDTH * MenuGroup::ALL.len() as f32
+                    + TITLE_SEARCH_GAP
+                    + 64.0
     }
-    fn title_search_left(&self) -> f32 {
+
+    fn title_menu_end(&self) -> f32 {
         let count = if self.compact_menu() {
             1
         } else {
             MenuGroup::ALL.len()
         };
-        TITLE_ICON_WIDTH + TITLE_MENU_WIDTH * count as f32 + TITLE_SEARCH_GAP
+        TITLE_ICON_WIDTH + TITLE_MENU_WIDTH * count as f32
     }
+
     fn title_search_width(&self) -> Points {
-        px((self.title_room() - self.title_search_left() - 18.0).clamp(0.0, 460.0))
+        let room = self.title_room() - self.title_menu_end() - TITLE_SEARCH_GAP - TITLE_DRAG_MIN;
+        let desired = if self.compact_menu() {
+            metric("field")
+        } else {
+            360.0
+        };
+        px(room.clamp(0.0, desired))
     }
+
+    fn title_search_left(&self) -> f32 {
+        let after_menu = self.title_menu_end() + TITLE_SEARCH_GAP;
+        if self.compact_menu() {
+            return after_menu;
+        }
+        let search = self.title_search_width().0;
+        let centered = (self.content_width() - search) / 2.0;
+        centered
+            .min(self.title_room() - search - TITLE_DRAG_MIN)
+            .max(after_menu)
+    }
+
+    fn drawer(&self) -> Signal<bool> {
+        if self.compact_menu() {
+            self.compact_drawer
+        } else {
+            self.sidebar
+        }
+    }
+
     fn show_title_menu(self: &Rc<Self>, group: Option<MenuGroup>) {
         if self.modal.get() || self.current().is_some_and(|doc| doc.gate.busy()) {
             return;
@@ -804,7 +838,7 @@ impl Shell {
                     } else {
                         group.map_or(0.0, MenuGroup::position)
                     }),
-            px(TITLE_BAR_HEIGHT),
+            px(metric("title")),
         );
         self.owner.run(|| {
             let _ = popup_menu_at(entries, at);
@@ -1115,6 +1149,7 @@ impl Shell {
     fn show_folder(&self, path: PathBuf) {
         self.root.set(Some(path));
         self.sidebar.set(true);
+        self.drawer().set(true);
     }
 
     fn open_dropped(self: &Rc<Self>, uris: &[String]) {
@@ -1836,7 +1871,7 @@ impl Shell {
             "texzi.group.joinAll"=>{self.leave_second_group();self.notice.set("已合并为单组；同一文档内容与历史保持不变".into());},
             "texzi.tab.reopenClosed"=>{let doc=self.closed.borrow_mut().pop();match doc{Some(ClosedTab::Document(doc))=>{let id=doc.id;self.docs.update(|ds|ds.push(doc));self.activate_primary(id);self.restore_editor_focus();},Some(ClosedTab::File(path))=>self.open(&path),None=>self.notice.set("没有已关闭标签".into())}},
             "texzi.tab.next"|"texzi.tab.previous" => self.step_document_tab(id.ends_with("next")),
-            "texzi.sidebar.toggle"=>self.sidebar.update(|v|*v=!*v),"texzi.editor.toggleWrap"=>if let Some(doc)=self.current(){let wrap=!self.source_wrap(&doc);doc.wrap.set(Some(wrap));self.notice.set(if wrap{"当前源码视图：自动换行已开启"}else{"当前源码视图：自动换行已关闭"}.into());},
+            "texzi.sidebar.toggle"=>self.drawer().update(|v|*v=!*v),"texzi.editor.toggleWrap"=>if let Some(doc)=self.current(){let wrap=!self.source_wrap(&doc);doc.wrap.set(Some(wrap));self.notice.set(if wrap{"当前源码视图：自动换行已开启"}else{"当前源码视图：自动换行已关闭"}.into());},
             "texzi.view.toggleZen"|"texzi.view.exitZen"=>{if id.ends_with("exitZen"){self.zen.set(false);}else{self.zen.update(|v|*v=!*v);}if self.notice.get()=="再按一次 Esc 退出 Zen"{self.notice.set(String::new());}},
             "texzi.view.toggleFullScreen"=>self.window.set_mode(if self.window.state().is_some_and(|s|s.mode==WindowMode::FullScreen){WindowMode::Normal}else{WindowMode::FullScreen}),
             "texzi.commandPalette.open"|"texzi.navigation.quickOpen"=>{self.palette_query.set(String::new());let files=id.ends_with("quickOpen");let already=self.panel.get()=="files";if files{self.quick_files.set(vec![]);self.quick_notice.set("正在准备文件候选".into());}self.panel.set(if files{"files"}else{"commands"}.into());if files&&already{self.start_quick(self.root.get());}},
@@ -2648,17 +2683,19 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
         .flex_1()
         .min_w(px(0.0))
         .min_h(px(0.0))
+        .rounded(px(metric("paperRadius")))
         .overflow_hidden()
         .child(when(
             move || path.get().is_some() && !show_path.displayed_rich(),
             move || {
                 view()
                     .h(px(28.0))
+                    .bg(frame)
                     .flex_shrink_0()
                     .justify_center()
                     .pl(px(12.0))
                     .pr(px(60.0))
-                    .border_b(px(1.0))
+                    .border_b(border_width)
                     .border_color(divider)
                     .child(
                         text(move || {
@@ -2678,7 +2715,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             display_path(&path)
                         })
                         .text_color(secondary_foreground)
-                        .text_size(px(12.0))
+                        .text_size(px(font_size("meta")))
                         .number_of_lines(1)
                         .text_overflow(EllipsizeMode::Middle),
                     )
@@ -2719,13 +2756,13 @@ fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoEl
     let name = doc.clone();
     let disabled = doc.clone();
     let backdrop = doc.clone();
-    icon_button(SOURCE_ICON, "切换到源码", 32.0, 18.0)
+    icon_button(SOURCE_ICON, "切换到源码", metric("modeWidth"), 18.0)
         .absolute()
-        .h(px(28.0))
+        .h(px(metric("modeHeight")))
         .top(px(12.0))
         .right(px(16.0))
         .z_index(1)
-        .border(px(1.0))
+        .border(border_width)
         .border_color(divider)
         .bg(move || {
             if backdrop.displayed_rich() {
@@ -2769,14 +2806,15 @@ fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl Into
         })
         .items_center()
         .justify_center()
-        .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
+        .app_class(CONTROL_STATES)
+        .rounded_full()
         .absolute()
-        .w(px(32.0))
-        .h(px(28.0))
+        .w(px(metric("modeWidth")))
+        .h(px(metric("modeHeight")))
         .top(px(12.0))
         .right(px(56.0))
         .z_index(1)
-        .border(px(1.0))
+        .border(border_width)
         .border_color(divider)
         .bg(frame)
         .disabled(move || {
@@ -2795,27 +2833,62 @@ fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl Into
         .child(shell_glyph(FORMAT_ICON, 18.0))
 }
 
+fn document_paper(
+    content: impl IntoElement,
+    active: impl Fn() -> bool + 'static,
+) -> impl IntoElement {
+    view()
+        .flex_1()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .rounded(px(metric("paperRadius")))
+        .border(border_width)
+        .border_color(move || {
+            color(if active() {
+                "active-paper-edge"
+            } else {
+                "chrome-edge"
+            })
+        })
+        .bg(|| color("paper"))
+        .child(content)
+}
+
 fn groups(s: Rc<Shell>) -> AnyElement {
     let down = s.split_down.get();
+    let split = s.split;
+    let second_active = s.second_active;
     let primary = s.clone();
     let second = s.clone();
     (if down { view() } else { view().flex_row() })
         .flex_1()
         .min_w(px(0.0))
+        .min_h(px(0.0))
+        .px(px(metric("splitGap")))
+        .pb(px(metric("splitGap")))
+        .gap(move || {
+            px(if split.with(Option::is_some) {
+                metric("splitGap")
+            } else {
+                0.0
+            })
+        })
         .child(dynamic(move || {
             primary.primary().map(|doc| {
-                if let Some(large) = &doc.large {
+                let content = if let Some(large) = &doc.large {
                     large_file::viewer(primary.clone(), doc.clone(), large.clone()).into_element()
                 } else {
                     editor(primary.clone(), doc, false).into_element()
-                }
+                };
+                document_paper(content, move || !second_active.get())
             })
         }))
         .child(dynamic(move || {
-            second
-                .split
-                .get()
-                .map(|doc| editor(second.clone(), doc, true))
+            second.split.get().map(|doc| {
+                document_paper(editor(second.clone(), doc, true), move || {
+                    second_active.get()
+                })
+            })
         }))
         .into_element()
 }
@@ -2831,11 +2904,11 @@ fn title_menu_button(
 ) -> impl IntoElement {
     view()
         .w(px(TITLE_MENU_WIDTH))
-        .h(px(32.0))
+        .h(px(metric("menuHit")))
         .items_center()
         .justify_center()
         .app_class("rounded-sm hover:bg-accent")
-        .text_size(px(14.0))
+        .text_size(px(font_size("bodyUI")))
         .focusable(false)
         .window_drag(false)
         .role(AccessibilityRole::Button)
@@ -2847,6 +2920,7 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
     let window = shell.window.clone();
     let search = shell.clone();
     let width = shell.clone();
+    let offset = shell.clone();
     let panel = shell.panel;
     let menus = shell.clone();
     let icon = ImageSrc::rgba(
@@ -2857,11 +2931,11 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
-        .h(px(TITLE_BAR_HEIGHT))
+        .h(px(metric("title")))
         .flex_shrink_0()
         .pr(move || window.title_bar().right)
-        .bg(frame)
-        .border_b(px(1.0))
+        .bg(|| color("mica-shell"))
+        .border_b(border_width)
         .border_color(divider)
         .window_drag(true)
         .child(
@@ -2890,13 +2964,14 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
             view()
                 .w(move || width.title_search_width())
                 .min_w(px(0.0))
-                .ml(px(TITLE_SEARCH_GAP))
-                .h(px(32.0))
+                .ml(move || px(offset.title_search_left() - offset.title_menu_end()))
+                .h(px(metric("menuHit")))
                 .window_drag(false)
                 .child(when(
                     move || !is_quick_panel(&panel.get()),
                     move || {
                         let search = search.clone();
+                        let compact = search.clone();
                         view()
                             .size_full()
                             .px(px(8.0))
@@ -2904,25 +2979,29 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                             .gap(px(6.0))
                             .items_center()
                             .overflow_hidden()
-                            .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
-                            .border(px(1.0))
+                            .app_class(CONTROL_STATES)
+                            .rounded(px(6.0))
+                            .border(border_width)
                             .border_color(divider)
                             .focusable(true)
                             .role(AccessibilityRole::Button)
                             .label("搜索文件或命令")
                             .child(shell_glyph(SEARCH_ICON, 16.0))
-                            .child(
-                                text("搜索文件或命令…")
-                                    .min_w(px(0.0))
-                                    .number_of_lines(1)
-                                    .text_overflow(EllipsizeMode::Tail)
-                                    .text_size(px(14.0)),
-                            )
+                            .child(when(
+                                move || !compact.compact_menu(),
+                                || {
+                                    text("搜索文件或命令…")
+                                        .min_w(px(0.0))
+                                        .number_of_lines(1)
+                                        .text_overflow(EllipsizeMode::Tail)
+                                        .text_size(px(font_size("bodyUI")))
+                                },
+                            ))
                             .on_press(move |_: &()| search.run("texzi.navigation.quickOpen"))
                     },
                 )),
         )
-        .child(view().flex_1().min_w(px(18.0)).h_full())
+        .child(view().flex_1().min_w(px(TITLE_DRAG_MIN)).h_full())
 }
 
 fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
@@ -2931,26 +3010,26 @@ fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
     let settings = s.clone();
     let settings_selected = s.settings_tab;
     view()
-        .w(px(44.0))
+        .w(px(metric("rail")))
         .flex_shrink_0()
         .items_center()
-        .bg(frame)
-        .border_r(px(1.0))
+        .bg(|| color("mica-shell"))
+        .border_r(border_width)
         .border_color(divider)
         .child(activity_icon(
             FILES_ICON,
             "资源管理器",
             {
                 let s = s.clone();
-                move || !s.settings_active() && s.sidebar.get() && s.panel.get() != "folder"
+                move || !s.settings_active() && s.drawer().get() && s.panel.get() != "folder"
             },
             move || {
                 if files.panel.get() == "folder" {
                     files.close_panel();
-                    files.sidebar.set(true);
+                    files.drawer().set(true);
                 } else if files.settings_active() {
                     files.dismiss_settings(false);
-                    files.sidebar.set(true);
+                    files.drawer().set(true);
                 } else {
                     files.run("texzi.sidebar.toggle");
                 }
@@ -2978,21 +3057,23 @@ fn activity_icon(
     activate: impl Fn() + 'static,
 ) -> impl IntoElement {
     let surface = selected.clone();
+    let ink = selected.clone();
     view()
         .relative()
-        .w(px(44.0))
-        .h(px(44.0))
+        .w(px(metric("rail")))
+        .h(px(metric("rail")))
         .items_center()
         .justify_center()
         .child(
-            icon_button(path, label, 36.0, 20.0)
+            icon_button(path, label, 34.0, metric("railIcon"))
                 .bg(move || {
                     if surface() {
                         selected_surface()
                     } else {
-                        frame()
+                        rgba(0).into()
                     }
                 })
+                .text_color(move || color(if ink() { "selected-text" } else { "ink-1" }))
                 .selected(selected.clone())
                 .on_press(move |_: &()| activate()),
         )
@@ -3021,11 +3102,7 @@ fn shell_glyph(path: &str, size: f32) -> impl IntoElement {
     let source = ImageSrc::svg_markup(&format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="{path}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#
     ));
-    svg(source)
-        .w(px(size))
-        .h(px(size))
-        .flex_shrink_0()
-        .text_color(foreground)
+    svg(source).w(px(size)).h(px(size)).flex_shrink_0()
 }
 
 fn icon_button(
@@ -3040,12 +3117,14 @@ fn icon_button(
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
+        .app_class(CONTROL_STATES)
+        .rounded(px(6.0))
         .accessibility_label(label)
         .child(shell_glyph(path, glyph))
 }
 
-fn file_sidebar(s: Rc<Shell>) -> impl IntoElement {
+fn file_sidebar(s: Rc<Shell>, compact: bool) -> impl IntoElement {
+    let close = s.clone();
     let width = s.sidebar_width;
     let start = s.sidebar_drag_start;
     let window = s.window.clone();
@@ -3058,20 +3137,46 @@ fn file_sidebar(s: Rc<Shell>) -> impl IntoElement {
     let drag_max = max_width.clone();
     view()
         .relative()
+        .style_when(
+            move || compact,
+            |style| {
+                style
+                    .absolute()
+                    .left(px(metric("rail")))
+                    .top(px(0.0))
+                    .bottom(px(0.0))
+                    .z_index(2)
+            },
+        )
         .w(move || px(width.get().min(layout_max())))
+        .max_w(relative(1.0))
         .flex_shrink_0()
-        .bg(frame)
-        .border_r(px(1.0))
+        .bg(move || {
+            color(if compact {
+                "shell-solid"
+            } else {
+                "mica-sidebar"
+            })
+        })
+        .border_r(border_width)
         .border_color(divider)
         .child(
             view()
                 .h(px(38.0))
                 .px(px(8.0))
                 .flex_shrink_0()
-                .justify_center()
-                .border_b(px(1.0))
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .border_b(border_width)
                 .border_color(divider)
-                .child(text("资源管理器")),
+                .child(text("资源管理器"))
+                .child(compact.then(|| {
+                    icon_button(CLOSE_ICON, "关闭资源管理器", 26.0, 14.0).on_press(move |_: &()| {
+                        close.compact_drawer.set(false);
+                        close.restore_editor_focus();
+                    })
+                })),
         )
         .child(
             view()
@@ -3116,6 +3221,22 @@ fn tab_close_button(
         .on_press(move |_: &()| close())
 }
 
+fn tab_ribbon() -> impl IntoElement {
+    view()
+        .absolute()
+        .bottom(px(0.0))
+        .left(px(6.0))
+        .right(px(6.0))
+        .h(px(metric("tabMark")))
+        .rounded_full()
+        .pointer_events(PointerEvents::None)
+        .bg_linear(deg(120.0))
+        .gradient_from(|| color("ribbon-start"))
+        .gradient_via(|| color("ribbon-middle"))
+        .gradient_via_position(nsh_core::geometry::percentage(0.48))
+        .gradient_to(|| color("ribbon-end"))
+}
+
 fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
     let docs = s.docs;
     let active = s.active;
@@ -3125,112 +3246,128 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
     let split = s.split;
     let split_tab = s.clone();
     view()
-        .h(px(38.0))
+        .h(px(metric("tabTrack")))
         .flex_shrink_0()
         .items_center()
         .flex_row()
-        .bg(frame)
-        .border_b(px(1.0))
-        .border_color(divider)
         .child(
             scroll()
                 .horizontal()
                 .scrollbar(false)
                 .flex_1()
                 .min_w(px(0.0))
-                .child(view().flex_row().child(each(
-                    move || docs.get(),
-                    |doc: &Rc<Document>| doc.id,
-                    move |doc, _| {
-                        let doc = doc.get_untracked();
-                        let tab = s.clone();
-                        let close = s.clone();
-                        let id = doc.id;
-                        let label = doc.clone();
-                        view()
-                            .relative()
-                            .group_named(TAB_CLOSE_GROUP)
-                            .h(px(38.0))
-                            .min_w(px(104.0))
-                            .max_w(px(220.0))
-                            .pr(px(6.0))
-                            .flex_row()
-                            .items_center()
-                            .bg(move || {
-                                if active.get() == id && settings_tab.get() != SettingsTab::Active {
-                                    background()
-                                } else {
-                                    frame()
-                                }
-                            })
-                            .border_r(px(1.0))
-                            .border_color(divider)
-                            .child(
-                                nsh_base::button()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .h_full()
-                                    .px(px(10.0))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .h(px(metric("tabTrack")))
+                        .gap(px(4.0))
+                        .pl(px(metric("splitGap")))
+                        .child(each(
+                            move || docs.get(),
+                            |doc: &Rc<Document>| doc.id,
+                            move |doc, _| {
+                                let doc = doc.get_untracked();
+                                let tab = s.clone();
+                                let close = s.clone();
+                                let id = doc.id;
+                                let label = doc.clone();
+                                view()
+                                    .relative()
+                                    .group_named(TAB_CLOSE_GROUP)
+                                    .h(px(metric("tab")))
+                                    .rounded(px(metric("tabRadius")))
+                                    .min_w(px(104.0))
+                                    .max_w(px(metric("tabLimit")))
+                                    .pr(px(6.0))
                                     .flex_row()
                                     .items_center()
-                                    .gap(px(6.0))
-                                    .app_class("hover:bg-accent focus-visible:bg-accent")
-                                    .selected(move || {
-                                        active.get() == id
+                                    .bg(move || {
+                                        if active.get() == id
                                             && settings_tab.get() != SettingsTab::Active
+                                        {
+                                            current_color("tab-active-bg")
+                                        } else {
+                                            Hsla::from(rgba(0))
+                                        }
                                     })
                                     .child(
-                                        text(move || label.name())
+                                        nsh_base::button()
+                                            .flex_1()
                                             .min_w(px(0.0))
-                                            .number_of_lines(1)
-                                            .text_overflow(EllipsizeMode::Tail),
+                                            .h_full()
+                                            .px(px(10.0))
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .app_class(CONTROL_STATES)
+                                            .text_color(move || {
+                                                color(
+                                                    if active.get() == id
+                                                        && settings_tab.get() != SettingsTab::Active
+                                                    {
+                                                        "selected-text"
+                                                    } else {
+                                                        "ink-1"
+                                                    },
+                                                )
+                                            })
+                                            .accessibility_label({
+                                                let label = label.clone();
+                                                move || Some(SharedString::from(label.name()))
+                                            })
+                                            .selected(move || {
+                                                active.get() == id
+                                                    && settings_tab.get() != SettingsTab::Active
+                                            })
+                                            .child(
+                                                text(move || label.name())
+                                                    .text_size(px(font_size("label")))
+                                                    .min_w(px(0.0))
+                                                    .number_of_lines(1)
+                                                    .text_overflow(EllipsizeMode::Tail),
+                                            )
+                                            .child(when(
+                                                move || {
+                                                    doc.source.track();
+                                                    doc.needs_close_confirmation()
+                                                },
+                                                || {
+                                                    view()
+                                                        .w(px(6.0))
+                                                        .h(px(6.0))
+                                                        .flex_shrink_0()
+                                                        .app_class("rounded-full")
+                                                        .bg(|| color("apricot"))
+                                                },
+                                            ))
+                                            .on_press(move |_: &()| {
+                                                let from_settings = tab.settings_active();
+                                                tab.activate_primary(id);
+                                                if from_settings {
+                                                    tab.restore_editor_focus();
+                                                }
+                                            }),
                                     )
+                                    .child(tab_close_button(
+                                        close.clone(),
+                                        "关闭此标签",
+                                        move || {
+                                            active.get() == id
+                                                && settings_tab.get() != SettingsTab::Active
+                                        },
+                                        move || close.close_tab(id),
+                                    ))
                                     .child(when(
                                         move || {
-                                            doc.source.track();
-                                            doc.needs_close_confirmation()
+                                            active.get() == id
+                                                && settings_tab.get() != SettingsTab::Active
                                         },
-                                        || {
-                                            view()
-                                                .w(px(6.0))
-                                                .h(px(6.0))
-                                                .flex_shrink_0()
-                                                .app_class("rounded-full")
-                                                .bg(indicator)
-                                        },
+                                        tab_ribbon,
                                     ))
-                                    .on_press(move |_: &()| {
-                                        let from_settings = tab.settings_active();
-                                        tab.activate_primary(id);
-                                        if from_settings {
-                                            tab.restore_editor_focus();
-                                        }
-                                    }),
-                            )
-                            .child(tab_close_button(
-                                close.clone(),
-                                "关闭此标签",
-                                move || {
-                                    active.get() == id && settings_tab.get() != SettingsTab::Active
-                                },
-                                move || close.close_tab(id),
-                            ))
-                            .child(when(
-                                move || {
-                                    active.get() == id && settings_tab.get() != SettingsTab::Active
-                                },
-                                || {
-                                    view()
-                                        .absolute()
-                                        .bottom(px(0.0))
-                                        .left(px(0.0))
-                                        .right(px(0.0))
-                                        .h(px(2.0))
-                                        .bg(indicator)
-                                },
-                            ))
-                    },
-                ))),
+                            },
+                        )),
+                ),
         )
         .child(when(
             move || settings_tab.get() != SettingsTab::Closed,
@@ -3240,28 +3377,34 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                 view()
                     .relative()
                     .group_named(TAB_CLOSE_GROUP)
-                    .h(px(38.0))
+                    .h(px(metric("tab")))
+                    .rounded(px(metric("tabRadius")))
                     .flex_row()
                     .items_center()
                     .pr(px(6.0))
-                    .border_r(px(1.0))
-                    .border_color(divider)
                     .bg(move || {
                         if settings_tab.get() == SettingsTab::Active {
-                            background()
+                            current_color("tab-active-bg")
                         } else {
-                            frame()
+                            Hsla::from(rgba(0))
                         }
                     })
                     .child(
                         nsh_base::button()
                             .h_full()
                             .px(px(10.0))
-                            .app_class("hover:bg-accent focus-visible:bg-accent")
+                            .app_class(CONTROL_STATES)
+                            .text_color(move || {
+                                color(if settings_tab.get() == SettingsTab::Active {
+                                    "selected-text"
+                                } else {
+                                    "ink-1"
+                                })
+                            })
                             .accessibility_label("设置标签")
                             .selected(move || settings_tab.get() == SettingsTab::Active)
                             .on_press(move |_: &()| open.show_settings())
-                            .child(text("设置")),
+                            .child(text("设置").text_size(px(font_size("label")))),
                     )
                     .child(tab_close_button(
                         close.clone(),
@@ -3271,15 +3414,7 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                     ))
                     .child(when(
                         move || settings_tab.get() == SettingsTab::Active,
-                        || {
-                            view()
-                                .absolute()
-                                .bottom(px(0.0))
-                                .left(px(0.0))
-                                .right(px(0.0))
-                                .h(px(2.0))
-                                .bg(indicator)
-                        },
+                        tab_ribbon,
                     ))
             },
         ))
@@ -3300,11 +3435,14 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
 }
 
 fn render_shell(s: Rc<Shell>) -> impl IntoElement {
+    crate::origami::install();
     let toolbar = s.clone();
     let tabs = s.clone();
     let side = s.clone();
+    let compact_side = s.clone();
     let activity = s.clone();
     let content = s.clone();
+    let settings_side = s.clone();
     let preferences_side = s.clone();
     let preferences_page = s.clone();
     let settings_tab = s.settings_tab;
@@ -3312,12 +3450,13 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let editor_width = signal(None::<Points>);
     let layout = s.clone();
     effect(move || {
-        narrow.set(
-            layout
-                .window
-                .state()
-                .is_some_and(|state| state.content_bounds.size.width.0 < 876.0),
-        );
+        let width = layout.content_width();
+        let categories = if width < metric("settingsStackBelow") {
+            0.0
+        } else {
+            metric("sidebar")
+        };
+        narrow.set(width - categories - metric("rail") < metric("settingsStackBelow"));
     });
     let panels = s.clone();
     let quick = s.clone();
@@ -3330,8 +3469,8 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     view()
         .relative()
         .size_full()
-        .bg(background)
-        .text_color(foreground)
+        .text_color(|| color("ink-1"))
+        .text_size(px(font_size("bodyUI")))
         .on_file_drop(move |event: &FileDropEvent| drop_shell.open_dropped(&event.uris))
         .child(when(move || !zen.get(), move || title_bar(toolbar.clone())))
         .child(when(
@@ -3341,7 +3480,8 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                 let window = zen_window.clone();
                 view()
                     .group_named("zen-exit")
-                    .h(px(TITLE_BAR_HEIGHT))
+                    .bg(|| color("mica-shell"))
+                    .h(px(metric("title")))
                     .w_full()
                     .flex_row()
                     .pr(move || window.title_bar().right)
@@ -3370,6 +3510,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
         ))
         .child(
             view()
+                .relative()
                 .flex_row()
                 .flex_1()
                 .child(when(
@@ -3379,18 +3520,28 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                 .child(when(
                     {
                         let s = side.clone();
-                        move || s.sidebar.get() && !zen.get() && !s.settings_active()
+                        move || {
+                            s.sidebar.get()
+                                && !s.compact_menu()
+                                && !zen.get()
+                                && !s.settings_active()
+                        }
                     },
-                    move || file_sidebar(side.clone()),
+                    move || file_sidebar(side.clone(), false),
                 ))
                 .child(when(
-                    move || !zen.get() && settings_tab.get() == SettingsTab::Active,
-                    move || settings_view::sidebar(preferences_side.settings_view.clone()),
+                    move || {
+                        !zen.get()
+                            && settings_tab.get() == SettingsTab::Active
+                            && settings_side.content_width() >= metric("settingsStackBelow")
+                    },
+                    move || settings_view::sidebar(preferences_side.settings_view.clone(), false),
                 ))
                 .child(
                     view()
                         .flex_1()
                         .min_w(px(0.0))
+                        .bg(|| color("mica-shell"))
                         .child(when(move || !zen.get(), move || tab_bar(tabs.clone())))
                         .child(
                             view()
@@ -3424,12 +3575,29 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                                 .child(when(
                                     move || settings_tab.get() == SettingsTab::Active,
                                     move || {
+                                        let compact = preferences_page.clone();
+                                        let categories = preferences_page.settings_view.clone();
                                         view()
                                             .absolute()
-                                            .top(px(0.0))
-                                            .left(px(0.0))
-                                            .right(px(0.0))
-                                            .bottom(px(0.0))
+                                            .top(px(metric("splitGap")))
+                                            .left(px(metric("splitGap")))
+                                            .right(px(metric("splitGap")))
+                                            .bottom(px(metric("splitGap")))
+                                            .min_h(px(0.0))
+                                            .rounded(px(metric("paperRadius")))
+                                            .border(border_width)
+                                            .border_color(divider)
+                                            .bg(|| color("paper"))
+                                            .overflow_hidden()
+                                            .child(when(
+                                                move || {
+                                                    compact.content_width()
+                                                        < metric("settingsStackBelow")
+                                                },
+                                                move || {
+                                                    settings_view::sidebar(categories.clone(), true)
+                                                },
+                                            ))
                                             .child(settings_view::content(
                                                 preferences_page.settings.clone(),
                                                 preferences_page.settings_view.clone(),
@@ -3444,7 +3612,19 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                                 .then(|| panel(panels.clone()))
                                 .flatten()
                         })),
-                ),
+                )
+                .child(when(
+                    {
+                        let shell = compact_side.clone();
+                        move || {
+                            shell.compact_menu()
+                                && shell.compact_drawer.get()
+                                && !zen.get()
+                                && !shell.settings_active()
+                        }
+                    },
+                    move || file_sidebar(compact_side.clone(), true),
+                )),
         )
         .child(when(
             move || !zen.get(),
@@ -3482,48 +3662,75 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
 }
 
 fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
-    let notice = shell.notice;
     let document = shell.clone();
+    let status = computed(move || {
+        let message = document.notice.get();
+        let current = document.current();
+        let dirty = current.as_ref().is_some_and(|doc| {
+            doc.source.track();
+            doc.needs_close_confirmation()
+        });
+        let large = current.as_ref().and_then(|doc| doc.large.as_ref());
+        let important = |message: &str| {
+            ["失败", "未能", "无法", "错误"]
+                .iter()
+                .any(|part| message.contains(part))
+        };
+        let tone = if important(&message) {
+            "error-fg"
+        } else if dirty || large.is_some() {
+            "warning-fg"
+        } else if message.starts_with("已保存") {
+            "success-fg"
+        } else {
+            "muted-readable"
+        };
+        let message = match (dirty, message.is_empty() || message.starts_with("已保存")) {
+            (true, true) => "未保存".to_owned(),
+            (true, false) => format!("{message} · 未保存"),
+            (false, _) if message.is_empty() && large.is_none() => "就绪".to_owned(),
+            _ => message,
+        };
+        let message = if let Some(large) = large {
+            let state = large.status();
+            if message.is_empty() {
+                state
+            } else if important(&message) {
+                format!("{message} · {state}")
+            } else {
+                format!("{state} · {message}")
+            }
+        } else {
+            message
+        };
+        (message, tone)
+    });
     view()
-        .h(px(24.0))
+        .h(px(metric("status")))
         .flex_shrink_0()
         .flex_row()
         .items_center()
         .gap(px(12.0))
         .px(px(8.0))
-        .bg(frame)
-        .border_t(px(1.0))
+        .bg(|| color("mica-statusbar"))
+        .border_t(border_width)
         .border_color(divider)
         .text_color(secondary_foreground)
-        .text_size(px(12.0))
+        .text_size(px(font_size("meta")))
+        .tabular_nums()
         .child(
-            text(move || {
-                let message = notice.get();
-                let dirty = document.current().is_some_and(|doc| {
-                    doc.source.track();
-                    doc.needs_close_confirmation()
-                });
-                if dirty {
-                    if message.is_empty() || message.starts_with("已保存") {
-                        "未保存".into()
-                    } else {
-                        format!("{message} · 未保存")
-                    }
-                } else if message.is_empty() {
-                    "就绪".into()
-                } else {
-                    message
-                }
-            })
-            .flex_1()
-            .min_w(px(0.0))
-            .number_of_lines(1)
-            .text_overflow(EllipsizeMode::Tail),
+            text(move || status.get().0)
+                .text_color(move || color(status.get().1))
+                .flex_1()
+                .min_w(px(0.0))
+                .number_of_lines(1)
+                .text_overflow(EllipsizeMode::Tail),
         )
         .child(dynamic(move || {
             let doc = shell.current()?;
-            if let Some(large) = &doc.large {
-                return Some(view().child(text(large.status())).into_element());
+            let compact = shell.compact_menu();
+            if doc.large.is_some() {
+                return None;
             }
             let rich = doc.displayed_rich();
             let markdown = doc.is_markdown();
@@ -3545,7 +3752,7 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 .items_center()
                 .min_w(px(0.0))
                 .gap(px(12.0));
-            if let Some(position) = position {
+            if !compact && let Some(position) = position {
                 fields = fields.child(text(position).number_of_lines(1));
             }
             if !rich {
@@ -3553,10 +3760,10 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 let activate = shell.clone();
                 let label_shell = shell.clone();
                 let label_doc = doc.clone();
-                if doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES {
+                if !compact && doc.source.disk_len() > large_file::SOURCE_ONLY_BYTES {
                     fields = fields.child(text("大文件 · 无高亮").number_of_lines(1));
                 }
-                if doc.source_wrap_limited() {
+                if !compact && doc.source_wrap_limited() {
                     fields = fields.child(text("已暂停自动换行").number_of_lines(1));
                 }
                 fields = fields.child(
@@ -3569,6 +3776,9 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                         )
                         .on_press(move |_: &()| activate.show_tab_size_menu(doc.clone(), anchor)),
                 );
+            }
+            if compact {
+                return Some(fields.into_element());
             }
             Some(
                 fields

@@ -214,7 +214,13 @@ fn activity_settings_opens_one_closable_tab_at_the_bottom() {
         .unwrap()
         .0;
     let frame = core.measure(gear).unwrap();
-    assert!(frame.page.x.0 < 44.0 && frame.page.y.0 > 500.0);
+    assert!(frame.page.x.0 + frame.frame.size.width.0 <= 42.0);
+    assert!(frame.page.y.0 > 500.0);
+    assert!(frame.page.y.0 + frame.frame.size.height.0 <= 600.0 - 26.0);
+    assert_eq!(
+        core.tokens().color("paper"),
+        Some(AdaptiveColor::rgb(0xfcfcfe, 0x161923))
+    );
     assert!(core.component_event(gear, EventKind::Press, &EventPayload::None));
     let opened = controls(&mut core);
     let label = opened
