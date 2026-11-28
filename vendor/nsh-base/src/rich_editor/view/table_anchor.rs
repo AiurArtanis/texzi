@@ -1,4 +1,7 @@
-use super::{RichEditorApi, geometry::Hit};
+use super::{
+    RichEditorApi,
+    geometry::{DOC, Hit},
+};
 use crate::rich_editor::state::Selection;
 use nsh_core::prelude::*;
 
@@ -18,7 +21,10 @@ pub enum TableAnchorGeometry {
     Clipped,
     Visible {
         cell: Bounds<Points>,
+        table: Bounds<Points>,
         viewport: Size<Points>,
+        /// Bottom of the preceding and top of the following visible block.
+        neighbors: [Option<Points>; 2],
     },
 }
 
@@ -53,19 +59,48 @@ impl RichEditorApi {
             let cell = tree.id_at(anchor.cell)?;
             geo.table_scroll_handles.get(&table)?.node()?;
             let table_clip = geo.table_viewport(table)?;
-            let (_, frame) = geo.frames.get(&cell)?;
-            Some((Bounds::new(geo.origin(cell)?, frame.size), table_clip))
+            let (parent, table_frame) = geo.frames.get(&table)?;
+            let table_bounds = Bounds::new(geo.origin(table)?, table_frame.size);
+            let (_, cell_frame) = geo.frames.get(&cell)?;
+            let cell_bounds = Bounds::new(geo.origin(cell)?, cell_frame.size);
+            let mut neighbors = [None; 2];
+            if let Some(siblings) = tree.children.get(&parent.unwrap_or(DOC))
+                && let Ok(index) = siblings.binary_search_by_key(&anchor.table, |item| {
+                    tree.pos(item.id).unwrap_or(usize::MAX)
+                })
+            {
+                let bounds = |index: usize| {
+                    let id = siblings.get(index)?.id;
+                    let (_, bounds) = geo.frames.get(&id)?;
+                    Some(Bounds::new(geo.origin(id)?, bounds.size))
+                };
+                neighbors[0] = index
+                    .checked_sub(1)
+                    .and_then(bounds)
+                    .filter(|bounds| bounds.bottom() > offset)
+                    .map(|bounds| bounds.bottom() - offset);
+                neighbors[1] = bounds(index + 1)
+                    .filter(|bounds| bounds.origin.y < offset + viewport.height)
+                    .map(|bounds| bounds.origin.y - offset);
+            }
+            Some((cell_bounds, table_bounds.intersect(&table_clip), neighbors))
         };
-        let Some((cell, table_clip)) = mounted() else {
+        let Some((cell, mut table, neighbors)) = mounted() else {
             return Unmeasured;
         };
         let body = Bounds::new(point(px(0.0), offset), viewport);
-        let mut cell = cell.intersect(&table_clip).intersect(&body);
+        let mut cell = cell.intersect(&table).intersect(&body);
         if cell.is_empty() {
             return Clipped;
         }
         cell.origin.y -= offset;
-        Visible { cell, viewport }
+        table.origin.y -= offset;
+        Visible {
+            cell,
+            table,
+            viewport,
+            neighbors,
+        }
     }
 
     pub fn restore_table_input(&self, from: ElementRef) {

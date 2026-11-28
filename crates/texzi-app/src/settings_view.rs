@@ -1,4 +1,4 @@
-use super::{divider, frame, secondary_foreground, selected_surface};
+use super::{SEARCH_ICON, divider, frame, secondary_foreground, shell_glyph};
 use crate::origami::{CONTROL_STATES, border_width, color, font_size, metric};
 use crate::{native_menu, settings};
 use nsh_core::{
@@ -12,6 +12,7 @@ use std::{path::PathBuf, rc::Rc};
 const THEME_CARD_WIDTH: f32 = 108.0;
 const THEME_CARD_GAP: f32 = 10.0;
 const THEME_OPTIONS_WIDTH: f32 = 3.0 * THEME_CARD_WIDTH + 2.0 * THEME_CARD_GAP;
+const CARD_RADIUS: f32 = 11.0;
 
 const CATEGORIES: &[&str] = &[
     "常用",
@@ -133,18 +134,47 @@ fn pretty_key(stroke: &str) -> String {
         .join("+")
 }
 
+fn segment_panel() -> View {
+    view()
+        .min_w(px(0.0))
+        .max_w(relative(1.0))
+        .flex_row()
+        .flex_wrap()
+        .gap(px(2.0))
+        .p(px(2.0))
+        .rounded(px(9.0))
+        .border(border_width)
+        .border_color(divider)
+        .bg(|| color("paper-subtle"))
+}
+
 fn choice_control(selected: impl Fn() -> bool + Clone + 'static) -> nsh_base::ButtonElement {
     let fill = selected.clone();
     let ink = selected.clone();
+    let edge = selected.clone();
     nsh_base::button()
-        .h(px(metric("field")))
+        .h(px(26.0))
         .px(px(10.0))
         .items_center()
         .justify_center()
         .app_class(CONTROL_STATES)
         .rounded(px(6.0))
-        .bg(move || if fill() { selected_surface() } else { frame() })
-        .text_color(move || color(if ink() { "selected-text" } else { "ink-1" }))
+        .border(border_width)
+        .border_color(move || {
+            color(if edge() {
+                "seam-strong"
+            } else {
+                "control-face"
+            })
+        })
+        .bg(move || {
+            color(if fill() {
+                "tab-active-bg"
+            } else {
+                "control-face"
+            })
+        })
+        .text_color(move || color(if ink() { "selected-text" } else { "ink-2" }))
         .selected(selected)
 }
 
@@ -152,7 +182,12 @@ fn choice(
     label: impl Into<SharedString>,
     selected: impl Fn() -> bool + Clone + 'static,
 ) -> nsh_base::ButtonElement {
-    choice_control(selected).child(text(label.into()))
+    let weight = selected.clone();
+    choice_control(selected).child(
+        text(label.into())
+            .text_size(px(font_size("meta")))
+            .style_when(weight, |style| style.font_weight(FontWeight::SEMIBOLD)),
+    )
 }
 
 fn theme_choice(
@@ -161,37 +196,64 @@ fn theme_choice(
     selected: impl Fn() -> bool + Clone + 'static,
 ) -> nsh_base::ButtonElement {
     let chosen = selected.clone();
-    let sample = crate::origami::sample_color("paper");
-    let first = if mode == "dark" {
-        sample.dark
-    } else {
-        sample.light
+    let ring = selected.clone();
+    let light = crate::origami::sample_color("paper-subtle").light;
+    let dark = crate::origami::sample_color("paper").dark;
+    let (preview, caption) = match mode {
+        "light" => (view().bg(light), "浅色云母"),
+        "dark" => (view().bg(dark), "深色折光"),
+        _ => (
+            view()
+                .bg_linear(deg(110.0))
+                .gradient_from(light)
+                .gradient_from_position(nsh_core::geometry::percentage(0.5))
+                .gradient_to(dark)
+                .gradient_to_position(nsh_core::geometry::percentage(0.5)),
+            label,
+        ),
     };
-    let second = if mode == "light" {
-        sample.light
-    } else {
-        sample.dark
-    };
-    choice_control(selected)
+    nsh_base::button()
+        .selected(selected)
+        .app_class(CONTROL_STATES)
+        .rounded(px(10.0))
+        .bg(|| color("paper"))
+        .text_color(|| color("ink-1"))
         .w(px(THEME_CARD_WIDTH))
         .max_w(relative(1.0))
-        .h(px(78.0))
-        .p(px(6.0))
-        .gap(px(5.0))
+        .h(px(86.0))
+        .p(px(7.0))
+        .gap(px(6.0))
+        .items_center()
         .border(border_width)
         .border_color(move || color(if chosen() { "iris" } else { "chrome-edge" }))
+        .style_when(ring, |style| {
+            style.outline(px(3.0)).outline_color(|| color("iris-soft"))
+        })
         .accessibility_label(label)
         .child(
-            view()
+            preview
+                .relative()
                 .w_full()
-                .h(px(42.0))
-                .rounded(px(4.0))
-                .bg(first)
-                .flex_row()
-                .child(view().flex_1())
-                .child(view().flex_1().bg(second).rounded_r(px(4.0))),
+                .h(px(48.0))
+                .flex_shrink_0()
+                .rounded(px(6.0))
+                .border(border_width)
+                .border_color(divider)
+                .child(crate::origami::ribbon(
+                    view()
+                        .absolute()
+                        .left(px(8.0))
+                        .right(px(8.0))
+                        .bottom(px(7.0))
+                        .h(px(3.0))
+                        .rounded_full(),
+                )),
         )
-        .child(text(label).text_size(px(font_size("meta"))))
+        .child(
+            text(caption)
+                .text_size(px(11.5))
+                .font_weight(FontWeight::SEMIBOLD),
+        )
 }
 
 pub(super) fn sidebar(state: Rc<SettingsView>, compact: bool) -> impl IntoElement {
@@ -204,12 +266,36 @@ pub(super) fn sidebar(state: Rc<SettingsView>, compact: bool) -> impl IntoElemen
         view()
     };
     let categories = labels
-        .p(px(6.0))
+        .px(px(8.0))
         .gap(px(2.0))
         .children(CATEGORIES.iter().copied().map(move |category| {
-            choice(category, move || section.get() == category)
+            nsh_base::button()
+                .h(px(28.0))
                 .flex_shrink_0()
+                .px(px(12.0))
+                .justify_center()
                 .items_start()
+                .rounded(px(7.0))
+                .app_class(CONTROL_STATES)
+                .bg(move || {
+                    color(if section.get() == category {
+                        "selected-bg"
+                    } else {
+                        "control-face"
+                    })
+                })
+                .text_color(move || {
+                    color(if section.get() == category {
+                        "selected-text"
+                    } else {
+                        "ink-2"
+                    })
+                })
+                .selected(move || section.get() == category)
+                .child(text(category).text_size(px(font_size("label"))).style_when(
+                    move || section.get() == category,
+                    |style| style.font_weight(FontWeight::SEMIBOLD),
+                ))
                 .on_press(move |_: &()| {
                     section.set(category);
                     target.set(None);
@@ -221,6 +307,7 @@ pub(super) fn sidebar(state: Rc<SettingsView>, compact: bool) -> impl IntoElemen
             .h(px(44.0))
             .w_full()
             .flex_shrink_0()
+            .justify_center()
             .border_b(border_width)
             .border_color(divider)
             .child(scroll().horizontal().child(categories))
@@ -232,6 +319,15 @@ pub(super) fn sidebar(state: Rc<SettingsView>, compact: bool) -> impl IntoElemen
             .bg(|| color("mica-sidebar"))
             .border_r(border_width)
             .border_color(divider)
+            .child(
+                text("设置分类")
+                    .pt(px(12.0))
+                    .pb(px(7.0))
+                    .px(px(16.0))
+                    .text_size(px(11.5))
+                    .text_color(secondary_foreground)
+                    .font_weight(FontWeight::SEMIBOLD),
+            )
             .child(scroll().flex_1().child(categories))
     }
 }
@@ -358,14 +454,12 @@ fn control(
             .on_blur(move |_: &()| blur())
             .into_element();
     }
-    view()
-        .flex_row()
-        .flex_wrap()
-        .gap(px(if id == settings::THEME {
-            THEME_CARD_GAP
-        } else {
-            4.0
-        }))
+    let choices = if id == settings::THEME {
+        view().flex_row().flex_wrap().gap(px(THEME_CARD_GAP))
+    } else {
+        segment_panel()
+    };
+    choices
         .children(
             spec["options"]
                 .as_array()
@@ -376,6 +470,13 @@ fn control(
                         "on" => "开启",
                         "off" => "关闭",
                         label => label,
+                    };
+                    let caption = match (id, label) {
+                        (settings::DEFAULT_EOL, "CRLF") => "CRLF (Windows)",
+                        (settings::DEFAULT_EOL, "LF") => "LF (Unix)",
+                        (settings::AUTO_SAVE, "延迟后") => "停止输入延迟后",
+                        (settings::RESTORE, "开启") => "开启恢复",
+                        _ => label,
                     };
                     let value = option["value"].clone();
                     let selected = value.clone();
@@ -391,7 +492,7 @@ fn control(
                     let button = if id == settings::THEME {
                         theme_choice(label, value.as_str().unwrap_or_default(), is_selected)
                     } else {
-                        choice(label, is_selected)
+                        choice(caption, is_selected).accessibility_label(label)
                     };
                     button.on_press(move |_: &()| {
                         apply.apply(
@@ -438,7 +539,8 @@ fn encoding_picker(
     view()
         .flex_row()
         .flex_wrap()
-        .gap(px(4.0))
+        .items_center()
+        .gap(px(6.0))
         .child(
             nsh_base::select()
                 .items(
@@ -463,23 +565,27 @@ fn encoding_picker(
                 .trigger(
                     view()
                         .h(px(metric("field")))
-                        .px(px(9.0))
+                        .px(px(11.0))
                         .flex_row()
                         .items_center()
                         .gap(px(8.0))
                         .app_class(CONTROL_STATES)
-                        .rounded(px(6.0))
+                        .rounded(px(8.0))
                         .border(border_width)
-                        .border_color(divider)
-                        .bg(frame)
-                        .child(text(move || {
-                            let value = selected.get();
-                            options
-                                .iter()
-                                .find(|option| option["value"] == value.as_ref())
-                                .and_then(|option| option["label"].as_str())
-                                .unwrap_or_default()
-                        }))
+                        .border_color(|| color("iris-border"))
+                        .bg(|| color("paper"))
+                        .child(
+                            text(move || {
+                                let value = selected.get();
+                                options
+                                    .iter()
+                                    .find(|option| option["value"] == value.as_ref())
+                                    .and_then(|option| option["label"].as_str())
+                                    .unwrap_or_default()
+                            })
+                            .text_size(px(font_size("label")))
+                            .font_weight(FontWeight::SEMIBOLD),
+                        )
                         .child(text("▾").text_color(secondary_foreground)),
                 )
                 .on_change(move |value: &Option<SharedString>| {
@@ -497,7 +603,17 @@ fn encoding_picker(
             .into_iter()
             .map(move |(value, label)| {
                 let choose = choose.clone();
-                choice(label, move || selected.get().as_ref() == value)
+                choice_control(move || selected.get().as_ref() == value)
+                    .h(px(24.0))
+                    .px(px(5.0))
+                    .border_color(move || {
+                        color(if selected.get().as_ref() == value {
+                            "iris-border"
+                        } else {
+                            "seam"
+                        })
+                    })
+                    .child(text(label).text_size(px(11.0)))
                     .on_press(move |_: &()| choose(value))
             }),
         )
@@ -505,6 +621,9 @@ fn encoding_picker(
 
 fn setting_description(id: &str) -> &'static str {
     match id {
+        settings::AUTO_SAVE => {
+            "关闭时只在显式保存时写原文件。未命名文档进入安全恢复区，不自动选择磁盘路径。"
+        }
         settings::RESTORE => {
             "下次启动恢复窗口、标签和未保存的临时文本。关闭此设置会保留已有恢复记录。"
         }
@@ -518,22 +637,38 @@ fn row(
     state: Rc<SettingsView>,
     root: Signal<Option<PathBuf>>,
     narrow: Signal<bool>,
+    show_key: bool,
 ) -> impl IntoElement {
     let spec = settings::definition(id);
     let source = settings.clone();
     let source_scope = state.clone();
+    let source = computed(move || {
+        source
+            .effective(id, selected_root(&source_scope, root).as_deref())
+            .1
+    });
     let reset = settings.clone();
     let reset_scope = state.clone();
     let limited_scope = state.clone();
     let font = settings.clone();
     let font_scope = state.clone();
+    let control_width = match id {
+        settings::THEME | settings::DEFAULT_ENCODING => THEME_OPTIONS_WIDTH,
+        settings::AUTO_SAVE => 280.0,
+        _ => 240.0,
+    };
     view()
-        .py(px(12.0))
-        .border_b(border_width)
-        .border_color(divider)
+        .w_full()
+        .px(move || px(if narrow.get() { 12.0 } else { 18.0 }))
+        .py(move || px(if narrow.get() { 12.0 } else { 16.0 }))
+        .rounded(px(CARD_RADIUS))
+        .bg(frame)
+        .border(border_width)
+        .border_color(|| color("seam"))
         .flex_row()
-        .gap(px(16.0))
+        .gap(move || px(if narrow.get() { 10.0 } else { 24.0 }))
         .items_start()
+        .justify_between()
         .when(state.target.get() == Some(id), |row| {
             row.element_ref(&state.field)
                 .focusable(true)
@@ -546,24 +681,39 @@ fn row(
             view()
                 .flex_1()
                 .min_w(px(0.0))
+                .max_w(px(480.0))
+                .style_when(move || narrow.get(), |style| style.flex_none().w_full())
                 .gap(px(4.0))
-                .child(text(spec["name"].as_str().unwrap()))
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(text(spec["name"].as_str().unwrap()).font_weight(FontWeight::SEMIBOLD))
+                        .child(when(show_key, move || {
+                            text(id)
+                                .text_size(px(11.0))
+                                .font_family("Cascadia Mono, Consolas, monospace")
+                                .text_color(|| color("syn-kw"))
+                        }))
+                        .child(
+                            view()
+                                .rounded_full()
+                                .px(px(7.0))
+                                .py(px(1.0))
+                                .bg(move || color(if source.get() == "默认" { "paper" } else { "iris-soft" }))
+                                .child(
+                                    text(move || format!("来源 · {}", source.get()))
+                                        .text_size(px(10.5))
+                                        .text_color(move || color(if source.get() == "默认" { "ink-2" } else { "syn-kw" })),
+                                ),
+                        ),
+                )
                 .child(
                     text(setting_description(id))
                         .text_size(px(font_size("meta")))
                         .text_color(secondary_foreground),
-                )
-                .child(
-                    text(move || {
-                        format!(
-                            "来源 · {}",
-                            source
-                                .effective(id, selected_root(&source_scope, root).as_deref())
-                                .1
-                        )
-                    })
-                    .text_size(px(font_size("meta")))
-                    .text_color(secondary_foreground),
                 )
                 .child(when(id == settings::FONT_FAMILY, move || {
                     let font = font.clone();
@@ -595,22 +745,22 @@ fn row(
                 let reset_scope = reset_scope.clone();
                 view()
                     .gap(px(6.0))
-                    .w(px(if matches!(id, settings::THEME | settings::DEFAULT_ENCODING) {
-                        THEME_OPTIONS_WIDTH
-                    } else {
-                        240.0
-                    }))
+                    .w(px(control_width))
                     .max_w(relative(1.0))
+                    .flex_shrink_0()
+                    .items_end()
+                    .style_when(move || narrow.get(), |style| style.items_start())
                     .child(control(settings.clone(), id, state.clone(), root))
                     .child(
                         nsh_base::button()
-                            .items_start()
+                            .min_h(px(16.0))
+                            .app_class(CONTROL_STATES)
                             .text_color(secondary_foreground)
                             .accessibility_label(format!("重置{}", spec["name"].as_str().unwrap()))
                             .on_press(move |_: &()| {
                                 reset.apply(id, selected_root(&reset_scope, root).as_deref(), None);
                             })
-                            .child(text("重置此项").text_size(px(font_size("meta")))),
+                            .child(text("重置此项").text_size(px(11.0))),
                     )
             }),
         )
@@ -623,7 +773,6 @@ pub(super) fn content(
     narrow: Signal<bool>,
 ) -> impl IntoElement {
     let query = state.query;
-    let section = state.section;
     let folder = state.folder_scope;
     let target = state.target;
     let notice = settings.error;
@@ -639,34 +788,94 @@ pub(super) fn content(
             .max_w(px(1040.0))
             .flex_1()
             .min_h(px(0.0))
-            .p(move || px(if narrow.get() { 12.0 } else { 32.0 }))
-            .gap(px(16.0))
+            .px(move || px(if narrow.get() { 12.0 } else { 34.0 }))
+            .pt(move || px(if narrow.get() { 12.0 } else { 22.0 }))
+            .pb(move || px(if narrow.get() { 12.0 } else { 32.0 }))
+            .gap(px(18.0))
             .child(
                 view()
+                    .pb(px(16.0))
+                    .border_b(border_width)
+                    .border_color(|| color("seam"))
                     .flex_row()
                     .items_center()
                     .justify_between()
                     .gap(px(12.0))
                     .style_when(move || narrow.get(), |style| style.flex_col().items_start())
-                    .child(text("设置").text_size(px(font_size("section"))))
                     .child(
                         view()
-                            .w(px(320.0))
+                            .flex_row()
+                            .flex_wrap()
+                            .flex_shrink_0()
                             .max_w(relative(1.0))
-                            .gap(px(4.0))
+                            .items_center()
+                            .gap(px(14.0))
+                            .child(
+                                text("设置")
+                                    .text_size(px(font_size("section")))
+                                    .font_weight(FontWeight::SEMIBOLD),
+                            )
+                            .child(
+                                segment_panel()
+                                    .child(
+                                        choice("用户", move || {
+                                            !folder.get() || root.get().is_none()
+                                        })
+                                        .accessibility_label("用户")
+                                        .on_press(move |_: &()| folder.set(false)),
+                                    )
+                                    .child(when(
+                                        move || root.get().is_some(),
+                                        move || {
+                                            choice("当前文件夹", move || folder.get())
+                                                .accessibility_label("当前文件夹")
+                                                .on_press(move |_: &()| folder.set(true))
+                                        },
+                                    )),
+                            ),
+                    )
+                    .child(
+                        view()
+                            .w(px(280.0))
+                            .min_w(px(0.0))
+                            .max_w(relative(1.0))
+                            .h(px(metric("field")))
+                            .flex_row()
+                            .items_center()
+                            .gap(px(7.0))
+                            .px(px(10.0))
+                            .rounded(px(9.0))
+                            .bg(frame)
+                            .border(border_width)
+                            .border_color(move || {
+                                color(if term.get().is_empty() {
+                                    "chrome-edge"
+                                } else {
+                                    "iris-border"
+                                })
+                            })
+                            .style_when(move || narrow.get(), |style| style.w_full())
+                            .focus_within(|style| {
+                                style
+                                    .outline(px(2.0))
+                                    .outline_offset(px(1.0))
+                                    .outline_color(|| color("iris"))
+                            })
+                            .child(shell_glyph(SEARCH_ICON, 14.0))
                             .child(
                                 input()
                                     .element_ref(&state.search)
                                     .auto_focus(true)
-                                    .app_class(CONTROL_STATES)
                                     .label("搜索设置")
-                                    .placeholder("搜索设置")
-                                    .h(px(metric("field")))
-                                    .w_full()
-                                    .px(px(8.0))
-                                    .bg(frame)
-                                    .border(border_width)
-                                    .border_color(divider)
+                                    .placeholder("搜索设置项或键名…")
+                                    .h_full()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .font_family(
+                                        "Cascadia Mono, Consolas, Microsoft YaHei UI, monospace",
+                                    )
+                                    .text_size(px(font_size("label")))
+                                    .bg(|| color("control-face"))
                                     .value(move || query.get())
                                     .on_change(move |value: &str| {
                                         target.set(None);
@@ -676,30 +885,27 @@ pub(super) fn content(
                             .child(when(
                                 move || !term.get().is_empty(),
                                 move || {
-                                    text(move || {
-                                        results.with(|results| format!("{} 项匹配", results.len()))
-                                    })
-                                    .text_color(secondary_foreground)
-                                    .text_size(px(font_size("meta")))
+                                    view()
+                                        .flex_shrink_0()
+                                        .px(px(7.0))
+                                        .rounded_full()
+                                        .bg(|| color("celadon-soft"))
+                                        .border(border_width)
+                                        .border_color(|| color("celadon-border"))
+                                        .child(
+                                            text(move || {
+                                                results.with(|results| {
+                                                    format!("{} 项匹配", results.len())
+                                                })
+                                            })
+                                            .text_color(|| color("success-fg"))
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .tabular_nums(),
+                                        )
                                 },
                             )),
                     ),
-            )
-            .child(
-                view()
-                    .flex_row()
-                    .gap(px(6.0))
-                    .child(
-                        choice("用户", move || !folder.get() || root.get().is_none())
-                            .on_press(move |_: &()| folder.set(false)),
-                    )
-                    .child(when(
-                        move || root.get().is_some(),
-                        move || {
-                            choice("当前文件夹", move || folder.get())
-                                .on_press(move |_: &()| folder.set(true))
-                        },
-                    )),
             )
             .child(when(
                 move || notice.get().is_some(),
@@ -764,12 +970,16 @@ pub(super) fn content(
                 let SettingsRows::Fields(selected) = results else {
                     unreachable!()
                 };
-                let mut list = view();
-                if term.is_empty() {
-                    list = list.child(text(section.get()).text_size(px(16.0)));
-                }
+                let mut list = view().gap(px(10.0));
                 for id in selected {
-                    list = list.child(row(settings.clone(), id, rows.clone(), root, narrow));
+                    list = list.child(row(
+                        settings.clone(),
+                        id,
+                        rows.clone(),
+                        root,
+                        narrow,
+                        !term.is_empty(),
+                    ));
                 }
                 list.into_element()
             }))),
@@ -830,7 +1040,12 @@ fn matching_rows(state: &SettingsView, term: &str) -> SettingsRows {
                         spec["category"] == category
                     };
                 }
-                [*id, spec["name"].as_str().unwrap(), setting_description(id)]
+                let description = if *id == settings::AUTO_SAVE {
+                    spec["description"].as_str().unwrap()
+                } else {
+                    setting_description(id)
+                };
+                [*id, spec["name"].as_str().unwrap(), description]
                     .iter()
                     .any(|part| part.to_lowercase().contains(term))
             })
@@ -854,6 +1069,103 @@ fn no_results(term: String, query: Signal<String>) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, PartialEq, Props)]
+    struct SettingsLayoutProps {
+        narrow: bool,
+    }
+
+    #[component]
+    fn ThemeLayoutFixture(props: SettingsLayoutProps) -> impl IntoElement {
+        let settings = Rc::new(settings::Settings::new());
+        let view = Rc::new(SettingsView::new(&[]));
+        view.query.set(settings::THEME.into());
+        let root = signal(Some(PathBuf::from(r"C:\texzi-test\settings-layout")));
+        content(settings, view, root, signal(props.narrow))
+    }
+
+    #[test]
+    fn settings_search_count_stays_in_the_field_and_theme_cards_wrap_in_narrow_layout() {
+        use nsh_core::{
+            ApproxTextEngine, Core, MountItem, Size,
+            element::{Environment, Root},
+            platform::Os,
+        };
+        use std::collections::BTreeMap;
+
+        for (width, narrow) in [(1034.0, false), (335.0, true)] {
+            let size = Size::new(px(width), px(680.0));
+            let mut core = Core::new(ApproxTextEngine, size);
+            let mut environment = Environment::default();
+            environment.os = Os::Windows;
+            environment.window = size;
+            core.set_environment(environment);
+            core.mount_root(&Root::new::<ThemeLayoutFixture>(move || {
+                SettingsLayoutProps { narrow }
+            }));
+
+            let mut labels = BTreeMap::new();
+            for _ in 0..6 {
+                core.run_component_tasks();
+                if let Some(batch) = core.commit() {
+                    for item in batch.items {
+                        match item {
+                            MountItem::ViewProps { id, props } => {
+                                if let Some(label) = props.accessibility.label {
+                                    labels.insert(label.to_string(), id);
+                                }
+                            }
+                            MountItem::AccessibilityLabel {
+                                id,
+                                label: Some(label),
+                            } => {
+                                labels.insert(label.to_string(), id);
+                            }
+                            MountItem::Text { id, text, .. }
+                                if text.visible_text() == "1 项匹配" =>
+                            {
+                                labels.insert("1 项匹配".to_owned(), id);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            let measure = |label: &str| {
+                core.measure(*labels.get(label).unwrap_or_else(|| {
+                    panic!("missing {label} at {width} DIP, observed {labels:?}")
+                }))
+                .unwrap()
+            };
+            let search = measure("搜索设置");
+            let count = measure("1 项匹配");
+            let scope = measure("当前文件夹");
+            assert!(count.page.x.0 >= search.page.x.0 + search.frame.size.width.0);
+            assert!(count.page.y.0 >= search.page.y.0);
+            assert!(
+                count.page.y.0 + count.frame.size.height.0
+                    <= search.page.y.0 + search.frame.size.height.0
+            );
+            let theme_cards = ["跟随系统", "浅色", "深色"].map(measure);
+            for card in &theme_cards {
+                assert_eq!(card.frame.size.width, px(THEME_CARD_WIDTH));
+                assert!(card.page.x.0 >= 0.0 && card.page.x.0 + card.frame.size.width.0 <= width);
+            }
+            if narrow {
+                assert!(search.page.y.0 >= scope.page.y.0 + scope.frame.size.height.0);
+                assert!(theme_cards[2].page.y.0 > theme_cards[0].page.y.0);
+            } else {
+                let search_center = search.page.y.0 + search.frame.size.height.0 / 2.0;
+                let scope_center = scope.page.y.0 + scope.frame.size.height.0 / 2.0;
+                assert!((search_center - scope_center).abs() <= 1.0);
+                assert!(
+                    theme_cards
+                        .iter()
+                        .all(|card| card.page.y == theme_cards[0].page.y)
+                );
+            }
+        }
+    }
 
     #[component]
     fn DraftScopeFixture() -> impl IntoElement {

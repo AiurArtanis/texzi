@@ -2819,6 +2819,7 @@ mod tests {
             state.local_glass = Some(crate::LocalGlassStyle {
                 tint: &TINT,
                 glass_border: Points(1.0),
+                glass_edge: [Color(0x556677ff), Color(0xbdd3e7ff)],
             });
         }
         let into = target(&gfx, size);

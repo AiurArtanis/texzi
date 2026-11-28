@@ -212,9 +212,18 @@ impl LargeFile {
 
     pub(super) fn finish_recovery_limit(&self, shell: &Rc<Shell>, doc: &Document, reason: &str) {
         session_recovery::retain_limited_draft(shell, doc, reason);
-        self.message.set(InspectorMessage::error(
-            session_recovery::retained_draft_message(shell, &format!("草稿未能载入（{reason}）")),
-        ));
+        let has_banner = session_recovery::archive_location(shell, doc.id).is_some_and(|archive| {
+            doc.path
+                .with(|path| archive.matches_original(path.as_deref()))
+        });
+        self.message.set(if has_banner {
+            InspectorMessage::default()
+        } else {
+            InspectorMessage::error(session_recovery::retained_draft_message(
+                shell,
+                &format!("草稿未能载入（{reason}）"),
+            ))
+        });
     }
 
     fn cancel_import(&self) {
@@ -747,10 +756,11 @@ fn byte_limit_message() -> String {
 fn action(label: &'static str, click: impl Fn() + 'static) -> nsh_base::ButtonElement {
     nsh_base::button()
         .h(px(metric("field")))
-        .px(px(8.0))
+        .min_w(px(metric("field")))
+        .px(px(7.0))
         .items_center()
         .justify_center()
-        .rounded(px(6.0))
+        .rounded(px(7.0))
         .border(border_width)
         .border_color(|| color("chrome-edge"))
         .bg(|| color("paper"))
@@ -842,6 +852,7 @@ fn archive_banner(
     let full_paths = signal(false);
     let missing = signal(false);
     let feedback = signal(None::<InspectorMessage>);
+    let side_by_side = signal(false);
     dynamic(move || {
         let archive = session_recovery::archive_location(&shell, preview)
             .filter(|archive| original.with(|path| archive.matches_original(path.as_deref())))?;
@@ -855,102 +866,122 @@ fn archive_banner(
             ArchiveState::Failed(error) => format!("无法写入恢复记录 · {error}"),
         };
         let failed = matches!(archive.state, ArchiveState::Failed(_));
+        let actions = when(written, move || {
+            let copy = copy.clone();
+            let location = location.clone();
+            view()
+                .flex_row()
+                .flex_shrink_0()
+                .flex_wrap()
+                .gap(px(6.0))
+                .child(action("复制恢复记录路径", move || {
+                    let original = original.get_untracked();
+                    act_on_archive(
+                        &copy,
+                        preview,
+                        original.as_deref(),
+                        ArchiveAction::Copy,
+                        missing,
+                        feedback,
+                    );
+                }))
+                .child(action("打开所在目录", move || {
+                    let original = original.get_untracked();
+                    act_on_archive(
+                        &location,
+                        preview,
+                        original.as_deref(),
+                        ArchiveAction::OpenDirectory,
+                        missing,
+                        feedback,
+                    );
+                }))
+        });
         Some(
             view()
-                .relative()
                 .min_w(px(0.0))
-                .gap(px(6.0))
-                .p(|| px(10.0 + border_width().0))
+                .w_full()
+                .on_layout(move |bounds: &Bounds<Points>| {
+                    let wide = bounds.size.width.0 >= 640.0;
+                    if side_by_side.get_untracked() != wide {
+                        side_by_side.set(wide);
+                    }
+                })
+                .gap(px(4.0))
+                .px(px(14.0))
+                .py(px(8.0))
+                .rounded(px(11.0))
+                .border(border_width)
+                .border_color(|| color("apricot-border"))
+                .bg(|| color("apricot-soft"))
                 .role(AccessibilityRole::Group)
                 .label("草稿归档")
-                .child(local_glass_surface(px(8.0)))
                 .child(
                     view()
-                        .absolute()
-                        .inset(border_width)
-                        .rounded(px(7.0))
-                        .pointer_events(PointerEvents::None)
-                        .accessible(false)
-                        .bg(|| color("apricot-soft")),
+                        .min_w(px(0.0))
+                        .gap(px(5.0))
+                        .style_when(
+                            move || side_by_side.get(),
+                            |style| style.flex_row().items_center().justify_between(),
+                        )
+                        .child(
+                            text(archive.reason.clone())
+                                .min_w(px(0.0))
+                                .text_size(px(font_size("meta")))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(|| color("warning-fg")),
+                        )
+                        .child(actions),
                 )
                 .child(
-                    text(archive.reason.clone())
-                        .text_size(px(font_size("meta")))
-                        .text_color(|| color("warning-fg")),
-                )
-                .child(
-                    text(move || {
-                        if missing.get() {
-                            "找不到恢复记录文件".to_owned()
-                        } else {
-                            status.clone()
-                        }
-                    })
-                    .text_size(px(font_size("meta")))
-                    .text_color(move || {
-                        color(if failed || missing.get() {
-                            "error-fg"
-                        } else {
-                            "ink-1"
-                        })
-                    }),
-                )
-                .child(archive_paths(&archive, written, full_paths))
-                .child(when(written, move || {
-                    let copy = copy.clone();
-                    let location = location.clone();
                     view()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap(px(6.0))
-                        .child(action("复制恢复记录路径", move || {
-                            let original = original.get_untracked();
-                            act_on_archive(
-                                &copy,
-                                preview,
-                                original.as_deref(),
-                                ArchiveAction::Copy,
-                                missing,
-                                feedback,
-                            );
-                        }))
-                        .child(action("打开所在目录", move || {
-                            let original = original.get_untracked();
-                            act_on_archive(
-                                &location,
-                                preview,
-                                original.as_deref(),
-                                ArchiveAction::OpenDirectory,
-                                missing,
-                                feedback,
-                            );
-                        }))
-                }))
-                .child(when(
-                    move || !missing.get() && feedback.with(Option::is_some),
-                    move || {
-                        text(move || {
-                            feedback.with(|result| {
-                                result
-                                    .as_ref()
-                                    .map(|result| result.text.clone())
-                                    .unwrap_or_default()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(px(4.0))
+                        .child(
+                            text(move || {
+                                if missing.get() {
+                                    "找不到恢复记录文件".to_owned()
+                                } else {
+                                    status.clone()
+                                }
                             })
-                        })
-                        .text_size(px(font_size("meta")))
-                        .text_color(move || {
-                            color(
-                                if feedback
-                                    .with(|result| result.as_ref().is_some_and(|r| r.is_error))
-                                {
+                            .text_size(px(font_size("meta")))
+                            .text_color(move || {
+                                color(if failed || missing.get() {
                                     "error-fg"
                                 } else {
-                                    "success-fg"
-                                },
-                            )
-                        })
-                    },
-                )),
+                                    "muted-readable"
+                                })
+                            }),
+                        )
+                        .child(archive_paths(&archive, written, full_paths))
+                        .child(when(
+                            move || !missing.get() && feedback.with(Option::is_some),
+                            move || {
+                                text(move || {
+                                    feedback.with(|result| {
+                                        result
+                                            .as_ref()
+                                            .map(|result| result.text.clone())
+                                            .unwrap_or_default()
+                                    })
+                                })
+                                .text_size(px(font_size("meta")))
+                                .text_color(move || {
+                                    color(
+                                        if feedback.with(|result| {
+                                            result.as_ref().is_some_and(|r| r.is_error)
+                                        }) {
+                                            "error-fg"
+                                        } else {
+                                            "success-fg"
+                                        },
+                                    )
+                                })
+                            },
+                        )),
+                ),
         )
     })
 }
@@ -970,43 +1001,81 @@ fn archive_paths(
     } else {
         "恢复记录位置不可用".into()
     };
+    let record_tail = if written {
+        archive
+            .record
+            .file_name()
+            .map(|name| format!("…\\{}", name.to_string_lossy()))
+            .unwrap_or_else(|| record.clone())
+    } else {
+        record.clone()
+    };
+    let record_label = format!("恢复记录 · {record}");
+    let original_label = format!("原文件 · {original}");
     view()
+        .min_w(px(0.0))
         .gap(px(4.0))
-        .children(
-            [
-                text(format!("原文件 · {original}")),
-                text(format!("恢复记录 · {record}")),
-            ]
-            .into_iter()
-            .map(move |line| {
-                line.min_w(px(0.0))
-                    .max_w(relative(1.0))
-                    .number_of_lines(move || if full.get() { 0u32 } else { 1u32 })
-                    .text_overflow(EllipsizeMode::Middle)
-                    .text_size(px(font_size("meta")))
-                    .text_color(local_glass_description("muted-readable"))
-            }),
-        )
         .child(
-            nsh_base::button()
-                .items_start()
-                .h(px(metric("field")))
-                .app_class(CONTROL_STATES)
-                .on_press(move |_: &()| full.update(|full| *full = !*full))
-                .child(text(move || {
-                    if full.get() {
-                        "收起路径"
-                    } else {
-                        "显示完整路径"
-                    }
-                })),
+            view()
+                .flex_row()
+                .items_center()
+                .flex_wrap()
+                .gap(px(4.0))
+                .child(
+                    text(format!("恢复记录 · {record_tail}"))
+                        .label(record_label.clone())
+                        .min_w(px(0.0))
+                        .max_w(relative(1.0))
+                        .px(px(7.0))
+                        .py(px(3.0))
+                        .rounded(px(6.0))
+                        .border(border_width)
+                        .border_color(|| color("chrome-edge"))
+                        .bg(|| color("paper"))
+                        .number_of_lines(1)
+                        .text_overflow(EllipsizeMode::Middle)
+                        .text_size(px(font_size("meta")))
+                        .text_color(|| color("muted-readable")),
+                )
+                .child(
+                    nsh_base::button()
+                        .h(px(metric("field")))
+                        .px(px(6.0))
+                        .rounded(px(6.0))
+                        .text_size(px(font_size("meta")))
+                        .text_color(|| color("ink-1"))
+                        .app_class(CONTROL_STATES)
+                        .on_press(move |_: &()| full.update(|full| *full = !*full))
+                        .child(text(move || {
+                            if full.get() {
+                                "收起路径"
+                            } else {
+                                "显示完整路径"
+                            }
+                        })),
+                ),
         )
+        .child(when(
+            move || full.get(),
+            move || {
+                view().min_w(px(0.0)).gap(px(4.0)).children(
+                    [original_label.clone(), record_label.clone()]
+                        .into_iter()
+                        .map(|line| {
+                            text(line)
+                                .min_w(px(0.0))
+                                .max_w(relative(1.0))
+                                .text_size(px(font_size("meta")))
+                                .text_color(|| color("muted-readable"))
+                        }),
+                )
+            },
+        ))
 }
 
-fn import_progress(
+fn track_import_progress(
     source: Signal<Option<Arc<Mutex<ImportProgress>>>>,
-    total: u64,
-) -> impl IntoElement {
+) -> Signal<ImportProgress> {
     let progress = signal(ImportProgress::PreparingPreview);
     effect(move || {
         if source.with(Option::is_some) {
@@ -1025,41 +1094,36 @@ fn import_progress(
             cleanup(move || timer.cancel());
         }
     });
-    view()
-        .gap(px(4.0))
-        .child(
-            text(move || progress.get().label(total))
-                .tabular_nums()
-                .text_size(px(font_size("meta")))
-                .text_color(local_glass_description("muted-readable")),
-        )
-        .child(
-            nsh_base::progress()
-                .accessibility_label(move || {
-                    let stage = progress.get();
-                    let label = stage.read_amount(total).map_or_else(
-                        || format!("完整加载阶段，{}", stage.label(total)),
-                        |read| format!("源文件读取进度，已读 {read} 字节，共 {total} 字节"),
-                    );
-                    Some(SharedString::from(label))
-                })
-                .value(move || progress.get().read_percent(total).unwrap_or(0) as f32)
-                .indeterminate(move || progress.get().read_percent(total).is_none())
-                .track_style(|s| {
-                    s.h(px(4.0))
-                        .rounded_full()
-                        .overflow_hidden()
-                        .bg(|| color("seam-strong"))
-                })
-                .indicator_style(move |s| {
-                    let s = crate::origami::ribbon(s.h_full().rounded_full());
-                    if progress.get().read_percent(total).is_none() {
-                        s.w(px(0.0))
-                    } else {
-                        s
-                    }
-                }),
-        )
+    progress
+}
+
+fn import_progress_track(progress: Signal<ImportProgress>, total: u64) -> impl IntoElement {
+    nsh_base::progress()
+        .w_full()
+        .accessibility_label(move || {
+            let stage = progress.get();
+            let label = stage.read_amount(total).map_or_else(
+                || format!("完整加载阶段，{}", stage.label(total)),
+                |read| format!("源文件读取进度，已读 {read} 字节，共 {total} 字节"),
+            );
+            Some(SharedString::from(label))
+        })
+        .value(move || progress.get().read_percent(total).unwrap_or(0) as f32)
+        .indeterminate(move || progress.get().read_percent(total).is_none())
+        .track_style(|s| {
+            s.h(px(4.0))
+                .rounded_full()
+                .overflow_hidden()
+                .bg(|| color("seam-strong"))
+        })
+        .indicator_style(move |s| {
+            let s = crate::origami::ribbon(s.h_full().rounded_full());
+            if progress.get().read_percent(total).is_none() {
+                s.w(px(0.0))
+            } else {
+                s
+            }
+        })
 }
 
 pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -> impl IntoElement {
@@ -1072,7 +1136,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let page = file.page;
     let message = file.message;
     let import_state = file.import_state;
-    let progress = file.import_progress;
+    let progress = track_import_progress(file.import_progress);
     let bytes = file.len;
     let name = doc.name();
     let original = doc.path;
@@ -1085,6 +1149,53 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
     let close = shell.clone();
     let archive = shell.clone();
     let description = local_glass_description("muted-readable");
+
+    let page_details = when(
+        move || page.with(Option::is_some),
+        move || {
+            let range = move || page.with(|page| page.as_ref().map(|p| (p.data.start, p.data.end)));
+            view()
+                .min_w(px(0.0))
+                .max_w(relative(1.0))
+                .flex_row()
+                .flex_wrap()
+                .gap(px(8.0))
+                .child(
+                    text(move || {
+                        range().map_or_else(String::new, |(start, end)| {
+                            byte_range_label(start, end, bytes)
+                        })
+                    })
+                    .label(move || {
+                        range().map_or_else(String::new, |(start, end)| {
+                            format!("从 {start} 字节到 {end} 字节之前，源文件共 {bytes} 字节")
+                        })
+                    })
+                    .min_w(px(0.0))
+                    .max_w(relative(1.0))
+                    .tabular_nums()
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded_full()
+                    .bg(|| color("paper-subtle"))
+                    .text_size(px(font_size("meta")))
+                    .text_color(|| color("ink-1")),
+                )
+                .child(
+                    text(move || {
+                        page.with(|page| {
+                            page.as_ref().map_or_else(String::new, |p| {
+                                format!("当前编码 · {}", encoding_name(p.encoding))
+                            })
+                        })
+                    })
+                    .min_w(px(0.0))
+                    .max_w(relative(1.0))
+                    .text_size(px(font_size("meta")))
+                    .text_color(description),
+                )
+        },
+    );
 
     let heading = view()
         .flex_row()
@@ -1110,15 +1221,30 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 )
                 .child(
                     text(format!("{:.1} MiB", bytes as f64 / MIB as f64))
+                        .flex_shrink_0()
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded_full()
+                        .border(border_width)
+                        .border_color(|| color("celadon-border"))
+                        .bg(|| color("celadon-soft"))
                         .tabular_nums()
                         .text_size(px(font_size("meta")))
+                        .font_weight(FontWeight::BOLD)
                         .text_color(|| color("success-fg")),
                 )
-                .child(
-                    text("只读分页")
-                        .text_size(px(font_size("meta")))
-                        .text_color(description),
-                )
+                .child(when(
+                    move || page.with(Option::is_some),
+                    || {
+                        text("只读分页")
+                            .px(px(7.0))
+                            .py(px(2.0))
+                            .rounded_full()
+                            .bg(|| color("paper-subtle"))
+                            .text_size(px(font_size("meta")))
+                            .text_color(|| color("ink-1"))
+                    },
+                ))
                 .child(when(
                     move || {
                         matches!(
@@ -1139,12 +1265,25 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                     },
                 )),
         )
+        .child(page_details)
         .child(
             view()
                 .max_w(relative(1.0))
                 .flex_row()
                 .flex_wrap()
-                .gap(px(8.0))
+                .items_center()
+                .gap(px(4.0))
+                .child(when(
+                    move || import_state.get() == ImportState::Loading,
+                    move || {
+                        text(move || progress.get().label(bytes))
+                            .min_w(px(0.0))
+                            .max_w(relative(1.0))
+                            .tabular_nums()
+                            .text_size(px(font_size("meta")))
+                            .text_color(description)
+                    },
+                ))
                 .child(when(
                     move || page.with(Option::is_none),
                     move || {
@@ -1191,49 +1330,6 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 ))
                 .child(action("关闭文件", move || close.close_tab(id))),
         );
-
-    let page_details = when(
-        move || page.with(Option::is_some),
-        move || {
-            let range = move || page.with(|page| page.as_ref().map(|p| (p.data.start, p.data.end)));
-            view()
-                .min_w(px(0.0))
-                .max_w(relative(1.0))
-                .flex_row()
-                .flex_wrap()
-                .gap(px(8.0))
-                .child(
-                    text(move || {
-                        range().map_or_else(String::new, |(start, end)| {
-                            byte_range_label(start, end, bytes)
-                        })
-                    })
-                    .label(move || {
-                        range().map_or_else(String::new, |(start, end)| {
-                            format!("从 {start} 字节到 {end} 字节之前，源文件共 {bytes} 字节")
-                        })
-                    })
-                    .min_w(px(0.0))
-                    .max_w(relative(1.0))
-                    .tabular_nums()
-                    .text_size(px(font_size("meta")))
-                    .text_color(description),
-                )
-                .child(
-                    text(move || {
-                        page.with(|page| {
-                            page.as_ref().map_or_else(String::new, |p| {
-                                format!("当前编码 · {}", encoding_name(p.encoding))
-                            })
-                        })
-                    })
-                    .min_w(px(0.0))
-                    .max_w(relative(1.0))
-                    .text_size(px(font_size("meta")))
-                    .text_color(description),
-                )
-        },
-    );
 
     let navigator = file.clone();
     let navigate = move |label, toward_end, get: fn(&Page, u64) -> Position| {
@@ -1285,7 +1381,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
         .flex_wrap()
         .justify_between()
         .items_center()
-        .gap(px(8.0))
+        .gap(px(4.0))
         .child(when(
             move || page.with(Option::is_some),
             move || {
@@ -1295,7 +1391,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                     .max_w(relative(1.0))
                     .flex_row()
                     .flex_wrap()
-                    .gap(px(8.0))
+                    .gap(px(4.0))
                     .child(navigate("首页", false, |_, _| Position::Boundary(0)))
                     .child(navigate("上一页", false, |p, _| {
                         if p.start < 4 {
@@ -1312,7 +1408,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                         nsh_core::element::input()
                             .label("文件字节位置")
                             .h(px(metric("field")))
-                            .w(px(145.0))
+                            .w(px(100.0))
                             .max_w(relative(1.0))
                             .px(px(8.0))
                             .tabular_nums()
@@ -1327,7 +1423,12 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                             .on_change(move |s: &str| input.set(s.into()))
                             .on_submit(move |_: &str| jump_submit()),
                     )
-                    .child(action("转到", jump_button).accessibility_hint("转到填入的文件字节位置"))
+                    .child(
+                        action("转到", jump_button)
+                            .bg(|| color("selected-bg"))
+                            .text_color(|| color("selected-text"))
+                            .accessibility_hint("转到填入的文件字节位置"),
+                    )
             },
         ))
         .child(
@@ -1335,7 +1436,7 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                 .max_w(relative(1.0))
                 .flex_row()
                 .flex_wrap()
-                .gap(px(8.0))
+                .gap(px(4.0))
                 .role(AccessibilityRole::Group)
                 .label("分页编码")
                 .child(codec("UTF-8", Encoding::Utf8))
@@ -1381,8 +1482,8 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                     view()
                         .min_w(px(0.0))
                         .px(px(12.0))
-                        .py(px(8.0))
-                        .gap(px(8.0))
+                        .py(px(7.0))
+                        .gap(px(5.0))
                         .child(
                             // An explicit group keeps the inspector text and its controls separately readable.
                             view()
@@ -1390,16 +1491,16 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                                 .min_w(px(0.0))
                                 .role(AccessibilityRole::Group)
                                 .label(inspector_label)
-                                .rounded(px(metric("paperRadius")))
-                                .p(|| px(14.0 + border_width().0))
-                                .gap(px(8.0))
-                                .child(local_glass_surface(px(metric("paperRadius"))))
+                                .rounded(px(12.0))
+                                .px(|| px(13.0 + border_width().0))
+                                .py(|| px(8.0 + border_width().0))
+                                .gap(px(5.0))
+                                .child(local_glass_surface(px(12.0)))
                                 .child(heading)
                                 .child(when(
                                     move || import_state.get() == ImportState::Loading,
-                                    move || import_progress(progress, bytes),
+                                    move || import_progress_track(progress, bytes),
                                 ))
-                                .child(page_details)
                                 .child(controls)
                                 .child(when(bytes > MAX_EDIT_BYTES, || {
                                     text(byte_limit_message())
@@ -1441,7 +1542,9 @@ pub(super) fn viewer(shell: Rc<Shell>, doc: Rc<Document>, file: Rc<LargeFile>) -
                     .component_ref(&reference)
                     .default_value(Some(SharedString::from(page.data.text.clone())))
                     .read_only(true)
-                    .line_numbers(false)
+                    // Byte seeks do not resolve a global line number.
+                    .line_numbers(true)
+                    .accessibility_label("只读分页正文，行号从当前页开始")
                     .soft_wrap(false)
                     .on_focus(move |_: &()| focus.set(false))
                     .flex_1()

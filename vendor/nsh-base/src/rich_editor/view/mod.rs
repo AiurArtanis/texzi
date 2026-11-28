@@ -112,6 +112,9 @@ pub struct RichEditorProps {
     /// (by type name), after their own styles.
     #[prop(default)]
     pub classes: Prop<RichEditorClasses>,
+    /// Preferred display width for top-level tables with unsized columns.
+    /// Explicit saved widths and drag previews still take precedence.
+    pub table_display_width: Prop<Option<Points>>,
     /// Inline styles of the parts, over their classes.
     #[prop(default)]
     pub styles: Prop<RichEditorStyles>,

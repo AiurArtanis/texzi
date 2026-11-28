@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nsh_core::{Gradient, NodeId, Points};
+use nsh_core::{Color, Gradient, NodeId, Points};
 use windows::Win32::Graphics::Dxgi::{
     DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3,
 };
@@ -15,6 +15,8 @@ pub struct LocalGlassStyle {
     /// Theme order is light, then dark.
     pub tint: &'static [Gradient; 2],
     pub glass_border: Points,
+    /// Per-theme edge color, used only when the backdrop was sampled.
+    pub glass_edge: [Color; 2],
 }
 
 /// Opts in a live view in the calling engine. Call from an engine main-thread task.

@@ -60,24 +60,33 @@ impl RecoveredClose {
     #[cfg(not(test))]
     fn dialog_details(&self) -> nsh_platform_windows::RecoveredDraftDetails {
         let editable = self.revision.is_some();
+        let (summary, summary_stats) = if editable {
+            draft_summary(&self.draft)
+        } else {
+            (None, None)
+        };
         nsh_platform_windows::RecoveredDraftDetails {
             badge: Some(if editable {
                 "恢复草稿 · 尚未另存为文件".into()
             } else {
                 "恢复草稿 · 只读预览".into()
             }),
-            summary: editable.then(|| draft_summary(&self.draft)),
+            summary,
+            summary_stats,
         }
     }
 }
 
 #[cfg(not(test))]
-fn draft_summary(draft: &Document) -> String {
+fn draft_summary(draft: &Document) -> (Option<String>, Option<String>) {
     let Some(body) = draft.source.current_body() else {
-        return String::new();
+        return (None, None);
     };
+    // Restored text is stored in UTF-8 in memory. These are draft bytes,
+    // independent of the encoding the user may choose when saving a copy.
+    let stats = format!("{} 行 · {} B", body.logical_line_count(), body.len_bytes());
     if body.len_bytes() == 0 {
-        return "空草稿".into();
+        return (Some("空草稿".into()), Some(stats));
     }
     let mut first_line = body.source().chars().take_while(|&ch| ch != '\n');
     let mut excerpt: String = first_line
@@ -88,7 +97,7 @@ fn draft_summary(draft: &Document) -> String {
     if first_line.next().is_some() {
         excerpt.push('…');
     }
-    format!("1 │ {excerpt}    {} 行", body.logical_line_count())
+    (Some(format!("1 │ {excerpt}")), Some(stats))
 }
 
 impl Shell {

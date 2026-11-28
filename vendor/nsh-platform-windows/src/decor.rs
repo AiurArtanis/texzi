@@ -293,7 +293,7 @@ pub(crate) fn draw_backdrop(cx: &mut DrawCx<'_>, state: &ViewState) -> bool {
     cx.set_transform(world);
     cx.pop();
     let Some(tint) = tint else { return false };
-    BoxShape::new(w, h, state.radii(), under_border(state, true)).fill(cx, &tint);
+    BoxShape::new(w, h, state.radii(), under_border(state, true, cx.dark)).fill(cx, &tint);
     // Direct2D reports image and brush draw errors at Flush. A recoverable
     // failure still leaves the opaque background and border to be drawn.
     // SAFETY: the context is in the active draw and its clips are closed.
@@ -345,7 +345,7 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState, glass: boo
     let gradients = effects.map_or(&[][..], |e| &e.background_images[..]);
     let fills = usize::from(!bg.is_transparent()) + gradients.len();
     if fills > 0 {
-        let mut shape = BoxShape::new(w, h, radii, under_border(state, glass));
+        let mut shape = BoxShape::new(w, h, radii, under_border(state, glass, cx.dark));
         // Several fills of one rounded shape each cover its edge pixels
         // partly, and stacked they cover them more than once: clipped
         // once, the edge is covered once.
@@ -406,11 +406,11 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState, glass: boo
 /// edge, and the two partial coverages stacked let the background show
 /// outside the border at the corners. Anything else is filled to the
 /// border box, as CSS's `background-clip: border-box`.
-fn under_border(state: &ViewState, glass: bool) -> f32 {
+fn under_border(state: &ViewState, glass: bool, dark: bool) -> f32 {
     if !state.radii().iter().any(|&r| r > 0.0) {
         return 0.0;
     }
-    let b = painted_border(state, glass);
+    let b = painted_border(state, glass, dark);
     if b.style != BorderStyle::Solid || !b.colors.iter().all(|c| c.0 & 0xff == 0xff) {
         return 0.0;
     }
@@ -832,7 +832,7 @@ pub(crate) fn draw_border(cx: &mut DrawCx<'_>, state: &ViewState, glass: bool) {
     }
     // With the animated color: a border declared transparent shows once
     // its color is animated.
-    let b = painted_border(state, glass);
+    let b = painted_border(state, glass, cx.dark);
     let o = state.style.outline;
     if !b.is_visible() && !o.is_visible() {
         return;
@@ -846,10 +846,11 @@ pub(crate) fn draw_border(cx: &mut DrawCx<'_>, state: &ViewState, glass: bool) {
     }
 }
 
-fn painted_border(state: &ViewState, glass: bool) -> Borders {
+fn painted_border(state: &ViewState, glass: bool, dark: bool) -> Borders {
     let mut border = state.borders();
     if let Some(style) = state.local_glass.filter(|_| glass) {
         border.widths = Edges::all(style.glass_border);
+        border.colors = [style.glass_edge[usize::from(dark)]; 4];
     }
     border
 }

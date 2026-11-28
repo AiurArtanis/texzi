@@ -502,6 +502,8 @@ pub struct CommandProps {
     /// What shows above the search field (`gpui-component`'s `header`): a
     /// title, a breadcrumb.
     pub header: Prop<Option<Slot>>,
+    /// Controls between the search field and the result list, such as scope filters.
+    pub after_search: Prop<Option<Slot>>,
     /// What shows below the rows (`gpui-component`'s `footer`): the keys'
     /// hints, a count.
     pub footer: Prop<Option<Slot>>,
@@ -1153,6 +1155,7 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
         .on_blur(move || root_focused.set(false))
         .child(props.header.place(|e| e))
         .child(search)
+        .child(props.after_search.place(|e| e))
         .child(rule)
         .child(list)
         .child(empty)

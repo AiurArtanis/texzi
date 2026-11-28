@@ -198,6 +198,19 @@ fn is_markdown(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
 }
 
+fn source_language(path: &Path) -> &'static str {
+    if is_markdown(path) {
+        "markdown"
+    } else if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+    {
+        "rust"
+    } else {
+        "plaintext"
+    }
+}
+
 fn display_path(path: &Path) -> String {
     let value = path.to_string_lossy();
     if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
@@ -501,6 +514,7 @@ struct Shell {
     panel: Signal<String>,
     query: Signal<String>,
     palette_query: Signal<String>,
+    quick_scope: Signal<QuickScope>,
     find_panel: find_panel::State,
     zen: Signal<bool>,
     zen_exit: Rc<crate::zen_state::ZenState>,
@@ -784,6 +798,7 @@ impl Shell {
             panel: signal(String::new()),
             query: signal(String::new()),
             palette_query: signal(String::new()),
+            quick_scope: signal(QuickScope::All),
             find_panel: find_panel::State::new(),
             zen: signal(false),
             zen_exit: crate::zen_state::ZenState::new(),
@@ -1016,6 +1031,18 @@ impl Shell {
         }
     }
 
+    fn toggle_files(self: &Rc<Self>) {
+        if self.panel.get() == "folder" {
+            self.close_panel();
+            self.drawer().set(true);
+        } else if self.settings_active() {
+            self.dismiss_settings(false);
+            self.drawer().set(true);
+        } else {
+            self.run("texzi.sidebar.toggle");
+        }
+    }
+
     fn show_title_menu(self: &Rc<Self>, group: Option<MenuGroup>) {
         if self.modal.get() || self.current().is_some_and(|doc| doc.gate.busy()) {
             return;
@@ -1024,10 +1051,26 @@ impl Shell {
         let run: Rc<dyn Fn(&str)> = Rc::new(move |id| run.run(id));
         let blocked = |id: &str| self.blocked(id);
         let pending = self.chord.get();
-        let entries = match group {
+        let mut entries = match group {
             Some(group) => crate::native_menu::entries(group.commands(), &run, &blocked, pending),
             None => crate::native_menu::groups(&run, &blocked, pending),
         };
+        if group.is_none() && self.compact_menu() {
+            use nsh_core::element::desktop::MenuItem;
+
+            let settings = self.clone();
+            let files = self.clone();
+            let search = self.clone();
+            entries.push(MenuItem::separator());
+            entries.push(MenuItem::new("资源管理器").on_select(move || files.toggle_files()));
+            if blocked("texzi.find.inFolder").is_none() {
+                entries.push(
+                    MenuItem::new("文件夹搜索")
+                        .on_select(move || search.run("texzi.find.inFolder")),
+                );
+            }
+            entries.push(MenuItem::new("设置").on_select(move || settings.show_settings()));
+        }
         let at = point(
             px(TITLE_ICON_WIDTH
                 + TITLE_MENU_WIDTH
@@ -2068,6 +2111,7 @@ impl Shell {
     }
     fn open_quick(self: &Rc<Self>, mode: &str) {
         self.palette_query.set(String::new());
+        self.quick_scope.set(QuickScope::All);
         let same_mode = self.panel.get() == mode;
         if quick_lists_files(mode) {
             self.quick_files.set(vec![]);
@@ -2755,18 +2799,33 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let show_path = doc.clone();
     let path = doc.path;
     let root = s.root;
+    let zen_doc = doc.clone();
     let status_doc = doc.clone();
     let mode_doc = doc.clone();
     let zen = s.zen;
     let format_doc = doc.clone();
     let format_shell = s.clone();
     let markdown = move || path.with(|value| value.as_deref().is_some_and(is_markdown));
+    let right_inset = move || {
+        px(if markdown() && !zen.get() {
+            mode_capsule_width() + 24.0
+        } else {
+            14.0
+        })
+    };
     let column_shell = s.clone();
     let reading_width = computed(move || {
         column_shell
             .zen
             .get()
             .then(|| column_shell.zen_reading_width(rich_mode.get()))
+    });
+    let paper_width = signal(px(0.0));
+    let wide_paper = computed(move || paper_width.get().0 >= 740.0 && !zen.get());
+    let table_display_width = computed(move || {
+        wide_paper
+            .get()
+            .then(|| px((paper_width.get().0 - 88.0).min(732.0)))
     });
 
     let content = view()
@@ -2782,6 +2841,59 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
         })
         .max_w(relative(1.0))
         .self_center()
+        .on_layout(move |bounds: &Bounds<Points>| {
+            let width = bounds.size.width;
+            if paper_width.get_untracked() != width {
+                paper_width.set(width);
+            }
+        })
+        .child(when(
+            move || zen.get(),
+            move || {
+                let zen_doc = zen_doc.clone();
+                let saved = zen_doc.clone();
+                let dirty = computed(move || {
+                    saved.source.track();
+                    saved.needs_close_confirmation()
+                });
+                view()
+                    .flex_shrink_0()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(14.0))
+                    .mt(px(62.0))
+                    .mb(px(12.0))
+                    .child(
+                        text(move || {
+                            path.get()
+                                .map(|path| breadcrumb_text(&path, root.get().as_deref()))
+                                .unwrap_or_else(|| zen_doc.name())
+                        })
+                        .text_color(secondary_foreground)
+                        .text_size(px(font_size("meta")))
+                        .min_w(px(0.0))
+                        .number_of_lines(1)
+                        .text_overflow(EllipsizeMode::Middle),
+                    )
+                    .child(
+                        text(move || match (dirty.get(), path.with(Option::is_some)) {
+                            (true, _) => "未保存",
+                            (false, true) => "已保存",
+                            (false, false) => "",
+                        })
+                        .text_color(move || {
+                            color(if dirty.get() {
+                                "warning-fg"
+                            } else {
+                                "success-fg"
+                            })
+                        })
+                        .text_size(px(font_size("meta")))
+                        .flex_shrink_0(),
+                    )
+            },
+        ))
         .child(
             when(rich_mode, move || {
                 restore_editor_scroll(rich_restore.clone(), true);
@@ -2846,7 +2958,10 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                                     .application_shortcuts(
                                         crate::native_menu::application_shortcuts(),
                                     )
-                                    .classes(crate::app::rich_classes())
+                                    .classes(move || {
+                                        crate::app::rich_classes_for_editor(wide_paper.get())
+                                    })
+                                    .table_display_width(move || table_display_width.get())
                                     .auto_focus(move || {
                                         settings_tab.get() != SettingsTab::Active
                                             && rich_focus.get() == second
@@ -2891,15 +3006,13 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 let viewport = signal((0, 0));
                 let syntax_doc = source_focus_doc.clone();
                 let syntax = computed(move || {
-                    let rust = syntax_doc.path.with(|path| {
-                        path.as_ref()
-                            .and_then(|path| path.extension())
-                            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
-                    });
-                    if rust {
+                    let language = syntax_doc
+                        .path
+                        .with(|path| path.as_deref().map_or("plaintext", source_language));
+                    if language != "plaintext" {
                         syntax_doc.source.track();
                         if syntax_doc.source.disk_len() <= large_file::SOURCE_ONLY_BYTES {
-                            return "rust";
+                            return language;
                         }
                     }
                     "plaintext"
@@ -2988,7 +3101,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                 .absolute()
                 .top(px(12.0))
                 .left(px(16.0))
-                .right(px(60.0))
+                .right(right_inset)
                 .z_index(1)
                 .pointer_events(PointerEvents::None)
                 .element_ref(&doc.progress)
@@ -3011,15 +3124,15 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
         .rounded(px(metric("paperRadius")))
         .overflow_hidden()
         .child(when(
-            move || path.get().is_some() && !show_path.displayed_rich(),
+            move || !zen.get() && path.get().is_some() && !show_path.displayed_rich(),
             move || {
                 view()
-                    .h(px(28.0))
-                    .bg(frame)
+                    .h(px(29.0))
+                    .bg(|| color("paper"))
                     .flex_shrink_0()
                     .justify_center()
-                    .pl(px(12.0))
-                    .pr(px(60.0))
+                    .pl(px(14.0))
+                    .pr(right_inset)
                     .border_b(border_width)
                     .border_color(divider)
                     .child(
@@ -3027,17 +3140,7 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
                             let Some(path) = path.get() else {
                                 return String::new();
                             };
-                            if let Some(root) = root.get() {
-                                if let (Some(folder), Ok(relative)) =
-                                    (root.file_name(), path.strip_prefix(&root))
-                                {
-                                    return Path::new(folder)
-                                        .join(relative)
-                                        .to_string_lossy()
-                                        .into_owned();
-                                }
-                            }
-                            display_path(&path)
+                            breadcrumb_text(&path, root.get().as_deref())
                         })
                         .text_color(secondary_foreground)
                         .text_size(px(font_size("meta")))
@@ -3054,13 +3157,29 @@ fn editor(s: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
         .child(when(
             move || !zen.get() && can_show_mode_button(&mode_doc),
             move || {
-                mode_button(s.clone(), doc.clone(), second)
+                mode_button(s.clone(), doc.clone(), second, true)
                     .absolute()
                     .top(px(12.0))
                     .right(px(16.0))
                     .z_index(1)
             },
         ))
+}
+
+fn breadcrumb_text(path: &Path, workspace: Option<&Path>) -> String {
+    if let Some(workspace) = workspace
+        && let (Some(folder), Ok(relative)) = (workspace.file_name(), path.strip_prefix(workspace))
+    {
+        return std::iter::once(folder.to_string_lossy())
+            .chain(
+                relative
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy()),
+            )
+            .collect::<Vec<_>>()
+            .join(" / ");
+    }
+    display_path(path)
 }
 
 fn restore_editor_scroll(doc: Rc<Document>, rich: bool) {
@@ -3084,21 +3203,96 @@ fn can_show_mode_button(doc: &Document) -> bool {
         && (doc.is_markdown() || doc.displayed_rich() || doc.pending_mode.get().is_some())
 }
 
-fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> View {
+fn mode_capsule_width() -> f32 {
+    metric("modeWidth") * 2.0 + 6.0
+}
+
+fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool, separate_surface: bool) -> View {
+    if separate_surface {
+        let material = shell.clone();
+        return view()
+            .test_id("texzi.editor.mode-toggle")
+            .relative()
+            .w(px(mode_capsule_width()))
+            .h(px(metric("modeHeight") + 4.0))
+            .flex_row()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(2.0))
+            .p(px(2.0))
+            .child(local_glass_surface_when(px(9.0), move || {
+                material.mode_glass_allowed()
+            }))
+            .children([true, false].into_iter().map(|rich| {
+                let doc = doc.clone();
+                let selected = doc.clone();
+                let tone = doc.clone();
+                let enabled = doc.clone();
+                let name = doc.clone();
+                let shell = shell.clone();
+                icon_button(
+                    if rich { FORMAT_ICON } else { SOURCE_ICON },
+                    if rich {
+                        "返回所见即所得"
+                    } else {
+                        "切换到源码"
+                    },
+                    metric("modeWidth"),
+                    15.0,
+                )
+                .h(px(metric("modeHeight")))
+                .border(border_width)
+                .border_color(move || {
+                    if tone.displayed_rich() == rich {
+                        color("iris-border")
+                    } else {
+                        rgba(0).into()
+                    }
+                })
+                .bg(move || {
+                    if selected.displayed_rich() == rich {
+                        selected_surface()
+                    } else {
+                        rgba(0).into()
+                    }
+                })
+                .accessibility_label(move || {
+                    Some(SharedString::from(match (rich, name.displayed_rich()) {
+                        (true, true) => "富文本模式",
+                        (true, false) => "返回所见即所得",
+                        (false, true) => "切换到源码",
+                        (false, false) => "源码模式",
+                    }))
+                })
+                .selected({
+                    let doc = doc.clone();
+                    move || doc.displayed_rich() == rich
+                })
+                .disabled(move || {
+                    enabled.pending_mode.get().is_some()
+                        || (rich
+                            && !enabled.displayed_rich()
+                            && enabled.source.disk_len() > large_file::SOURCE_ONLY_BYTES)
+                })
+                .on_press(move |_: &()| {
+                    if doc.displayed_rich() != rich {
+                        shell.second_active.set(second);
+                        shell.request_mode(doc.clone(), rich);
+                    }
+                })
+            }));
+    }
+
     let selected = doc.clone();
     let name = doc.clone();
     let disabled = doc.clone();
     let backdrop = doc.clone();
-    let material = shell.clone();
     view()
         .test_id("texzi.editor.mode-toggle")
         .relative()
         .w(px(metric("modeWidth")))
         .h(px(metric("modeHeight")))
         .flex_shrink_0()
-        .child(local_glass_surface_when(px(6.0), move || {
-            material.mode_glass_allowed()
-        }))
         .child(
             icon_button(SOURCE_ICON, "切换到源码", metric("modeWidth"), 18.0)
                 .size_full()
@@ -3127,6 +3321,7 @@ fn mode_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> View {
 
 fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl IntoElement {
     let anchor = element_ref();
+    let zen = shell.zen;
     let state = doc.clone();
     let button_focused = Rc::new(Cell::new(false));
     let focused = button_focused.clone();
@@ -3146,8 +3341,8 @@ fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl Into
         .absolute()
         .w(px(metric("modeWidth")))
         .h(px(metric("modeHeight")))
-        .top(px(12.0))
-        .right(px(56.0))
+        .top(move || px(if zen.get() { 46.0 } else { 12.0 }))
+        .right(move || px(if zen.get() { 56.0 } else { 91.0 }))
         .z_index(1)
         .border(border_width)
         .border_color(divider)
@@ -3171,11 +3366,13 @@ fn format_button(shell: Rc<Shell>, doc: Rc<Document>, second: bool) -> impl Into
 fn document_paper(
     content: impl IntoElement,
     active: impl Fn() -> bool + 'static,
+    zen: Signal<bool>,
 ) -> impl IntoElement {
     view()
         .flex_1()
         .min_w(px(0.0))
         .min_h(px(0.0))
+        .pb(move || px(if zen.get() { 46.0 } else { 0.0 }))
         .rounded(px(metric("paperRadius")))
         .border(border_width)
         .border_color(move || {
@@ -3191,6 +3388,7 @@ fn document_paper(
 
 fn groups(s: Rc<Shell>) -> AnyElement {
     let down = s.split_down.get();
+    let zen = s.zen;
     let second_active = s.second_active;
     let primary = s.clone();
     let second = s.clone();
@@ -3204,16 +3402,18 @@ fn groups(s: Rc<Shell>) -> AnyElement {
                 } else {
                     editor(primary.clone(), doc, false).into_element()
                 };
-                document_paper(content, move || !second_active.get())
+                document_paper(content, move || !second_active.get(), zen)
             })
         }),
         move || {
             let second = second.clone();
             dynamic(move || {
                 second.split.get().map(|doc| {
-                    document_paper(editor(second.clone(), doc, true), move || {
-                        second_active.get()
-                    })
+                    document_paper(
+                        editor(second.clone(), doc, true),
+                        move || second_active.get(),
+                        zen,
+                    )
                 })
             })
         },
@@ -3229,20 +3429,31 @@ fn title_menu_button(
     shell: Rc<Shell>,
     group: Option<MenuGroup>,
 ) -> impl IntoElement {
+    let compact = group.is_none();
     view()
         .w(px(TITLE_MENU_WIDTH))
-        .h(px(metric("menuHit")))
+        .h(px(27.0))
+        .flex_row()
         .items_center()
         .justify_center()
+        .gap(px(3.0))
         .app_class(CONTROL_STATES)
         .rounded(px(6.0))
-        .bg(|| color("control-face"))
+        .bg(move || {
+            if compact {
+                color("paper-subtle")
+            } else {
+                color("control-face")
+            }
+        })
         .text_color(|| color("control-text"))
-        .text_size(px(font_size("bodyUI")))
+        .text_size(px(font_size("label")))
         .focusable(false)
         .window_drag(false)
         .role(AccessibilityRole::Button)
+        .label(label)
         .child(text(label))
+        .child(compact.then(|| shell_glyph(CHEVRON_DOWN_ICON, 11.0)))
         .on_press(move |_: &()| shell.show_title_menu(group))
 }
 
@@ -3250,8 +3461,10 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
     let window = shell.window.clone();
     let search = shell.clone();
     let width = shell.clone();
+    let keycap_width = shell.clone();
     let offset = shell.clone();
     let compact = shell.clone();
+    let trigger = shell.clone();
     let menus = shell.clone();
     let icon = ImageSrc::rgba(
         32,
@@ -3264,7 +3477,6 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
         .h(px(metric("title")))
         .flex_shrink_0()
         .pr(move || window.title_bar().right)
-        .bg(|| color("mica-shell"))
         .border_b(border_width)
         .border_color(divider)
         .window_drag(true)
@@ -3295,7 +3507,13 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                 .w(move || width.title_search_width())
                 .min_w(px(0.0))
                 .ml(move || px(offset.title_search_left() - offset.title_menu_end()))
-                .h(px(metric("menuHit")))
+                .h(move || {
+                    px(if trigger.compact_menu() {
+                        metric("menuHit")
+                    } else {
+                        27.0
+                    })
+                })
                 .window_drag(false)
                 .child(
                     view()
@@ -3306,22 +3524,29 @@ fn title_bar(shell: Rc<Shell>) -> impl IntoElement {
                         .items_center()
                         .overflow_hidden()
                         .app_class(CONTROL_STATES)
-                        .rounded(px(6.0))
+                        .rounded(px(8.0))
                         .border(border_width)
                         .border_color(divider)
+                        .bg(|| color("paper").opacity(0.52))
                         .focusable(true)
                         .role(AccessibilityRole::Button)
                         .label(SPOTLIGHT_LABEL)
-                        .child(shell_glyph(SEARCH_ICON, 16.0))
+                        .child(shell_glyph(SEARCH_ICON, 14.0))
                         .child(when(
                             move || !compact.compact_menu(),
                             || {
                                 text("搜索文件、命令或设置…")
+                                    .flex_1()
                                     .min_w(px(0.0))
                                     .number_of_lines(1)
                                     .text_overflow(EllipsizeMode::Tail)
-                                    .text_size(px(font_size("bodyUI")))
+                                    .text_color(secondary_foreground)
+                                    .text_size(px(font_size("meta")))
                             },
+                        ))
+                        .child(when(
+                            move || keycap_width.title_search_width().0 >= 240.0,
+                            || shortcut_cap("Ctrl+P"),
                         ))
                         .on_press(move |_: &()| {
                             search.run_checked("texzi.navigation.quickOpen", |shell| {
@@ -3342,9 +3567,8 @@ fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
         .w(px(metric("rail")))
         .flex_shrink_0()
         .items_center()
-        .bg(|| color("mica-shell"))
-        .border_r(border_width)
-        .border_color(divider)
+        .pt(px(3.0))
+        .pb(px(4.0))
         .child(activity_icon(
             FILES_ICON,
             "资源管理器",
@@ -3352,17 +3576,7 @@ fn activity_bar(s: Rc<Shell>) -> impl IntoElement {
                 let s = s.clone();
                 move || !s.settings_active() && s.drawer().get() && s.panel.get() != "folder"
             },
-            move || {
-                if files.panel.get() == "folder" {
-                    files.close_panel();
-                    files.drawer().set(true);
-                } else if files.settings_active() {
-                    files.dismiss_settings(false);
-                    files.drawer().set(true);
-                } else {
-                    files.run("texzi.sidebar.toggle");
-                }
-            },
+            move || files.toggle_files(),
         ))
         .child(activity_icon(
             SEARCH_ICON,
@@ -3402,7 +3616,13 @@ fn activity_icon(
                         rgba(0).into()
                     }
                 })
-                .text_color(move || color(if ink() { "selected-text" } else { "ink-1" }))
+                .text_color(move || {
+                    color(if ink() {
+                        "selected-text"
+                    } else {
+                        "muted-readable"
+                    })
+                })
                 .selected(selected.clone())
                 .on_press(move |_: &()| activate()),
         )
@@ -3412,7 +3632,8 @@ fn activity_icon(
                 .left(px(0.0))
                 .top(px(8.0))
                 .bottom(px(8.0))
-                .w(px(2.0))
+                .w(px(3.0))
+                .rounded(px(2.0))
                 .bg(indicator)
         }))
 }
@@ -3426,12 +3647,31 @@ const CLOSE_ICON: &str = "M6 6l12 12M18 6L6 18";
 const FORMAT_ICON: &str = "M3 18l5-12 5 12M5 14h6M16 8h5M16 12h5M16 16h5";
 const SOURCE_ICON: &str = "M4 6l6 5-6 5M12 17h8";
 const ADD_ICON: &str = "M5 12h14M12 5v14";
+const CHEVRON_DOWN_ICON: &str = "M6 10l6 6 6-6";
 
 fn shell_glyph(path: &str, size: f32) -> impl IntoElement {
     let source = ImageSrc::svg_markup(&format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="{path}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#
     ));
     svg(source).w(px(size)).h(px(size)).flex_shrink_0()
+}
+
+fn shortcut_cap(label: impl Into<SharedString>) -> impl IntoElement {
+    view()
+        .h(px(18.0))
+        .px(px(5.0))
+        .flex_shrink_0()
+        .justify_center()
+        .rounded(px(4.0))
+        .border(border_width)
+        .border_color(divider)
+        .bg(|| color("paper-subtle"))
+        .child(
+            text(label.into())
+                .text_size(px(10.5))
+                .text_color(secondary_foreground)
+                .number_of_lines(1),
+        )
 }
 
 fn icon_button(
@@ -3455,13 +3695,21 @@ fn icon_button(
 fn file_sidebar(s: Rc<Shell>, compact: bool) -> impl IntoElement {
     let close = s.clone();
     let panel = s.panel;
-    let zen = s.zen;
     let width = s.sidebar_width;
     let start = s.sidebar_drag_start;
+    let desired_width = move || {
+        let preferred = width.get();
+        if panel.get() == "folder" && preferred == metric("sidebar") {
+            258.0
+        } else {
+            preferred
+        }
+    };
     let window = s.window.clone();
     let max_width = move || {
         window.state().map_or(560.0, |state| {
-            (state.content_bounds.size.width.0 - 244.0).clamp(160.0, 560.0)
+            let reserve = if compact { 28.0 } else { 244.0 };
+            (state.content_bounds.size.width.0 - reserve).clamp(160.0, 560.0)
         })
     };
     let layout_max = max_width.clone();
@@ -3473,13 +3721,13 @@ fn file_sidebar(s: Rc<Shell>, compact: bool) -> impl IntoElement {
             |style| {
                 style
                     .absolute()
-                    .left(move || px(if zen.get() { 0.0 } else { metric("rail") }))
+                    .left_0()
                     .top(px(0.0))
                     .bottom(px(0.0))
                     .z_index(2)
             },
         )
-        .w(move || px(width.get().min(layout_max())))
+        .w(move || px(desired_width().min(layout_max())))
         .max_w(relative(1.0))
         .flex_shrink_0()
         .bg(move || {
@@ -3493,21 +3741,24 @@ fn file_sidebar(s: Rc<Shell>, compact: bool) -> impl IntoElement {
         .border_color(divider)
         .child(
             view()
-                .h(px(38.0))
-                .px(px(8.0))
+                .h(px(33.0))
+                .px(px(16.0))
                 .flex_shrink_0()
                 .flex_row()
                 .items_center()
                 .justify_between()
-                .border_b(border_width)
-                .border_color(divider)
-                .child(text(move || {
-                    if panel.get() == "folder" {
-                        "文件夹搜索"
-                    } else {
-                        "资源管理器"
-                    }
-                }))
+                .child(
+                    text(move || {
+                        if panel.get() == "folder" {
+                            "文件夹搜索"
+                        } else {
+                            "资源管理器"
+                        }
+                    })
+                    .text_size(px(font_size("meta")))
+                    .text_color(|| color("ink-2"))
+                    .font_weight(FontWeight::SEMIBOLD),
+                )
                 .child(dynamic(move || {
                     let searching_folder = panel.get() == "folder";
                     let close = close.clone();
@@ -3533,12 +3784,17 @@ fn file_sidebar(s: Rc<Shell>, compact: bool) -> impl IntoElement {
                 folder_search_panel(s.clone()).into_element()
             } else {
                 let s = s.clone();
+                let open_folder = s.clone();
+                let always_show_open = move || open_folder.root.get().is_none();
+                let open_folder = s.clone();
                 view()
                     .flex_1()
                     .min_h(px(0.0))
-                    .p(px(8.0))
-                    .gap(px(8.0))
-                    .child(button("打开文件夹", s.clone(), "texzi.folder.open"))
+                    .px(px(8.0))
+                    .pb(px(8.0))
+                    .child(when(always_show_open, move || {
+                        button("打开文件夹", open_folder.clone(), "texzi.folder.open")
+                    }))
                     .child(dynamic(move || folder(s.clone())))
                     .into_element()
             }
@@ -3547,7 +3803,7 @@ fn file_sidebar(s: Rc<Shell>, compact: bool) -> impl IntoElement {
             nsh_base::resize_handle()
                 .edge(nsh_base::HandleEdge::Trailing)
                 .accessibility_label("调整资源管理器宽度")
-                .on_drag_start(move || start.set(width.get_untracked().min(max_width())))
+                .on_drag_start(move || start.set(desired_width().min(max_width())))
                 .on_drag_move(move |offset: &Points| {
                     width.set((start.get_untracked() + offset.0).clamp(160.0, drag_max()));
                 }),
@@ -3582,8 +3838,8 @@ fn tab_ribbon() -> impl IntoElement {
         view()
             .absolute()
             .bottom(px(0.0))
-            .left(px(6.0))
-            .right(px(6.0))
+            .left(px(10.0))
+            .right(px(10.0))
             .h(px(metric("tabMark")))
             .rounded_full()
             .pointer_events(PointerEvents::None),
@@ -3625,11 +3881,22 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                                 let close = s.clone();
                                 let id = doc.id;
                                 let label = doc.clone();
+                                let file_type = doc.path;
                                 view()
                                     .relative()
                                     .group_named(TAB_CLOSE_GROUP)
                                     .h(px(metric("tab")))
                                     .rounded(px(metric("tabRadius")))
+                                    .border(border_width)
+                                    .border_color(move || {
+                                        if active.get() == id
+                                            && settings_tab.get() != SettingsTab::Active
+                                        {
+                                            divider()
+                                        } else {
+                                            rgba(0).into()
+                                        }
+                                    })
                                     .min_w(px(104.0))
                                     .max_w(px(metric("tabLimit")))
                                     .pr(px(6.0))
@@ -3673,6 +3940,13 @@ fn tab_bar(s: Rc<Shell>) -> impl IntoElement {
                                                 active.get() == id
                                                     && settings_tab.get() != SettingsTab::Active
                                             })
+                                            .child(dynamic(move || {
+                                                file_type.with(|path| {
+                                                    path.as_deref()
+                                                        .and_then(file_kind)
+                                                        .map(file_type_chip)
+                                                })
+                                            }))
                                             .child(
                                                 text(move || label.name())
                                                     .text_size(px(font_size("label")))
@@ -3794,6 +4068,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let side = s.clone();
     let compact_side = s.clone();
     let activity = s.clone();
+    let show_activity = s.clone();
     let content = s.clone();
     let settings_side = s.clone();
     let preferences_side = s.clone();
@@ -3820,14 +4095,12 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
     let exit_zen = s.clone();
     let zen_window = s.window.clone();
     let zen_armed = s.zen_exit.armed;
-    let zen_hint = s.clone();
-    let zen_exit_width = signal(px(0.0));
-    let zen_hint_width = signal(px(176.0));
     let nav_panel = s.panel;
     view()
         .element_ref(&s.draft_dialog_host)
         .relative()
         .size_full()
+        .bg(|| color("mica-shell"))
         .text_color(|| color("ink-1"))
         .text_size(px(font_size("bodyUI")))
         .on_file_drop(move |event: &FileDropEvent| drop_shell.open_dropped(&event.uris))
@@ -3839,7 +4112,6 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                 let window = zen_window.clone();
                 view()
                     .group_named("zen-exit")
-                    .bg(|| color("mica-shell"))
                     .h(px(metric("title")))
                     .w_full()
                     .flex_row()
@@ -3850,9 +4122,6 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                     .child(
                         nsh_base::button()
                             .opacity(0.0)
-                            .on_layout(move |bounds: &Bounds<Points>| {
-                                zen_exit_width.set(bounds.size.width);
-                            })
                             .group_hover_named("zen-exit", |style| style.opacity(1.0))
                             .group_focus_within_named("zen-exit", |style| style.opacity(1.0))
                             .child(text("退出 Zen"))
@@ -3869,7 +4138,7 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                 .flex_row()
                 .flex_1()
                 .child(when(
-                    move || !zen.get(),
+                    move || !zen.get() && !show_activity.compact_menu(),
                     move || activity_bar(activity.clone()),
                 ))
                 .child(when(
@@ -3896,7 +4165,6 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                     view()
                         .flex_1()
                         .min_w(px(0.0))
-                        .bg(|| color("mica-shell"))
                         .child(when(move || !zen.get(), move || tab_bar(tabs.clone())))
                         .child(
                             view()
@@ -3993,19 +4261,9 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
         .child(when(
             move || zen.get() && zen_armed.get(),
             move || {
-                let shell = zen_hint.clone();
                 view()
                     .absolute()
-                    .top(move || {
-                        let right = shell.window.title_bar().right + zen_exit_width.get();
-                        // Keep both caption actions clear. In a tight window the hint
-                        // sits just below the title, centered above the reading column.
-                        if shell.content_width() / 2.0 - right.0 >= zen_hint_width.get().0 / 2.0 {
-                            px(4.0)
-                        } else {
-                            px(metric("title") + 4.0)
-                        }
-                    })
+                    .top(px(metric("title") + 16.0))
                     .left_0()
                     .right_0()
                     .z_index(2)
@@ -4016,13 +4274,19 @@ fn render_shell(s: Rc<Shell>) -> impl IntoElement {
                         view()
                             .relative()
                             .min_w(px(0.0))
-                            .on_layout(move |bounds: &Bounds<Points>| {
-                                zen_hint_width.set(bounds.size.width);
-                            })
-                            .px(|| px(8.0 + border_width().0))
-                            .py(|| px(4.0 + border_width().0))
-                            .child(local_glass_surface(px(8.0)))
-                            .child(text("再按一次 Esc 退出 Zen").number_of_lines(1))
+                            .test_id("texzi.zen.exit-hint")
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(|| px(11.0 + border_width().0))
+                            .py(|| px(6.0 + border_width().0))
+                            .child(local_glass_surface(px(16.0)))
+                            .child(shortcut_cap("Esc"))
+                            .child(
+                                text("再按一次 Esc 退出 Zen")
+                                    .text_size(px(font_size("label")))
+                                    .number_of_lines(1),
+                            )
                             .child(tab_ribbon()),
                     )
             },
@@ -4145,14 +4409,26 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
         .flex_shrink_0()
         .flex_row()
         .items_center()
-        .gap(px(12.0))
-        .px(px(8.0))
+        .gap(px(8.0))
+        .px(px(12.0))
         .bg(|| color("mica-statusbar"))
         .border_t(border_width)
         .border_color(divider)
         .text_color(secondary_foreground)
         .text_size(px(font_size("meta")))
         .tabular_nums()
+        .child(
+            view()
+                .size(px(6.0))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(move || {
+                    color(match status.get().1 {
+                        "muted-readable" => "success-fg",
+                        state => state,
+                    })
+                }),
+        )
         .child(
             text(move || status.get().0)
                 .text_color(move || color(status.get().1))
@@ -4169,7 +4445,6 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
                 return None;
             }
             let rich = doc.displayed_rich();
-            let markdown = doc.is_markdown();
             let position = if rich {
                 doc.gate.rich_cursor_status()
             } else {
@@ -4178,10 +4453,15 @@ fn status_bar(shell: Rc<Shell>) -> impl IntoElement {
             let (encoding, newline) = doc.source.file_status()?;
             let language = if rich {
                 "Markdown · 富文本"
-            } else if markdown {
-                "Markdown · 源码"
             } else {
-                "纯文本"
+                match doc
+                    .path
+                    .with(|path| path.as_deref().map_or("plaintext", source_language))
+                {
+                    "markdown" => "Markdown · 源码",
+                    "rust" => "Rust · 源码",
+                    _ => "纯文本",
+                }
             };
             let mut fields = view()
                 .flex_row()
@@ -4238,6 +4518,49 @@ fn is_quick_panel(mode: &str) -> bool {
 
 fn quick_lists_files(mode: &str) -> bool {
     matches!(mode, "files" | "spotlight")
+}
+
+#[derive(Clone, Copy)]
+struct FileKind {
+    label: &'static str,
+    foreground: &'static str,
+    surface: &'static str,
+}
+
+fn file_kind(path: &Path) -> Option<FileKind> {
+    let extension = path.extension()?.to_str()?;
+    let (label, foreground, surface) = match extension.to_ascii_lowercase().as_str() {
+        "md" | "markdown" => ("MD", "selected-text", "selected-bg"),
+        "rs" => ("RS", "warning-fg", "apricot-soft"),
+        "txt" => ("TXT", "ink-2", "paper-subtle"),
+        "png" => ("PNG", "success-fg", "paper-subtle"),
+        "jpg" | "jpeg" => ("JPG", "success-fg", "paper-subtle"),
+        "json" => ("JSON", "warning-fg", "apricot-soft"),
+        "toml" => ("TOML", "warning-fg", "apricot-soft"),
+        _ => return None,
+    };
+    Some(FileKind {
+        label,
+        foreground,
+        surface,
+    })
+}
+
+fn file_type_chip(kind: FileKind) -> impl IntoElement {
+    view()
+        .h(px(14.0))
+        .px(px(3.0))
+        .flex_shrink_0()
+        .justify_center()
+        .rounded(px(3.0))
+        .bg(move || color(kind.surface))
+        .child(
+            text(kind.label)
+                .text_size(px(9.0))
+                .text_color(move || color(kind.foreground))
+                .font_weight(FontWeight::SEMIBOLD)
+                .number_of_lines(1),
+        )
 }
 
 fn tree_rows(
@@ -4314,12 +4637,16 @@ fn folder(s: Rc<Shell>) -> AnyElement {
                     view()
                         .h(px(28.0))
                         .flex_row()
+                        .px(px(8.0))
                         .gap(px(6.0))
                         .items_center()
                         .label(root_path)
-                        .child(shell_glyph(FOLDER_ICON, 16.0))
+                        .child(shell_glyph(CHEVRON_DOWN_ICON, 12.0))
+                        .child(shell_glyph(FOLDER_ICON, 15.0))
                         .child(
                             text(root_label)
+                                .text_size(px(font_size("label")))
+                                .font_weight(FontWeight::SEMIBOLD)
                                 .min_w(px(0.0))
                                 .number_of_lines(1)
                                 .text_overflow(EllipsizeMode::Tail),
@@ -4331,42 +4658,73 @@ fn folder(s: Rc<Shell>) -> AnyElement {
                     |r: &(PathBuf, usize, bool)| r.0.clone(),
                     move |row, _| {
                         let (path, depth, directory) = row.get_untracked();
-                        let label = format!(
-                            "{}{}",
-                            if directory {
-                                if expanded.contains(&path) {
-                                    "▾ "
-                                } else {
-                                    "▸ "
-                                }
-                            } else {
-                                ""
-                            },
-                            path.file_name().unwrap_or_default().to_string_lossy()
-                        );
+                        let label = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned();
+                        let open = directory && expanded.contains(&path);
+                        let kind = (!directory).then(|| file_kind(&path)).flatten();
                         let s = s.clone();
                         let highlighted = s.clone();
                         let row_path = path.clone();
+                        let selected = computed(move || {
+                            highlighted.current().is_some_and(|d| {
+                                d.path.with(|p| {
+                                    p.as_ref().is_some_and(|current| {
+                                        current
+                                            .as_os_str()
+                                            .eq_ignore_ascii_case(row_path.as_os_str())
+                                    })
+                                })
+                            })
+                        });
                         nsh_base::button()
                             .w_full()
+                            .h(px(28.0))
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
                             .justify_start()
-                            .pl(px(8.0 + depth as f32 * 14.0))
+                            .pl(px(16.0 + depth as f32 * 14.0))
+                            .pr(px(8.0))
+                            .rounded(px(7.0))
+                            .app_class(CONTROL_STATES)
+                            .accessibility_label(label.clone())
+                            .selected(selected)
                             .bg(move || {
-                                if highlighted.current().is_some_and(|d| {
-                                    d.path.with(|p| {
-                                        p.as_ref().is_some_and(|current| {
-                                            current
-                                                .as_os_str()
-                                                .eq_ignore_ascii_case(row_path.as_os_str())
-                                        })
-                                    })
-                                }) {
+                                if selected.get() {
                                     selected_surface()
                                 } else {
-                                    frame()
+                                    rgba(0).into()
                                 }
                             })
-                            .child(text(label))
+                            .child(directory.then(|| {
+                                shell_glyph(
+                                    if open {
+                                        CHEVRON_DOWN_ICON
+                                    } else {
+                                        "M10 6l6 6-6 6"
+                                    },
+                                    12.0,
+                                )
+                            }))
+                            .child(directory.then(|| shell_glyph(FOLDER_ICON, 15.0)))
+                            .child(kind.map(file_type_chip))
+                            .child(
+                                text(label)
+                                    .text_color(move || {
+                                        color(if selected.get() {
+                                            "selected-text"
+                                        } else {
+                                            "ink-2"
+                                        })
+                                    })
+                                    .text_size(px(font_size("label")))
+                                    .min_w(px(0.0))
+                                    .number_of_lines(1)
+                                    .text_overflow(EllipsizeMode::Tail),
+                            )
                             .on_press(move |_: &()| {
                                 if directory {
                                     s.expanded.update(|es| {
@@ -4398,7 +4756,7 @@ fn palette_commands(
         .filter_map(|command| {
             let keys = command.keys.join(" / ");
             (query.is_empty()
-                || [&command.name, &command.id, &keys]
+                || [&command.name, &command.id, &command.group, &keys]
                     .iter()
                     .any(|text| text.to_lowercase().contains(query)))
             .then_some((command, keys))
@@ -4435,9 +4793,9 @@ fn palette_commands(
                 |reason| format!("{} · {reason}", command.name),
             );
             let mut item = nsh_base::CommandItem::new(command.id.clone(), label)
-                .keywords([command.id.clone()])
+                .keywords([command.id.clone(), command.group.clone()])
                 .group(if spotlight {
-                    "命令".to_owned()
+                    format!("命令 · {}", command.group)
                 } else {
                     command.group.clone()
                 })
@@ -4450,8 +4808,105 @@ fn palette_commands(
         .collect()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QuickScope {
+    All,
+    Commands,
+    Files,
+    Settings,
+}
+
+fn spotlight_scopes(
+    active: Signal<QuickScope>,
+    command: nsh_core::element::ComponentRef<nsh_base::Command>,
+) -> impl IntoElement {
+    view()
+        .flex_row()
+        .flex_wrap()
+        .px(px(12.0))
+        .pb(px(6.0))
+        .gap(px(4.0))
+        .children(
+            [
+                (QuickScope::All, "全部"),
+                (QuickScope::Commands, "命令"),
+                (QuickScope::Files, "文件"),
+                (QuickScope::Settings, "设置"),
+            ]
+            .into_iter()
+            .map(|(scope, label)| {
+                nsh_base::button()
+                    .h(px(27.0))
+                    .px(px(10.0))
+                    .rounded_full()
+                    .border(border_width)
+                    .border_color(move || {
+                        if active.get() == scope {
+                            color("iris-border")
+                        } else {
+                            rgba(0).into()
+                        }
+                    })
+                    .bg(move || {
+                        if active.get() == scope {
+                            selected_surface()
+                        } else {
+                            rgba(0).into()
+                        }
+                    })
+                    .text_color(move || {
+                        color(if active.get() == scope {
+                            "selected-text"
+                        } else {
+                            "ink-2"
+                        })
+                    })
+                    .app_class(CONTROL_STATES)
+                    .selected(move || active.get() == scope)
+                    .accessibility_label(format!("搜索范围：{label}"))
+                    .child(text(label).text_size(px(font_size("meta"))))
+                    .on_press(move |_: &()| {
+                        active.set(scope);
+                        if let Some(api) = command.api::<nsh_base::CommandApi>() {
+                            api.focus();
+                        }
+                    })
+            }),
+        )
+}
+
+fn spotlight_match(label: &str, query: &str) -> impl IntoElement + use<> {
+    let base = text("")
+        .number_of_lines(2)
+        .text_overflow(EllipsizeMode::Tail);
+    let query = query.trim();
+    if !query.is_empty() {
+        // ASCII folding preserves byte offsets even when the title also contains CJK.
+        let offset = if query.is_ascii() {
+            label.to_ascii_lowercase().find(&query.to_ascii_lowercase())
+        } else {
+            label.find(query)
+        };
+        if let Some(start) = offset {
+            let end = start + query.len();
+            return base
+                .child(text(label[..start].to_owned()))
+                .child(
+                    text(label[start..end].to_owned())
+                        .text_color(|| color("selected-text"))
+                        .bg(|| color("iris-soft"))
+                        .font_weight(FontWeight::SEMIBOLD),
+                )
+                .child(text(label[end..].to_owned()));
+        }
+    }
+    base.child(text(label.to_owned()))
+}
+
 fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
     let query = s.palette_query;
+    let scope = s.quick_scope;
+    let command = component_ref::<nsh_base::Command>();
     let compact = s.compact_menu();
     let files = quick_lists_files(mode);
     let spotlight = mode == "spotlight";
@@ -4531,21 +4986,29 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
     let stop = s.clone();
     let description = local_glass_description("muted-readable");
     let content = view()
-        .rounded(px(12.0))
+        .rounded(px(15.0))
         .overflow_hidden()
         .p(border_width)
         .child(
             nsh_base::command()
+                .component_ref(&command)
                 .items(move || {
                     if !files {
                         let folded = query.with(|query| query.trim().to_lowercase());
                         return palette_commands(&command_shell, &registry, &folded, false);
                     }
-                    let mut items = file_entries.clone();
+                    let active = scope.get();
+                    let mut items = if !spotlight || matches!(active, QuickScope::All | QuickScope::Files) {
+                        file_entries.clone()
+                    } else {
+                        Vec::new()
+                    };
                     if spotlight {
                         let folded = query.with(|query| query.trim().to_lowercase());
-                        if !folded.is_empty() {
+                        if active == QuickScope::Settings || (active == QuickScope::All && !folded.is_empty()) {
                             items.extend(settings.iter().cloned());
+                        }
+                        if active == QuickScope::Commands || (active == QuickScope::All && !folded.is_empty()) {
                             items.extend(palette_commands(&command_shell, &registry, &folded, true));
                         }
                     }
@@ -4575,8 +5038,9 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
                 .when(!compact, |command| {
                     command
                         .search_prefix(shell_glyph(SEARCH_ICON, 16.0))
-                        .search_suffix(text(if spotlight { "全部" } else if files { "文件" } else { "命令" }).text_color(description))
+                        .search_suffix(shortcut_cap("Esc"))
                 })
+                .when(spotlight, |panel| panel.after_search(spotlight_scopes(scope, command)))
                 .search_accessibility_label(match mode {
                     "spotlight" => SPOTLIGHT_LABEL,
                     "files" => "搜索文件",
@@ -4584,24 +5048,40 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
                 })
                 .list_class("max-h-64")
                 .item_class("focus:bg-sidebar-accent focus:text-sidebar-accent-foreground disabled:text-(--control-disabled)")
-                .item_style(|s| s.mx(px(6.0)).px(px(8.0)).py(px(7.0)).rounded(px(6.0)))
+                .item_style(|s| s.mx(px(6.0)).px(px(8.0)).py(px(6.0)).rounded(px(8.0)))
                 .group_style(|s| s.px(px(12.0)).py(px(4.0)).text_size(px(font_size("meta")))
                     .font_weight(FontWeight::SEMIBOLD).text_color(description))
-                .render_item(|entry: &nsh_base::CommandEntry| {
+                .render_item(move |entry: &nsh_base::CommandEntry| {
+                    let is_setting = entry.id.starts_with("setting:");
+                    let is_file = entry.id.starts_with("file:") || entry.id.starts_with("quick:");
+                    let glyph = if is_setting { SETTINGS_ICON } else if is_file { FILES_ICON } else { SOURCE_ICON };
+                    let caps = entry.shortcut.as_ref().map(|keys| {
+                        keys.split_whitespace()
+                            .flat_map(|sequence| {
+                                if sequence.ends_with('+') {
+                                    vec![sequence]
+                                } else {
+                                    sequence.split('+').filter(|key| !key.is_empty()).collect()
+                                }
+                            })
+                            .take(6)
+                            .map(|key| shortcut_cap(key.to_owned()))
+                            .collect::<Vec<_>>()
+                    }).unwrap_or_default();
+                    let label = entry.label.clone();
                     view()
                         .flex_row()
                         .items_center()
                         .gap(px(8.0))
-                        .child(text(entry.label.clone()).min_w(px(0.0)).flex_1().number_of_lines(2))
-                        .child(entry.shortcut_label.clone().or_else(|| entry.shortcut.clone()).map(|keys| {
-                            text(keys)
-                                .flex_shrink_0()
-                                .px(px(5.0))
-                                .py(px(2.0))
-                                .rounded(px(4.0))
-                                .bg(|| color("paper-subtle"))
-                                .text_color(secondary_foreground)
-                                .text_size(px(font_size("meta")))
+                        .child(view().w(px(24.0)).h(px(24.0)).flex_shrink_0()
+                            .items_center().justify_center().rounded(px(6.0))
+                            .bg(|| color("iris-soft")).text_color(|| color("selected-text"))
+                            .child(shell_glyph(glyph, 15.0)))
+                        .child(view().min_w(px(0.0)).flex_1().child(dynamic(move || {
+                            query.with(|query| spotlight_match(&label, query))
+                        })))
+                        .child((!compact && !caps.is_empty()).then(|| {
+                            view().flex_row().gap(px(3.0)).flex_shrink_0().children(caps)
                         }))
                 })
                 .empty(text("没有匹配结果").p(px(12.0)).text_color(description))
@@ -4672,7 +5152,7 @@ fn quick_panel(s: Rc<Shell>, mode: &str) -> impl IntoElement + use<> {
     // Clip the controls after the glass has sampled the surrounding workbench.
     view()
         .relative()
-        .child(local_glass_surface(px(12.0)))
+        .child(local_glass_surface(px(15.0)))
         .child(content)
 }
 
@@ -4687,6 +5167,7 @@ fn folder_search_panel(s: Rc<Shell>) -> impl IntoElement {
     let enter = s.clone();
     let cancel = s.clone();
     let results = s.clone();
+    let field_focused = signal(false);
     let same_query = move || match (root.get(), origin.get()) {
         (Some(root), Some((searched_root, searched_query))) => {
             root == searched_root && query.get() == searched_query
@@ -4697,26 +5178,50 @@ fn folder_search_panel(s: Rc<Shell>) -> impl IntoElement {
     view()
         .flex_1()
         .min_h(px(0.0))
-        .p(px(8.0))
+        .px(px(12.0))
+        .pb(px(10.0))
         .gap(px(8.0))
         .child(
-            input()
+            view()
                 .h(px(metric("field")))
                 .px(px(8.0))
-                .rounded(px(6.0))
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .rounded(px(8.0))
                 .border(border_width)
-                .border_color(divider)
+                .border_color(move || {
+                    if field_focused.get() {
+                        indicator()
+                    } else {
+                        divider()
+                    }
+                })
                 .bg(|| color("paper"))
-                .app_class(CONTROL_STATES)
-                .label("文件夹搜索文字")
-                .placeholder("搜索文件中的文字")
-                .value(move || query.get())
-                .on_change(move |value: &str| query.set(value.into()))
-                .auto_focus(true)
-                .on_submit(move |_: &str| enter.search_folder()),
+                .child(shell_glyph(SEARCH_ICON, 14.0))
+                .child(
+                    input()
+                        .h_full()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .app_class(CONTROL_STATES)
+                        .label("文件夹搜索文字")
+                        .placeholder("搜索文件中的文字")
+                        .value(move || query.get())
+                        .on_change(move |value: &str| query.set(value.into()))
+                        .on_focus(move |_: &()| field_focused.set(true))
+                        .on_blur(move |_: &()| field_focused.set(false))
+                        .auto_focus(true)
+                        .on_submit(move |_: &str| enter.search_folder()),
+                ),
         )
         .child(
             text("UTF-8 · 普通文字 · 区分大小写")
+                .self_start()
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded(px(4.0))
+                .bg(|| color("pill-hover"))
                 .text_size(px(font_size("meta")))
                 .text_color(secondary_foreground),
         )
@@ -4767,20 +5272,46 @@ fn folder_search_panel(s: Rc<Shell>) -> impl IntoElement {
                     .gap(px(8.0))
                     .children(files.into_iter().map(|(path, matches)| {
                         let relative = path.strip_prefix(&root).unwrap_or(&path);
-                        let title = display_path(relative);
+                        let title = relative
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| display_path(relative));
+                        let parent = relative
+                            .parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                            .map(display_path);
                         view()
-                            .rounded(px(6.0))
+                            .rounded(px(8.0))
                             .border(border_width)
                             .border_color(divider)
                             .bg(|| color("paper"))
                             .child(
-                                text(title)
+                                view()
+                                    .flex_row()
+                                    .items_start()
+                                    .gap(px(6.0))
                                     .label(display_path(&path))
-                                    .p(px(6.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_size(px(font_size("meta")))
-                                    .number_of_lines(2)
-                                    .text_overflow(EllipsizeMode::Middle),
+                                    .p(px(8.0))
+                                    .child(file_kind(relative).map(file_type_chip))
+                                    .child(
+                                        view()
+                                            .flex_1()
+                                            .min_w(px(0.0))
+                                            .child(
+                                                text(title)
+                                                    .number_of_lines(1)
+                                                    .text_overflow(EllipsizeMode::Middle)
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_size(px(font_size("label"))),
+                                            )
+                                            .child(parent.map(|path| {
+                                                text(path)
+                                                    .text_color(secondary_foreground)
+                                                    .text_size(px(font_size("meta")))
+                                                    .number_of_lines(1)
+                                                    .text_overflow(EllipsizeMode::Middle)
+                                            })),
+                                    ),
                             )
                             .children(matches.into_iter().map(|hit| {
                                 let shell = results.clone();
@@ -4803,9 +5334,13 @@ fn folder_search_panel(s: Rc<Shell>) -> impl IntoElement {
                                     .child(
                                         text(hit.line.to_string())
                                             .flex_shrink_0()
+                                            .px(px(5.0))
+                                            .py(px(2.0))
+                                            .rounded(px(4.0))
+                                            .bg(|| color("iris-soft"))
                                             .tabular_nums()
                                             .text_size(px(font_size("meta")))
-                                            .text_color(secondary_foreground),
+                                            .text_color(|| color("selected-text")),
                                     )
                                     .child(
                                         text("")
@@ -4831,8 +5366,22 @@ fn folder_search_panel(s: Rc<Shell>) -> impl IntoElement {
             scroll().max_h(relative(0.35)).min_h(px(0.0)).child(
                 view()
                     .gap(px(4.0))
-                    .rounded(px(6.0))
-                    .bg(|| color("paper-subtle"))
+                    .rounded(px(8.0))
+                    .border(border_width)
+                    .border_color(move || {
+                        if same_query() && !searching.get() {
+                            color("celadon-border")
+                        } else {
+                            color("chrome-edge")
+                        }
+                    })
+                    .bg(move || {
+                        if same_query() && !searching.get() {
+                            color("celadon-soft")
+                        } else {
+                            color("paper-subtle")
+                        }
+                    })
                     .p(px(8.0))
                     .child(
                         text(move || {

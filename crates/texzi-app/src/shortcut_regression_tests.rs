@@ -638,6 +638,7 @@ fn zen_measured_column_reuses_the_editor_and_fits_a_narrow_window() {
                                 Some("test.toggle-zen") => trigger.set(Some(id)),
                                 Some("test.zen-escape") => escape.set(Some(id)),
                                 Some("texzi.editor.reading-column") => column.set(Some(id)),
+                                Some("texzi.zen.exit-hint") => hint = Some(id),
                                 Some("texzi.editor.mode-toggle") if !modes.contains(&id) => {
                                     modes.push(id);
                                 }
@@ -645,11 +646,6 @@ fn zen_measured_column_reuses_the_editor_and_fits_a_narrow_window() {
                             },
                             MountItem::Text { id, text, .. } if text.visible_text() == "0 字" => {
                                 count = Some(id);
-                            }
-                            MountItem::Text { id, text, .. }
-                                if text.visible_text() == "再按一次 Esc 退出 Zen" =>
-                            {
-                                hint = Some(id);
                             }
                             _ => {}
                         }
