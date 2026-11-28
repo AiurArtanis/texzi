@@ -35,6 +35,7 @@ impl Target {
 }
 
 pub(super) fn footer(shell: Rc<Shell>) -> impl IntoElement {
+    let material = shell.clone();
     let jobs = Rc::new(Jobs::new());
     let label = signal(String::new());
     let pending = signal(None::<(Target, u64)>);
@@ -109,14 +110,19 @@ pub(super) fn footer(shell: Rc<Shell>) -> impl IntoElement {
     });
     cleanup(move || jobs.cancel());
     view()
-        .w_full()
+        .absolute()
+        .bottom(px(18.0))
+        .right(px(20.0))
+        .max_w(relative(0.88))
+        .z_index(2)
         .flex_row()
         .items_center()
         .justify_end()
         .gap(px(6.0))
-        .bg(|| color("paper"))
-        .pr(px(12.0))
+        .pl(px(10.0))
+        .pr(px(2.0))
         .py(px(2.0))
+        .child(local_glass_surface_when(px(14.0), move || material.mode_glass_allowed()))
         .child(when(move || !label.with(String::is_empty), move || {
             text(move || label.get())
                 .label(move || label.get())
@@ -132,7 +138,7 @@ pub(super) fn footer(shell: Rc<Shell>) -> impl IntoElement {
         .child(dynamic(move || {
             let doc = mode_shell.current()?;
             can_show_mode_button(&doc).then(|| {
-                mode_button(mode_shell.clone(), doc, mode_shell.second_active.get()).into_element()
+                mode_button(mode_shell.clone(), doc, mode_shell.second_active.get(), false).into_element()
             })
         }))
 }

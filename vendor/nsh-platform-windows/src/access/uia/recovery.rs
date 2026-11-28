@@ -416,6 +416,7 @@ mod tests {
             RecoveredDraftDetails {
                 badge: Some("Recovered in the last session".into()),
                 summary: Some("Line 1: Existing draft text".into()),
+                summary_stats: Some("1 line, 19 bytes".into()),
             },
         );
         assert_ne!(serial, new_serial);
@@ -426,7 +427,7 @@ mod tests {
         );
         assert_eq!(
             property(&current.cast().unwrap(), UIA_FullDescriptionPropertyId),
-            "A new file can keep this draft.\nLine 1: Existing draft text",
+            "A new file can keep this draft.\nLine 1: Existing draft text\n1 line, 19 bytes",
         );
         assert_eq!(
             recovery_accessibility(&surface, ROOT_ID).unwrap().focus(),

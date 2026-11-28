@@ -91,6 +91,19 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
             let all = s.clone();
             let r_actions = s.clone();
             let scoped = st.scoped;
+            let case = st.case;
+            let word = st.word;
+            let regex = st.regex;
+            let compact = signal(false);
+            let scope = computed(move || {
+                if scoped.get() {
+                    "选区"
+                } else if doc.displayed_rich() {
+                    "正文"
+                } else {
+                    "源码"
+                }
+            });
             let glyph = move || {
                 if mode.get() == "replace" {
                     "⌄"
@@ -100,11 +113,13 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
             };
             let field = view()
                 .flex_row()
+                .flex_wrap()
                 .items_center()
-                .gap(px(2.0))
-                .basis(px(52.0))
+                .basis(px(232.0))
                 .flex_grow(1.0)
-                .min_w(px(52.0))
+                .max_w(relative(1.0))
+                .min_w(px(0.0))
+                .gap(px(4.0))
                 .child(
                     action("显示或收起替换")
                         .child(text(glyph))
@@ -117,54 +132,70 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                         }),
                 )
                 .child(
-                    input()
-                        .element_ref(&input_ref)
-                        .auto_focus(true)
-                        .label("查找文字")
-                        .placeholder("查找文字")
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
                         .flex_1()
                         .min_w(px(0.0))
-                        .h(px(28.0))
-                        .value(move || query.get())
-                        .on_composition_change(move |e: &Composition| {
-                            let was = preedit.find_panel.composing_query.get();
-                            preedit.find_panel.composing_query.set(e.composing);
-                            if e.composing {
-                                preedit.find_panel.supersede();
-                            }
-                            if was && !e.composing {
-                                refresh(&preedit, Intent::Count, true);
-                            }
-                        })
-                        .on_change(move |v: &str| query_changed(&edit, v))
-                        .on_submit(move |_: &str| navigate(&submit, false)),
+                        .gap(px(3.0))
+                        .px(px(5.0))
+                        .py(px(1.0))
+                        .bg(|| color("paper"))
+                        .border(border_width)
+                        .border_color(divider)
+                        .rounded(px(7.0))
+                        .focus_within(|style| style.border_color(|| color("iris")))
+                        .child(
+                            input()
+                                .element_ref(&input_ref)
+                                .auto_focus(true)
+                                .label("查找文字")
+                                .placeholder("查找文字")
+                                .placeholder_color(secondary_foreground)
+                                .basis(px(72.0))
+                                .max_w(relative(1.0))
+                                .flex_grow(1.0)
+                                .min_w(px(0.0))
+                                .h(px(25.0))
+                                .px(px(2.0))
+                                .text_color(foreground)
+                                .text_size(px(font_size("label")))
+                                .value(move || query.get())
+                                .on_composition_change(move |e: &Composition| {
+                                    let was = preedit.find_panel.composing_query.get();
+                                    preedit.find_panel.composing_query.set(e.composing);
+                                    if e.composing {
+                                        preedit.find_panel.supersede();
+                                    }
+                                    if was && !e.composing {
+                                        refresh(&preedit, Intent::Count, true);
+                                    }
+                                })
+                                .on_change(move |v: &str| query_changed(&edit, v))
+                                .on_submit(move |_: &str| navigate(&submit, false)),
+                        )
+                        .child(
+                            text(move || match_count(&status.get()))
+                                .min_w(px(0.0))
+                                .max_w(relative(1.0))
+                                .text_size(px(11.0))
+                                .tabular_nums()
+                                .app_class("font-semibold")
+                                .text_color(|| color("success-fg")),
+                        )
+                        .child(toggle(&s, Toggle::Case, "Aa", "区分大小写"))
+                        .child(toggle(&s, Toggle::Word, "ab", "整词匹配"))
+                        .child(toggle(&s, Toggle::Regex, ".*", "正则表达式"))
+                        .child(toggle(&s, Toggle::Selection, "选区", "仅在选区内查找")),
                 );
-            let count = text(move || {
-                let scope = if scoped.get() {
-                    "选区"
-                } else if doc.displayed_rich() {
-                    "正文"
-                } else {
-                    "源码"
-                };
-                short_status(&status.get(), scope)
-            })
-            .text_size(px(11.0))
-            .text_color(foreground)
-            .min_w(px(0.0))
-            .max_w(px(150.0));
             let button_group = || {
                 view()
                     .flex_row()
                     .items_center()
-                    .gap(px(1.0))
+                    .gap(px(2.0))
                     .flex_shrink_0()
             };
-            let options = button_group()
-                .child(toggle(&s, Toggle::Case, "Aa", "区分大小写"))
-                .child(toggle(&s, Toggle::Word, "ab", "整词匹配"))
-                .child(toggle(&s, Toggle::Regex, ".*", "正则表达式"))
-                .child(toggle(&s, Toggle::Selection, "▧", "仅在选区内查找"));
             let navigation = button_group()
                 .child(
                     action("选中全部匹配")
@@ -191,18 +222,23 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                 .flex_row()
                 .flex_wrap()
                 .items_center()
-                .gap(px(2.0))
+                .gap(px(4.0))
                 .child(field)
-                .child(count)
-                .child(options)
                 .child(navigation);
             let controls = view()
                 .relative()
-                .w(px(396.0))
+                .w(px(metric("findWidth")))
                 .max_w(relative(1.0))
-                .p(px(6.0))
-                .gap(px(4.0))
-                .child(crate::origami::local_glass_surface(px(6.0)))
+                .px(px(10.0))
+                .py(px(8.0))
+                .gap(px(7.0))
+                .on_layout(move |bounds: &Bounds<Points>| {
+                    let next = bounds.size.width.0 < 330.0;
+                    if compact.get_untracked() != next {
+                        compact.set(next);
+                    }
+                })
+                .child(crate::origami::local_glass_surface(px(13.0)))
                 .child(input_row)
                 .child(when(
                     move || mode.get() == "replace",
@@ -214,8 +250,8 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                             .flex_row()
                             .flex_wrap()
                             .items_center()
-                            .gap(px(4.0))
-                            .pl(px(24.0))
+                            .gap(px(6.0))
+                            .pl(move || px(if compact.get() { 0.0 } else { 26.0 }))
                             .child(
                                 input()
                                     .label("替换为")
@@ -223,7 +259,17 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                                     .basis(px(80.0))
                                     .flex_grow(1.0)
                                     .min_w(px(80.0))
-                                    .h(px(28.0))
+                                    .max_w(relative(1.0))
+                                    .h(px(29.0))
+                                    .px(px(7.0))
+                                    .bg(|| color("paper"))
+                                    .border(border_width)
+                                    .border_color(divider)
+                                    .rounded(px(7.0))
+                                    .focus(|style| style.border_color(|| color("iris")))
+                                    .placeholder_color(secondary_foreground)
+                                    .text_color(foreground)
+                                    .text_size(px(font_size("label")))
                                     .value(move || value.get())
                                     .on_composition_change(move |e: &Composition| {
                                         r_comp.set(e.composing)
@@ -253,6 +299,36 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                             ))
                     },
                 ))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .flex_wrap()
+                        .gap(px(4.0))
+                        .pl(move || px(if compact.get() { 0.0 } else { 26.0 }))
+                        .text_color(crate::origami::local_glass_description("muted-readable"))
+                        .text_size(px(11.0))
+                        .child(
+                            text(move || {
+                                let pattern = match (regex.get(), word.get()) {
+                                    (true, true) => "正则表达式 · 整词",
+                                    (true, false) => "正则表达式",
+                                    (false, true) => "普通文字 · 整词",
+                                    (false, false) => "普通文字",
+                                };
+                                let casing = if case.get() {
+                                    "区分大小写"
+                                } else {
+                                    "不区分大小写"
+                                };
+                                format!("范围：{} · {pattern} · {casing}", scope.get())
+                            })
+                            .min_w(px(0.0))
+                            .max_w(relative(1.0)),
+                        )
+                        .child(text("Enter 下一处").flex_shrink_0()),
+                )
                 .child(when(
                     move || is_message(&status.get()),
                     move || {
@@ -263,9 +339,9 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
                 ));
             view()
                 .absolute()
-                .top(px(42.0))
-                .left(px(4.0))
-                .right(px(4.0))
+                .top(px(40.0))
+                .left(px(8.0))
+                .right(px(metric("findInset")))
                 .items_end()
                 .z_index(3)
                 .pointer_events(PointerEvents::BoxNone)
@@ -273,50 +349,108 @@ pub(in crate::app_shell) fn overlay(s: Rc<Shell>, doc: Rc<Document>) -> impl Int
         },
     )
 }
-fn is_message(status: &str) -> bool {
-    !status.contains(" · ")
-        && !matches!(
-            status,
-            "" | "请输入查找文字" | "正在查找…" | "已找到匹配，正在计数…"
-        )
+fn result_count(status: &str) -> Option<(&str, &str, bool)> {
+    let (scope, rest) = status.split_once(" · ")?;
+    if !matches!(scope, "正文" | "源码" | "选区") {
+        return None;
+    }
+    let (numbers, wrapped) = rest
+        .strip_suffix(" · 已回绕")
+        .map_or((rest, false), |numbers| (numbers, true));
+    let (current, total) = numbers.split_once('/')?;
+    Some((current, total, wrapped))
 }
-fn short_status(status: &str, active_scope: &str) -> String {
-    if let Some((scope, rest)) = status.split_once(" · ") {
-        let number = rest.split(' ').next().unwrap_or(rest);
-        format!("{scope} {number}")
-    } else {
-        match status {
-            "正在查找…" => format!("{active_scope} 查找中"),
-            "已找到匹配，正在计数…" => format!("{active_scope} 计数中"),
-            _ => active_scope.into(),
-        }
+
+fn is_message(status: &str) -> bool {
+    result_count(status).map_or_else(
+        || {
+            !matches!(
+                status,
+                "" | "请输入查找文字" | "正在查找…" | "已找到匹配，正在计数…"
+            )
+        },
+        |(_, _, wrapped)| wrapped,
+    )
+}
+
+fn match_count(status: &str) -> String {
+    if let Some((matches, total, _)) = result_count(status) {
+        return format!("{matches} / {total}");
+    }
+    match status {
+        "正在查找…" => "查找中".into(),
+        "已找到匹配，正在计数…" => "计数中".into(),
+        _ => String::new(),
     }
 }
+
 fn replace_button(label: &'static str, s: Rc<Shell>, id: &'static str) -> impl IntoElement {
     let shell = s.clone();
     let disabled = computed(move || shell.find_panel.is_replace_blocked());
+    let primary = id == "texzi.find.replaceAll";
     nsh_base::button()
         .accessibility_label(label)
         .disabled(move || disabled.get())
-        .child(text(label).text_color(move || {
-            if disabled.get() {
-                secondary_foreground()
+        .h(px(28.0))
+        .px(px(8.0))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .rounded(px(7.0))
+        .bg(move || {
+            color(if primary && !disabled.get() {
+                "iris"
             } else {
-                foreground()
+                "paper"
+            })
+        })
+        .border(border_width)
+        .border_color(move || {
+            color(if primary && !disabled.get() {
+                "iris"
+            } else {
+                "chrome-edge"
+            })
+        })
+        .text_color(move || {
+            color(if disabled.get() {
+                "control-disabled"
+            } else if primary {
+                "on-primary"
+            } else {
+                "control-text"
+            })
+        })
+        .hover(move |style| {
+            if primary {
+                style
+                    .bg(|| color("iris"))
+                    .text_color(|| color("on-primary"))
+            } else {
+                style
+                    .bg(|| color("pill-hover"))
+                    .text_color(|| color("accent-foreground"))
             }
-        }))
+        })
+        .app_class(
+            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+        )
+        .child(text(label).text_size(px(11.5)))
         .on_press(move |_: &()| s.run(id))
 }
+
 fn action(label: &'static str) -> nsh_base::ButtonElement {
     nsh_base::button()
         .accessibility_label(label)
-        .w(px(21.0))
+        .w(px(22.0))
         .h(px(26.0))
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .app_class("rounded-sm hover:bg-accent focus-visible:bg-accent")
+        .rounded(px(5.0))
+        .app_class(CONTROL_STATES)
 }
+
 fn toggle(
     s: &Rc<Shell>,
     which: Toggle,
@@ -332,6 +466,14 @@ fn toggle(
     };
     let available = s.find_panel.has_scope;
     action(name)
+        .w(px(if which == Toggle::Selection {
+            30.0
+        } else {
+            22.0
+        }))
+        .h(px(19.0))
+        .border(border_width)
+        .border_color(move || color(if flag.get() { "iris" } else { "seam-strong" }))
         .selected(move || flag.get())
         .disabled(move || which == Toggle::Selection && !flag.get() && !available.get())
         .accessibility_hint(if which == Toggle::Selection {
@@ -340,15 +482,27 @@ fn toggle(
             name
         })
         .bg(move || {
-            if flag.get() {
-                selected_surface()
+            color(if flag.get() {
+                "pill-active"
             } else {
-                frame()
-            }
+                "paper-subtle"
+            })
         })
-        .child(text(label).text_size(px(12.0)).text_color(foreground))
+        .text_color(move || {
+            color(
+                if which == Toggle::Selection && !flag.get() && !available.get() {
+                    "control-disabled"
+                } else if flag.get() {
+                    "selected-text"
+                } else {
+                    "ink-2"
+                },
+            )
+        })
+        .child(text(label).text_size(px(10.5)))
         .on_press(move |_: &()| change(&run, which))
 }
+
 fn bindings(s: &Rc<Shell>) {
     let shell = s.clone();
     effect(move || {

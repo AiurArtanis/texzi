@@ -386,6 +386,20 @@ impl TableControls {
     pub(crate) fn status(&self) -> Signal<String> {
         self.gate.status
     }
+    pub(crate) fn column_alignment(&self) -> Option<TableAction> {
+        let draft = self.draft.borrow();
+        let draft = draft.as_ref()?;
+        let first_row = draft.doc.maybe_child(draft.block)?.maybe_child(0)?;
+        let cell = first_row.maybe_child(draft.column)?;
+        let paragraph = cell.maybe_child(0)?;
+        match paragraph.attrs().get("textAlign").and_then(Value::as_str) {
+            Some("left") => Some(TableAction::AlignLeft),
+            Some("center") => Some(TableAction::AlignCenter),
+            Some("right") => Some(TableAction::AlignRight),
+            _ => None,
+        }
+    }
+
     // A single row-dependent header button shares one slot in both surfaces.
     pub(crate) fn buttons(
         &self,

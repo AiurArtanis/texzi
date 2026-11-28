@@ -87,9 +87,22 @@ mod app {
     const WINDOW_TITLE: &str = "texzi — 原生编辑";
 
     pub(crate) fn rich_classes() -> nsh_base::rich_editor::view::RichEditorClasses {
+        rich_classes_for_editor(false)
+    }
+
+    pub(crate) fn rich_classes_for_editor(
+        wide: bool,
+    ) -> nsh_base::rich_editor::view::RichEditorClasses {
         use std::collections::BTreeMap;
         let mut classes = nsh_base::rich_editor::view::RichEditorClasses::default();
-        classes.content = Some("p-4 text-[16px] leading-[27px]".into());
+        classes.content = Some(
+            if wide {
+                "px-[44px] pt-[22px] pb-4 text-[16px] leading-[27px]"
+            } else {
+                "p-4 text-[16px] leading-[27px]"
+            }
+            .into(),
+        );
         classes.nodes = Some(BTreeMap::from([
             ("paragraph".into(), "mb-3".into()),
             ("heading".into(), "font-bold mt-4 mb-3".into()),
@@ -97,17 +110,23 @@ mod app {
             ("heading[level=2]".into(), "text-2xl".into()),
             ("heading[level=3]".into(), "text-xl".into()),
             ("heading[level=4]".into(), "text-lg".into()),
-            ("codeBlock".into(), "font-mono bg-muted p-3 mb-3".into()),
+            (
+                "codeBlock".into(),
+                "font-mono rounded-lg bg-muted p-3 mb-3".into(),
+            ),
             (
                 "blockquote".into(),
-                "border-l-2 border-border pl-4 my-3".into(),
+                "border-l-2 border-primary rounded-r-lg bg-muted px-4 py-1 my-3".into(),
             ),
             ("bulletList".into(), "pl-6 my-2".into()),
             ("orderedList".into(), "pl-6 my-2".into()),
-            ("tableCell".into(), "border border-border px-3 py-2".into()),
+            (
+                "tableCell".into(),
+                "border border-border px-3 py-[3px]".into(),
+            ),
             (
                 "tableHeader".into(),
-                "font-bold bg-muted border border-border px-3 py-2".into(),
+                "font-bold bg-muted border border-border px-3 py-[3px]".into(),
             ),
         ]));
         classes.marks = Some(BTreeMap::from([

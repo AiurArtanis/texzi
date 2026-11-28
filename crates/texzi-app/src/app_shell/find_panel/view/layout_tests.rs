@@ -6,7 +6,7 @@ use nsh_core::{
 };
 use std::collections::HashMap;
 
-const COUNT: &str = "源码 120000000/190000000";
+const COUNT: &str = "1 / 2";
 const FIRST_ROW: [&str; 11] = [
     "显示或收起替换",
     "查找文字",
@@ -29,10 +29,7 @@ fn SplitFindFixture() -> impl IntoElement {
     let doc = shell.current().unwrap();
     doc.gate.source_mounted();
     open(&shell, false);
-    shell
-        .find_panel
-        .status
-        .set("源码 · 120000000/190000000".into());
+    shell.find_panel.status.set("源码 · 1/2".into());
     view()
         .size_full()
         .flex_row()
@@ -102,7 +99,9 @@ fn find_overlay_wraps_in_160_dip_group_and_preserves_mounted_inputs_and_controls
     }
     let start = measured(&core, &names, "显示或收起替换");
     let end = measured(&core, &names, "关闭文内查找");
-    assert!((end.page.x.0 + end.frame.size.width.0 - start.page.x.0 - 384.0).abs() <= 1.0);
+    assert!((end.page.x.0 + end.frame.size.width.0 - start.page.x.0 - 376.0).abs() <= 1.0);
+    let scope = measured(&core, &names, "范围：源码 · 普通文字 · 不区分大小写");
+    assert!(center_y(scope) > row_y);
     assert!(!names.contains_key("替换为"));
     assert!(core.component_event(
         names["显示或收起替换"],

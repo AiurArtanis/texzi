@@ -1,9 +1,9 @@
-use super::{CONTROL_STATES, Document, Shell, border_width, color, font_size};
+use super::{CONTROL_STATES, Document, Shell, color};
 use crate::origami::{local_glass_description, local_glass_surface};
-use crate::table_controls::{self, ACTIONS, TableAction};
+use crate::table_controls::{self, TableAction};
 use nsh_base::rich_editor::view::{RichEditorApi, TableAnchor, TableAnchorGeometry};
 use nsh_core::{
-    AccessibilityRole, KeyCapture, KeyEvent, PointerEvents,
+    AccessibilityRole, EllipsizeMode, KeyCapture, KeyEvent, PointerEvents,
     element::{layout_rtl, next_frame},
     keymap::Keystroke,
     prelude::*,
@@ -12,8 +12,12 @@ use std::{cell::Cell, rc::Rc};
 
 const GAP: f32 = 8.0;
 const PADDING: f32 = 6.0;
-const ROW: f32 = 30.0;
-const GRID_GAP: f32 = 3.0;
+const ROW: f32 = 25.0;
+const GRID_GAP: f32 = 2.0;
+const STATUS_HEIGHT: f32 = 17.0;
+const BUTTON_COUNT: usize = 9;
+const TOOLBAR_WIDTH: f32 = 430.0;
+const WIDE_TRACKS: &str = "38px 38px 42px 46px 39px 46px minmax(64px, 1fr) 48px 30px";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Placement {
@@ -23,37 +27,66 @@ struct Placement {
     columns: usize,
 }
 
-fn place(cell: Bounds<Points>, viewport: Size<Points>, rtl: bool) -> Option<Placement> {
-    let width = (viewport.width.0 - 2.0 * GAP).min(416.0);
-    if width < 184.0 {
-        return None;
-    }
-    let columns = if width >= 376.0 {
-        4
-    } else if width >= 272.0 {
-        3
-    } else {
-        2
+fn place(
+    table: Bounds<Points>,
+    viewport: Size<Points>,
+    neighbors: [Option<Points>; 2],
+    rtl: bool,
+    has_status: bool,
+) -> Option<Placement> {
+    let width = (viewport.width.0 - 2.0 * GAP).min(TOOLBAR_WIDTH);
+    let columns = match width {
+        TOOLBAR_WIDTH.. => BUTTON_COUNT,
+        306.0.. => 5,
+        246.0.. => 4,
+        184.0.. => 3,
+        _ => return None,
     };
-    let rows = ACTIONS.len().div_ceil(columns) as f32;
-    // The frame, its fixed-height button rows and its status/cancel footer.
-    let height = 2.0 * PADDING + (rows + 1.0) * (ROW + GRID_GAP) + 4.0;
-    let above = cell.origin.y.0 - GAP - height;
-    let below = cell.bottom().0 + GAP;
-    let y = if above >= GAP {
-        above
-    } else if below + height <= viewport.height.0 - GAP {
-        below
+    let rows = BUTTON_COUNT.div_ceil(columns) as f32;
+    let status_height = if has_status {
+        STATUS_HEIGHT + GRID_GAP
     } else {
-        return None;
+        0.0
     };
-    let x = if rtl {
-        cell.right().0 - width
+    let height = 2.0 * PADDING + rows * ROW + (rows - 1.0) * GRID_GAP + status_height;
+    let above = table.origin.y.0 - GAP - height;
+    let below = table.bottom().0 + GAP;
+    let aligned = if rtl {
+        table.right().0 - width
     } else {
-        cell.origin.x.0
+        table.origin.x.0
+    };
+    let aligned = aligned.clamp(GAP, viewport.width.0 - width - GAP);
+    let [before, after] = neighbors;
+    let fits_above = above >= GAP;
+    let fits_below = below + height <= viewport.height.0 - GAP;
+    let (x, y) = if fits_above && before.is_none_or(|before| above >= before.0 + 4.0) {
+        (aligned, above)
+    } else if fits_below && after.is_none_or(|after| below + height + 4.0 <= after.0) {
+        (aligned, below)
+    } else {
+        let x = if rtl {
+            table.origin.x.0 - GAP - width
+        } else {
+            table.right().0 + GAP
+        };
+        let y = table.origin.y.0.max(GAP);
+        if x >= GAP
+            && x + width <= viewport.width.0 - GAP
+            && y + height <= table.bottom().0.min(viewport.height.0 - GAP)
+        {
+            (x, y)
+        } else if fits_above {
+            // Dense paragraphs may occupy both gaps. Keep the table tools in the editor.
+            (aligned, above)
+        } else if fits_below {
+            (aligned, below)
+        } else {
+            return None;
+        }
     };
     Some(Placement {
-        x: x.clamp(GAP, viewport.width.0 - width - GAP),
+        x,
         y,
         width,
         columns,
@@ -173,10 +206,19 @@ impl TableHud {
         match self.api().map(|api| api.table_anchor_geometry(anchor)) {
             Some(TableAnchorGeometry::Stale) => AnchorState::Stale,
             Some(TableAnchorGeometry::Composing) => AnchorState::Composing,
-            Some(TableAnchorGeometry::Visible { cell, viewport }) => {
-                place(cell, viewport, layout_rtl())
-                    .map_or(AnchorState::Missing, AnchorState::Placed)
-            }
+            Some(TableAnchorGeometry::Visible {
+                table,
+                viewport,
+                neighbors,
+                ..
+            }) => place(
+                table,
+                viewport,
+                neighbors,
+                layout_rtl(),
+                !self.doc.controls.table.status().get().is_empty(),
+            )
+            .map_or(AnchorState::Missing, AnchorState::Placed),
             _ => AnchorState::Missing,
         }
     }
@@ -362,26 +404,66 @@ impl TableHud {
         let position = self.placement;
         let tracks = computed(move || {
             let columns = position.get().map_or(3, |placement| placement.columns);
-            SharedString::from(format!("repeat({columns}, minmax(0, 1fr))"))
+            if columns == BUTTON_COUNT {
+                SharedString::from(WIDE_TRACKS)
+            } else {
+                SharedString::from(format!("repeat({columns}, minmax(0, 1fr))"))
+            }
         });
         let mut buttons = view()
             .grid()
             .gap(px(GRID_GAP))
             .grid_template_columns(tracks);
-        for (index, (label, short, action, enabled)) in
-            self.doc.controls.table.buttons().into_iter().enumerate()
-        {
+        let controls = &self.doc.controls.table;
+        let alignment = controls.column_alignment().unwrap_or_else(|| {
+            if layout_rtl() {
+                TableAction::AlignRight
+            } else {
+                TableAction::AlignLeft
+            }
+        });
+        for (label, _, action, enabled) in controls.buttons() {
+            let short = match action {
+                TableAction::RowBefore => "上插行",
+                TableAction::RowAfter => "下插行",
+                TableAction::ColumnAfter => "右插列",
+                TableAction::AlignLeft => "左对齐",
+                TableAction::AlignCenter => "居中",
+                TableAction::AlignRight => "右对齐",
+                TableAction::Header => "设为表头",
+                TableAction::CancelHeader => "取消表头",
+                _ => continue,
+            };
             let hud = self.clone();
             let escape = self.clone();
             let first = self.clone();
+            let header = matches!(action, TableAction::Header | TableAction::CancelHeader);
+            let selected = action == alignment || action == TableAction::CancelHeader;
             buttons = buttons.child(
                 tool_button(label, short)
                     .disabled(!enabled)
-                    .when(
-                        matches!(action, TableAction::Header | TableAction::CancelHeader),
-                        |button| button.test_id("texzi.table-tools.header"),
+                    .accessibility_state(nsh_core::AccessibilityState {
+                        selected,
+                        ..Default::default()
+                    })
+                    .when(selected && enabled, |button| {
+                        button
+                            .bg(|| color("pill-active"))
+                            .text_color(|| color("selected-text"))
+                    })
+                    .style_when(
+                        move || {
+                            (action == TableAction::AlignLeft || header)
+                                && position.get().is_some_and(|p| p.columns == BUTTON_COUNT)
+                        },
+                        |style| {
+                            style
+                                .border_l(px(1.0))
+                                .border_color(|| color("chrome-edge"))
+                        },
                     )
-                    .when(index == 0, move |button| {
+                    .when(header, |button| button.test_id("texzi.table-tools.header"))
+                    .when(action == TableAction::RowBefore, move |button| {
                         button
                             .test_id("texzi.table-tools.first")
                             .element_ref(&first.first)
@@ -402,9 +484,11 @@ impl TableHud {
                     .on_press(move |_: &()| hud.press(action)),
             );
         }
-        let status = self.doc.controls.table.status();
+        let status = controls.status();
+        let more = self.clone();
+        let escape_more = self.clone();
         let cancel = self.clone();
-        let escape = self.clone();
+        let escape_close = self.clone();
         view()
             .absolute()
             .left(move || px(position.get().map_or(0.0, |p| p.x)))
@@ -413,43 +497,43 @@ impl TableHud {
             .element_ref(&self.tools)
             .role(AccessibilityRole::Toolbar)
             .label("表格操作")
-            .p(|| px(PADDING + border_width().0))
+            .p(px(PADDING))
             .gap(px(GRID_GAP))
             .text_color(move || color("ink-1"))
-            .child(local_glass_surface(px(8.0)))
-            .child(buttons)
+            .child(local_glass_surface(px(11.0)))
             .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(4.0))
+                buttons
                     .child(
-                        text(move || {
-                            let message = status.get();
-                            if message.is_empty() {
-                                "当前单元格".into()
-                            } else {
-                                message
-                            }
-                        })
-                        .app_class("truncate")
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .text_color(local_glass_description("muted-readable"))
-                        .text_size(px(font_size("meta"))),
+                        tool_button("更多表格操作", "更多")
+                            .on_key_down(move |event: &KeyEvent| {
+                                if event.default_prevented && event.key.as_ref() == "Escape" {
+                                    escape_more.cancel_from_tools();
+                                }
+                            })
+                            .on_press(move |_: &()| more.set_surface(Surface::Dialog)),
                     )
                     .child(
                         tool_button("关闭表格操作", "关闭")
                             .test_id("texzi.table-tools.close")
-                            .w(px(60.0))
                             .on_key_down(move |event: &KeyEvent| {
                                 if event.default_prevented && event.key.as_ref() == "Escape" {
-                                    escape.cancel_from_tools();
+                                    escape_close.cancel_from_tools();
                                 }
                             })
                             .on_press(move |_: &()| cancel.cancel_from_tools()),
                     ),
             )
+            .child(when(
+                move || !status.get().is_empty(),
+                move || {
+                    text(move || status.get())
+                        .h(px(STATUS_HEIGHT))
+                        .number_of_lines(1)
+                        .text_overflow(EllipsizeMode::Tail)
+                        .text_color(local_glass_description("muted-readable"))
+                        .text_size(px(11.0))
+                },
+            ))
     }
 }
 
@@ -472,7 +556,12 @@ fn tool_button(label: &'static str, short: &'static str) -> View {
         .justify_center()
         .rounded(px(5.0))
         .app_class(CONTROL_STATES)
-        .child(text(short).text_size(px(font_size("label"))))
+        .child(
+            text(short)
+                .number_of_lines(1)
+                .text_overflow(EllipsizeMode::Tail)
+                .text_size(px(11.5)),
+        )
 }
 
 #[cfg(test)]
@@ -480,28 +569,46 @@ mod tests {
     use super::*;
     use nsh_core::geometry::point;
 
-    fn cell(x: f32, y: f32) -> Bounds<Points> {
-        Bounds::new(point(px(x), px(y)), Size::new(px(84.0), px(32.0)))
+    fn table(x: f32, y: f32) -> Bounds<Points> {
+        Bounds::new(point(px(x), px(y)), Size::new(px(150.0), px(88.0)))
     }
 
     #[test]
-    fn anchored_tools_flip_without_covering_the_cell_and_stay_in_their_group() {
+    fn anchored_tools_stay_outside_the_table_and_inside_their_group() {
         let wide = Size::new(px(820.0), px(430.0));
-        let above = place(cell(112.0, 280.0), wide, false).unwrap();
+        let above = place(table(112.0, 280.0), wide, [None; 2], false, false).unwrap();
         assert_eq!(above.x, 112.0);
-        assert_eq!(above.columns, 4);
-        assert!(above.y < 280.0);
-        let below = place(cell(112.0, 5.0), wide, false).unwrap();
-        assert_eq!(below.y, 45.0);
-        let right = place(cell(780.0, 5.0), wide, false).unwrap();
+        assert_eq!(above.columns, BUTTON_COUNT);
+        assert_eq!(above.y, 235.0);
+        let error = place(table(112.0, 280.0), wide, [None; 2], false, true).unwrap();
+        assert_eq!(error.y + STATUS_HEIGHT + GRID_GAP, above.y);
+        let below = place(table(112.0, 5.0), wide, [None; 2], false, false).unwrap();
+        assert_eq!(below.y, 101.0);
+        let right = place(table(780.0, 5.0), wide, [None; 2], false, false).unwrap();
         assert_eq!(right.x + right.width, 812.0);
-        let rtl = place(cell(596.0, 5.0), wide, true).unwrap();
+        let rtl = place(table(530.0, 5.0), wide, [None; 2], true, false).unwrap();
         assert_eq!(rtl.x + rtl.width, 680.0);
         let narrow = Size::new(px(335.0), px(430.0));
-        let compact = place(cell(275.0, 5.0), narrow, false).unwrap();
-        assert_eq!(compact.columns, 3);
+        let compact = place(table(250.0, 5.0), narrow, [None; 2], false, false).unwrap();
+        assert_eq!(compact.columns, 5);
         assert_eq!(compact.x + compact.width, 327.0);
-        assert!(place(cell(80.0, 50.0), Size::new(px(335.0), px(120.0)), false).is_none());
+        let short = Size::new(px(335.0), px(120.0));
+        assert!(place(table(80.0, 50.0), short, [None; 2], false, false).is_none());
+        let occupied_above = [Some(px(270.0)), None];
+        let below = place(table(112.0, 280.0), wide, occupied_above, false, false).unwrap();
+        assert_eq!(below.y, 376.0);
+        let occupied_both = [Some(px(270.0)), Some(px(380.0))];
+        let beside = place(table(112.0, 280.0), wide, occupied_both, false, false).unwrap();
+        assert_eq!((beside.x, beside.y), (270.0, 280.0));
+        let dense = place(
+            table(10.0, 5.0),
+            narrow,
+            [None, Some(px(103.0))],
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(dense.y, 101.0);
     }
 }
 

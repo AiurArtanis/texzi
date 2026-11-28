@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use super::{
     controller::{BlockItem, Rv, Tree},
-    geometry::{Geometry, Hit},
+    geometry::{DOC, Geometry, Hit},
     parts::Part,
     render::part,
 };
@@ -148,20 +148,35 @@ fn track_px(value: Points) -> String {
 
 /// Saved or dragged widths take precedence. Other columns fit their content
 /// up to a readable line length.
-pub(crate) fn column_tracks(table: &Node, preview: Option<(usize, Points)>) -> String {
+pub(crate) fn column_tracks(
+    table: &Node,
+    preview: Option<(usize, Points)>,
+    display_width: Option<Points>,
+) -> String {
     let (min, _, _) = options(table);
-    column_widths(table)
+    let widths = column_widths(table)
         .into_iter()
         .enumerate()
         .map(|(i, width)| {
-            let width = match preview {
+            match preview {
                 Some((col, w)) if col == i => Some(w),
                 _ => width,
-            };
-            match width {
-                Some(w) => track_px(w.max(min)),
-                None => "fit-content(20rem)".to_owned(),
             }
+            .map(|width| width.max(min))
+        })
+        .collect::<Vec<_>>();
+    let automatic_columns = widths.iter().filter(|width| width.is_none()).count();
+    let share = display_width
+        .filter(|_| automatic_columns > 0)
+        .map(|display| {
+            let fixed: f32 = widths.iter().flatten().map(|width| width.0).sum();
+            px(((display.0 - fixed) / automatic_columns as f32).max(min.0))
+        });
+    widths
+        .into_iter()
+        .map(|width| match width.or(share) {
+            Some(width) => track_px(width),
+            None => "fit-content(20rem)".to_owned(),
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -211,6 +226,7 @@ pub(crate) fn placement(doc: &Node, cell_pos: usize) -> Option<(i16, i16, i16, i
 /// A table's block: a grid, its top and left borders the theme's (every
 /// side in a terminal).
 pub(crate) fn grid(wrapper: View, rv: &Rv, item: ReadSignal<BlockItem>) -> View {
+    let display_width = rv.props.table_display_width;
     let (cols_rv, rows_rv) = (rv.clone(), rv.clone());
     let preview = computed(move || {
         let it = item.get();
@@ -227,7 +243,9 @@ pub(crate) fn grid(wrapper: View, rv: &Rv, item: ReadSignal<BlockItem>) -> View 
         .grid()
         .self_start()
         .grid_template_columns(move || {
-            SharedString::from(column_tracks(&item.get().node, preview.get()))
+            let item = item.get();
+            let preferred = (item.parent == DOC).then(|| display_width.get()).flatten();
+            SharedString::from(column_tracks(&item.node, preview.get(), preferred))
         })
         .grid_template_rows(move || {
             let it = item.get();
@@ -1228,8 +1246,13 @@ mod tests {
             )
             .unwrap();
         let t = table(vec![row, tr(vec![td("c"), td("d")])]);
-        assert_eq!(column_tracks(&t, None), "120px fit-content(20rem)");
-        assert_eq!(column_tracks(&t, Some((1, px(10.0)))), "120px 25px");
+        assert_eq!(column_tracks(&t, None, None), "120px fit-content(20rem)");
+        assert_eq!(column_tracks(&t, Some((1, px(10.0))), None), "120px 25px");
+        assert_eq!(column_tracks(&t, None, Some(px(600.0))), "120px 480px");
+        assert_eq!(
+            column_tracks(&t, Some((1, px(180.0))), Some(px(600.0))),
+            "120px 180px"
+        );
         assert_eq!(row_tracks(&t, None), "minmax(40px,auto) auto");
         assert_eq!(
             row_tracks(&t, Some((1, px(30.0)))),

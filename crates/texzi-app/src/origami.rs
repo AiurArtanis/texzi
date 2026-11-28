@@ -31,6 +31,9 @@ static GLASS_TINTS: LazyLock<[nsh_core::Gradient; 2]> = LazyLock::new(|| {
     })
 });
 
+static GLASS_EDGES: LazyLock<[Color; 2]> =
+    LazyLock::new(|| ["light", "dark"].map(|theme| parse(&DESIGN["themes"][theme]["seam-strong"])));
+
 const ALIASES: &[(&str, &str)] = &[
     ("foreground", "ink-1"),
     ("background", "paper"),
@@ -173,6 +176,7 @@ pub(super) fn local_glass_surface_when(
     let style = nsh_platform_windows::LocalGlassStyle {
         tint: &GLASS_TINTS,
         glass_border: px(1.0),
+        glass_edge: *GLASS_EDGES,
     };
     view()
         .absolute()
