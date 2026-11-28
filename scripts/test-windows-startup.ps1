@@ -56,13 +56,21 @@ function Find-Named([string]$Name) {
     $workbench.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
 }
 function Invoke-Named([string]$Name) {
-    $element = Wait-For $Name { $node = Find-Named $Name; if ($node -and $node.Current.IsEnabled) { $node } }
-    $element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+    $invoke = Wait-For $Name {
+        $node = Find-Named $Name
+        if (!$node -or !$node.Current.IsEnabled) { return }
+        $pattern = $null
+        if ($node.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern) -and $null -ne $pattern) {
+            $pattern
+        }
+    }
+    $invoke.Invoke()
 }
 function Has-Text([string]$Text) {
     $nodes = $workbench.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
     foreach ($node in $nodes) {
-        if ($node.Current.Name -and $node.Current.Name.Contains($Text)) { return $true }
+        $name = $node.Current.Name
+        if ($name -and $name.Contains($Text)) { return $true }
     }
     return $false
 }
@@ -71,10 +79,12 @@ function Find-OnlyEditor {
     $found = $null
     foreach ($edit in $edits) {
         $value = $null
-        if ($edit.Current.IsEnabled -and $edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$value) -and !$value.Current.IsReadOnly) {
-            if ($null -ne $found) { return $null }
-            $found = $value
+        if (!$edit.Current.IsEnabled -or !$edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$value) -or
+            $null -eq $value -or $value.Current.IsReadOnly) {
+            continue
         }
+        if ($null -ne $found) { return $null }
+        $found = $value
     }
     return $found
 }
@@ -94,6 +104,7 @@ $start.Environment['APPDATA'] = $roaming
 $start.RedirectStandardError = $true
 $proc = [Diagnostics.Process]::Start($start)
 $stderr = $proc.StandardError.ReadToEndAsync()
+$phase = 'visible workbench'
 try {
     $mine = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty, $proc.Id)
     $editCondition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
@@ -104,6 +115,7 @@ try {
     }
     $handle = [IntPtr]$workbench.Current.NativeWindowHandle
     Wait-For 'the workbench search' { Find-Named '搜索文件、命令或设置' } | Out-Null
+    $phase = 'Markdown source and autosave'
     Invoke-Named '切换到源码'
     Wait-For 'Markdown source' { (Find-Named '返回所见即所得') -and (Has-Text 'TEXZI-STARTUP-HEADING') } | Out-Null
     Edit-AndWaitForSave 'body.md'
@@ -111,8 +123,10 @@ try {
     if ($saved.Length -ne $markdownBody.Length + 1 -or $saved.Replace('~', '') -cne $markdownBody) {
         throw 'The Markdown source edit did not preserve the rest of the document.'
     }
+    $phase = 'formatted Markdown'
     Invoke-Named '返回所见即所得'
     Wait-For 'formatted Markdown body' { (Find-Named '格式命令') -and (Has-Text 'TEXZI-STARTUP-BODY') } | Out-Null
+    $phase = '20 MiB import and autosave'
     Invoke-Named 'large.txt'
     Wait-For 'large-file import to finish' { (Has-Text '大文件加载完成') -and (Has-Text 'TEXZI-LARGE-BODY') } | Out-Null
     Edit-AndWaitForSave 'large.txt'
@@ -122,9 +136,14 @@ try {
             throw 'The 20 MiB edit did not add the expected byte and preserve the complete original text.'
         }
     } finally { $stream.Dispose() }
+    $phase = 'clean process exit'
     if (![TexziStartup]::Close($handle)) { throw 'Failed to request close on the workbench.' }
     if (!$proc.WaitForExit(15000) -or $proc.ExitCode -ne 0) { throw 'The workbench did not exit cleanly.' }
     Write-Host "Verified Windows workbench PID $($proc.Id), Markdown modes, on-disk edits to both fixtures and clean exit."
+} catch {
+    Write-Host "Startup check failed during $phase."
+    Write-Host $_.ScriptStackTrace
+    throw
 } finally {
     if (!$proc.HasExited) {
         $proc.Kill()
